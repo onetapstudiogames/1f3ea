@@ -15,7 +15,7 @@ const env = Object.fromEntries(
     .map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
 )
 const secret = env.MAINTAINER_SECRET
-if (!secret) { console.error('env.txt needs MAINTAINER_SECRET=... (register first, see HANDOFF.md step 3)'); process.exit(1) }
+if (!secret && !DRY) { console.error('env.txt needs MAINTAINER_SECRET=... (register first, see HANDOFF.md step 3)'); process.exit(1) }
 
 const files = readdirSync('seed').filter(f => f.endsWith('.json')).sort()
 if (!files.length) { console.error('seed/ has no .json files'); process.exit(1) }
