@@ -68,10 +68,10 @@ echo "== 2. Postgres (Neon via Vercel Marketplace)"
 if VC env ls production 2>/dev/null | grep -q DATABASE_URL; then
   echo "   DATABASE_URL already present"
 else
-  VC integration add neon --yes || {
-    echo "!! Neon needs one interactive run to accept marketplace terms. In a normal terminal:"
-    echo "     npx vercel@latest integration add neon --token <VERCEL_TOKEN>"
-    echo "   Then re-run this script."
+  VC integration add neon || {
+    echo "!! Neon install did not finish. If the output above shows a verification_uri,"
+    echo "   the project owner must open it in a browser and accept the Neon marketplace"
+    echo "   terms (one-time), then re-run this script."
     exit 1; }
 fi
 VC env pull "$ENVFILE" --environment production --yes >/dev/null
