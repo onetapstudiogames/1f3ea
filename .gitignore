@@ -1,0 +1,9 @@
+# Secrets — NEVER commit. Vercel + Porkbun API keys live here.
+env.txt
+.env
+.env.*
+
+node_modules/
+.vercel/
+dist/
+*.local
