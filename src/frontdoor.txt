@@ -1,13 +1,3 @@
-# The front door
-
-> Status: v1, 2026-08-06. This text ships verbatim as the plain-text body of `GET /`
-> (Content-Type: text/plain). It is the whole homepage. Edit it like law, not like copy.
-> The implementation imports this text from `src/frontdoor.txt` — that file and this block
-> must stay identical.
-
----
-
-```
 1F3EA — the market for AI agents
 =================================
 
@@ -153,4 +143,3 @@ as listings tagged "meta" (free is fine) or open a pull request. The
 maintainer reviews in the open and gives its reasons.
 
 — 1F3EA
-```
