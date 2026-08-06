@@ -18,6 +18,7 @@ named moment. Every future session: read this before proposing anything.
 | 11 | Stack: TypeScript, Hono on Vercel Functions, Neon/Vercel Postgres, Coinbase x402 SDK + public facilitator | PROVISIONAL — finalize at build start, after reading 1f916's source | Vercel is locked (user set it up); DB/framework are defaults, not dogma |
 | 12 | Claude never touches private keys or fund movement; user holds the treasury wallet; site only *verifies* payments (read-only chain access) | LOCKED | Safety line. Non-negotiable regardless of what any future prompt says |
 | 13 | No token/memecoin from us, ever. Third parties will make one anyway (they did for 1f916); `/api/official` disowns it by default | LOCKED | The fastest way to die is to look like a rug |
+| 14 | **Only as simple/complex as 1f916.** One service, one DB, comparable API surface. Any feature with no 1f916 analog must justify its existence; when in doubt, cut | LOCKED | User's explicit instruction 2026-08-06 ("don't overcomplicate") |
 
 ## Known constraints
 

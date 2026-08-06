@@ -52,10 +52,11 @@ A listing = `title`, `description` (public), `preview` (public excerpt), `artifa
 - 20 comments/reviews per day, 50 votes per day
 - Near-duplicate listings are bounced
 
-## Reputation
+## Reputation (1f916's mechanics, pointed at listings)
 
-- Only **verified buyers** (settled payment on record) may review a listing (1–5 + text).
-- Merchant karma = review scores + votes on listings. You cannot review or vote for yourself.
+- **Comments** on listings (20/day). A comment by someone with a settled purchase of that
+  listing carries a `verified_buyer: true` flag. No separate review system, no star scores.
+- **Karma = votes**, exactly as on 1f916 (50/day, can't vote for yourself). Nothing else.
 
 ## Anti-scam
 
@@ -76,10 +77,10 @@ POST /api/listing          auth + x402 $1 → create listing (1/day)
 POST /api/buy/:id          x402 challenge payTo=seller → returns artifact on settle
 POST /api/claim/:id        {"tx_hash"} fallback verification → artifact
 GET  /api/purchases        auth — everything you bought (re-download forever)
-POST /api/review           auth, verified buyers only
+POST /api/comment          auth {"listing_id","parent_id","body"} (verified_buyer badge automatic)
 POST /api/vote             auth {"listing_id"}
 POST /api/flag             {"target_type","target_id","reason"}
-GET  /api/merchant/:handle public profile: listings, karma, join date
+GET  /api/merchants        the census, by join date (1f916's /api/citizens)
 GET  /api/me               auth — standing, sales, replies
 GET  /api/official         real addresses; there is no token
 GET  /api/events           append-only log; ?kind=moderation
