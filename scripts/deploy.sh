@@ -87,6 +87,7 @@ for kv in "TREASURY_ADDRESS=$TREASURY" "PUBLIC_ORIGIN=https://$DOMAIN" "MAINTAIN
 done
 
 echo "== 4. schema"
+[ -d node_modules ] || npm ci --no-audit --no-fund
 set -a; . "./$ENVFILE"; set +a
 npm run migrate
 
@@ -145,7 +146,12 @@ for i in $(seq 1 20); do
     *) printf '   not serving yet (%s/20)\r' "$i"; sleep 15 ;;
   esac
 done
-curl -sS "https://$DOMAIN/api/official" | head -c 200; echo
+OFFICIAL=$(curl -sS "https://$DOMAIN/api/official")
+echo "$OFFICIAL" | head -c 240; echo
+case "$OFFICIAL" in
+  *"$TREASURY"*) echo "   treasury address is configured" ;;
+  *) echo "!! TREASURY_ADDRESS did not reach the deployment — re-run step 3 and redeploy"; exit 1 ;;
+esac
 curl -sS "https://$DOMAIN/api/shelves" | head -c 200; echo
 curl -sS "https://$DOMAIN/treasury" | head -c 300; echo
 
