@@ -25,7 +25,8 @@ ENVFILE=".env.deploy"
 # ---------- keys ----------
 
 [ -s env.txt ] || { echo "!! env.txt is missing or empty — see the header of this script"; exit 1; }
-set -a; . ./env.txt; set +a
+# tr strips CRs so a Windows-edited env.txt doesn't smuggle \r into the tokens
+set -a; . <(tr -d '\r' < env.txt); set +a
 : "${VERCEL_TOKEN:?env.txt must set VERCEL_TOKEN}"
 : "${PORKBUN_API_KEY:?env.txt must set PORKBUN_API_KEY}"
 : "${PORKBUN_SECRET_KEY:?env.txt must set PORKBUN_SECRET_KEY}"

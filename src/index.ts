@@ -3,7 +3,7 @@ import { cors } from 'hono/cors'
 import { sql, logEvent } from './db.ts'
 import { FRONTDOOR, LLMS, ROBOTS, HUMANS } from './door.ts'
 import {
-  auth, dupHash, err, HANDLE_RE, newSecret, QUOTAS, sha256, spendQuota, WALLET_RE,
+  auth, dupHash, err, HANDLE_RE, newSecret, QUOTAS, sha256, spendQuota, utcToday, WALLET_RE,
   type Merchant,
 } from './core.ts'
 import { usdcBalance, NETWORK, USDC } from './chain.ts'
@@ -157,6 +157,14 @@ export function validListing(b: unknown): ListingBody | string {
   }
 }
 
+async function releaseListingQuota(merchantId: number, reservedOn: string) {
+  // Scoped to the day the slot was reserved, so a failure response that
+  // straddles UTC midnight cannot hand back a slot against the new day's quota.
+  await sql`
+    UPDATE merchants SET listings_today = greatest(listings_today - 1, 0)
+    WHERE id = ${merchantId} AND quota_day = ${reservedOn}::date`
+}
+
 app.post('/api/listing', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'bad or missing bearer secret')
@@ -175,26 +183,48 @@ app.post('/api/listing', async c => {
 
   let feeTx: string | null = null
   let responseHeader: string | null = null
+  const reservedOn = utcToday()
   if (!isSeed) {
+    // Advisory fast-fail so an exhausted merchant is never INVITED to pay a fee
+    // we cannot accept today — on the direct-transfer rail that invitation would
+    // cost them a real, unrefundable dollar. The atomic spendQuota below remains
+    // the authoritative guard.
     if (m.listings_today >= QUOTAS.listings)
       return err(c, 429, 'one new listing per UTC day. Spend it on your best work.')
+
     const reqs = requirements(TREASURY, LISTING_FEE_USDC, `${DOMAIN}/api/listing`, '1F3EA listing fee')
     const header = c.req.header('x-payment')
+    if (!header && !v.fee_tx_hash)
+      return challenge402(c, reqs, 'listing costs $1 USDC — pay via x402 (X-PAYMENT header) or include fee_tx_hash')
+
+    // Reserve the day's slot BEFORE money moves; release it on any later failure.
+    // A crash between reserve and settle costs the merchant a slot, never a dollar.
+    if (!(await spendQuota(m.id, 'listings')))
+      return err(c, 429, 'one new listing per UTC day. Spend it on your best work.')
+
     if (header) {
       const settled = await settleX402(header, reqs)
-      if ('error' in settled) return challenge402(c, reqs, settled.error)
+      if ('error' in settled) {
+        await releaseListingQuota(m.id, reservedOn)
+        return challenge402(c, reqs, settled.error)
+      }
       feeTx = settled.transaction
       responseHeader = paymentResponseHeader(settled)
-    } else if (v.fee_tx_hash) {
-      const direct = await verifyDirectPayment(v.fee_tx_hash, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 7 * 864e5))
-      if (!direct) return err(c, 402, 'fee_tx_hash did not verify: need >= $1 USDC on Base to the treasury, within 7 days, unused')
-      feeTx = v.fee_tx_hash
     } else {
-      return challenge402(c, reqs, 'listing costs $1 USDC — pay via x402 (X-PAYMENT header) or include fee_tx_hash')
+      // The treasury address is public and takes donations, so a fallback fee only counts
+      // if it came from this merchant's own seller_wallet, recently.
+      const direct = await verifyDirectPayment(v.fee_tx_hash!, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 3600e3))
+      if (!direct) {
+        await releaseListingQuota(m.id, reservedOn)
+        return err(c, 402, 'fee_tx_hash did not verify: need >= $1 USDC on Base to the treasury, within the last hour, unused')
+      }
+      if (direct.from.toLowerCase() !== v.seller_wallet.toLowerCase()) {
+        await releaseListingQuota(m.id, reservedOn)
+        return err(c, 402, 'the fee must be paid from the same wallet you list as seller_wallet')
+      }
+      feeTx = v.fee_tx_hash!
     }
   }
-
-  if (!isSeed && !(await spendQuota(m.id, 'listings'))) return err(c, 429, 'one new listing per UTC day')
 
   const rows = (await sql`
     INSERT INTO listings (merchant_id, title, description, preview, artifact, price_usdc, seller_wallet, tags, dup_hash)
@@ -206,6 +236,7 @@ app.post('/api/listing', async c => {
       await sql`INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash) VALUES (${m.id}, ${id}, ${LISTING_FEE_USDC}, ${feeTx})`
     } catch {
       await sql`DELETE FROM listings WHERE id = ${id}`
+      await releaseListingQuota(m.id, reservedOn)
       return err(c, 409, 'that fee tx was already used')
     }
   }
@@ -221,13 +252,14 @@ interface BuyableListing {
   seller_wallet: string; removed: boolean; created_at: string
 }
 
-async function getBuyable(c: Context, id: number): Promise<BuyableListing | Response> {
+async function getBuyable(c: Context, m: Merchant, id: number): Promise<BuyableListing | Response> {
   if (!Number.isInteger(id)) return err(c, 400, 'bad id')
   const rows = (await sql`
     SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet, removed, created_at
     FROM listings WHERE id = ${id}`) as BuyableListing[]
   if (!rows[0]) return err(c, 404, 'no such listing')
   if (rows[0].removed) return err(c, 404, 'listing was removed')
+  if (rows[0].merchant_id === m.id) return err(c, 403, 'you cannot buy your own goods (constitution §5)')
   return rows[0]
 }
 
@@ -254,7 +286,7 @@ async function recordPurchase(
 app.post('/api/buy/:id', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
-  const l = await getBuyable(c, Number(c.req.param('id')))
+  const l = await getBuyable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
 
   const prior = await sql`SELECT id FROM purchases WHERE listing_id = ${l.id} AND merchant_id = ${m.id}`
@@ -276,7 +308,7 @@ app.post('/api/buy/:id', async c => {
 app.post('/api/claim/:id', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
-  const l = await getBuyable(c, Number(c.req.param('id')))
+  const l = await getBuyable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
   if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0)
 
