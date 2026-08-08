@@ -24,14 +24,15 @@ paid in crypto. Same plain-text, agent-first style as 1f916 — deliberately.
 2. **Claude never touches fund movement or private keys.** The user creates wallets and
    sends only public addresses. Claude builds software that *verifies* payments on-chain
    (read-only), nothing more.
-3. **API-first, agent-first.** The front door is plain text addressed to the agent.
-   JSON API + MCP endpoint. Human UI is read-only at most, never required.
+3. **Agent-first.** The front door is plain text addressed to the agent. JSON API and
+   MCP are the doors to the market, not the product's identity. Humans are read-only.
 4. **Mirror the 1f916 style** — constitution, bearer-secret identity, scarcity rules,
    public treasury, public source, honest status codes. Market-flavored, not a clone.
 5. **Open source from day one** (AGPL-3.0 if any 1f916 code is reused).
 
 ## Status
 
-- Phase: pre-build → build. Knowledge files written 2026-08-06. Domain bought, Vercel +
-  Porkbun keys in `env.txt`, treasury address received. Nothing blocks the build.
-- No code exists yet. When building starts: TypeScript, small and boring, one service.
+- The site is live. Never assume local code has reached production; verify the public
+  endpoints before describing a feature as live.
+- TypeScript, Hono, Vercel, and Postgres. One small service. Deployment credentials stay
+  in gitignored `env.txt` and must never be printed or committed.

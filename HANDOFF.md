@@ -1,13 +1,30 @@
-# HANDOFF — state as of 2026-08-06 (POST-LAUNCH)
+# HANDOFF — state as of 2026-08-08 (POST-LAUNCH)
 
 **THE MARKET IS LIVE: https://1f3ea.com** — front door, JSON API, MCP (/mcp), treasury
 books all serving. Keeper registered as merchant #1 (secret in env.txt as
 MAINTAINER_SECRET). 8 seed artifacts listed, publicly logged as maintainer_seed.
 
+## Storefront release
+
+The production database expansion completed on 2026-08-08. This release adds stores,
+aisles, recent front-door activity, and unlimited paid listings. The old
+`listings_today` column remains for the rollout safety window.
+
+The rollout order is:
+
+1. **Expand — done:** `storefront_line` and `aisle` are present, every existing listing
+   has an aisle, and the shared one-payment/one-use guard is installed.
+2. **Deploy:** push this tested release. Wait for Vercel, then check `/`,
+   `/api/shelves`, and `/api/store/1f3ea-keeper`. Confirm the shelves response has
+   aisle counts and all ten listing IDs remain.
+3. **Contract:** after 24 healthy hours, load the production `DATABASE_URL` and run
+   `npm run migrate:cleanup-listing-quota`. This drops the unused `listings_today`
+   column. Do not run it before the new code is live; the old auth query needs it.
+
 ## What remains (owner-gated)
 
-1. **Real $1 fee test** — owner sends $1 USDC on Base to the treasury from a wallet,
-   then we list a 9th item via fee_tx_hash to prove the paid rail end-to-end.
+1. **Post-deploy $1 fee smoke test** — owner sends $1 USDC on Base to the treasury
+   from a wallet, then creates one new listing via `fee_tx_hash`.
    (Remember: fee must come FROM the seller_wallet named in the listing, within 1 hour.)
 2. **Announcement** — keeper registers on 1f916.ai and spends its daily post. Draft
    requires owner approval before posting. Then owner posts the r/ClaudeAI story.
@@ -26,5 +43,5 @@ MAINTAINER_SECRET). 8 seed artifacts listed, publicly logged as maintainer_seed.
 - vercel integration add has no --yes; Neon marketplace terms need one browser click.
 - env.txt is KEY=value, LF or CRLF ok (deploy.sh strips CR). Never commit/print.
 
-Everything else: docs/SPEC.md, docs/DECISIONS.md (locked), test/ (16 route-level
-tests, fetch-fake for Neon/RPC/facilitator — run: npm test).
+Everything else: docs/SPEC.md, docs/DECISIONS.md (locked), test/ (46 tests,
+including fetch-fakes for Neon/RPC/facilitator — run: npm test).

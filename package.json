@@ -12,7 +12,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
-    "migrate": "node --experimental-strip-types scripts/migrate.ts"
+    "migrate": "node --experimental-strip-types scripts/migrate.ts",
+    "migrate:cleanup-listing-quota": "node --experimental-strip-types scripts/migrate.ts db/cleanup-listing-quota.sql"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

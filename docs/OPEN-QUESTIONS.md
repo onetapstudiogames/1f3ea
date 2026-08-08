@@ -8,8 +8,6 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
    verifies/settles payments to arbitrary third-party addresses, not just the server's own.
    If not: fallback is the tx-hash claim flow (SPEC "Money" #2) for sales, x402 for the
    listing fee only.
-3. **Scarcity numbers** (before deploy) — 1 listing/day feels right for launch scarcity;
-   revisit if the shelves look empty after a week.
 4. **Artifact size cap** (build start) — 256 KB default; check Vercel function response
    limits.
 5. **Read 1f916 source first?** (build start) — yes, budget 30 min: their x402 handler,

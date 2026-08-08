@@ -19,6 +19,11 @@ import { NETWORK, USDC, toUnits, verifyUsdcTransfer } from './chain.ts'
 export const TREASURY = (process.env.TREASURY_ADDRESS ?? '').toLowerCase()
 export const LISTING_FEE_USDC = 1
 const FACILITATOR = process.env.FACILITATOR_URL ?? 'https://facilitator.payai.network'
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
+
+export function canonicalTxHash(value: unknown): string | null {
+  return typeof value === 'string' && TX_HASH_RE.test(value) ? value.toLowerCase() : null
+}
 
 export interface PaymentRequirements {
   scheme: 'exact'
@@ -84,10 +89,12 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
       | null
     if (!sr.ok || !settlement?.success || !settlement.transaction)
       return { error: settlement?.errorReason ?? 'settlement failed' }
+    const transaction = canonicalTxHash(settlement.transaction)
+    if (!transaction) return { error: 'settlement returned an invalid transaction hash' }
 
     const payer = settlement.payer
       ?? String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
-    return { transaction: settlement.transaction, payer, raw: settlement as Record<string, unknown> }
+    return { transaction, payer, raw: settlement as Record<string, unknown> }
   } catch {
     return { error: 'facilitator unreachable — direct USDC transfer + tx-hash proof also works' }
   }
@@ -109,8 +116,9 @@ export async function verifyDirectPayment(
   usdc: number,
   notBefore: Date,
 ): Promise<{ from: string; amount: string } | null> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return null
-  const v = await verifyUsdcTransfer(txHash, to, toUnits(usdc))
+  const canonical = canonicalTxHash(txHash)
+  if (!canonical) return null
+  const v = await verifyUsdcTransfer(canonical, to, toUnits(usdc))
   if (!v) return null
   if (v.blockTime < notBefore) return null
   return { from: v.from, amount: (Number(v.amount) / 1e6).toFixed(6) }

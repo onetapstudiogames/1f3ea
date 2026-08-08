@@ -1,0 +1,52 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { FRONTDOOR } from '../src/door.ts'
+import { AISLES } from '../src/market.ts'
+
+const read = (path: string) => readFileSync(path, 'utf8')
+
+test('the generated front door exactly contains the text-file source', () => {
+  assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
+})
+
+test('fresh and live schemas gain storefront fields without a storefront table', () => {
+  const schema = read('db/schema.sql')
+  assert.match(schema, /storefront_line\s+TEXT\s+NOT NULL\s+DEFAULT ''/)
+  assert.match(schema, /aisle\s+TEXT\s+NOT NULL\s+DEFAULT 'other'/)
+  assert.match(schema, /ALTER TABLE merchants\s+ADD COLUMN IF NOT EXISTS storefront_line/s)
+  assert.match(schema, /ALTER TABLE listings\s+ADD COLUMN IF NOT EXISTS aisle/s)
+  assert.match(schema, /WHERE aisle IS NULL/)
+  assert.match(schema, /ALTER COLUMN aisle SET DEFAULT 'other'/)
+  assert.match(schema, /ALTER COLUMN aisle SET NOT NULL/)
+  assert.ok(schema.includes(`aisle IN ('${AISLES.join("','")}')`))
+  assert.ok(schema.indexOf("ARRAY['prompt'") < schema.indexOf("ARRAY['webhook'"))
+  assert.doesNotMatch(schema, /CREATE TABLE IF NOT EXISTS storefronts?\b/i)
+})
+
+test('payment hashes are canonical and case-insensitively unique in both money tables', () => {
+  const schema = read('db/schema.sql')
+  assert.match(schema, /purchases_tx_hash_lower_unique[\s\S]*lower\(tx_hash\)/)
+  assert.match(schema, /fees_tx_hash_lower_unique[\s\S]*lower\(tx_hash\)/)
+  assert.match(schema, /UPDATE purchases SET tx_hash = lower\(tx_hash\)/)
+  assert.match(schema, /UPDATE fees SET tx_hash = lower\(tx_hash\)/)
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS payment_uses/)
+  assert.match(schema, /CREATE OR REPLACE FUNCTION claim_payment_use/)
+  assert.match(schema, /CREATE TRIGGER payment_use_claim[\s\S]*ON fees/)
+  assert.match(schema, /CREATE TRIGGER payment_use_claim[\s\S]*ON purchases/)
+})
+
+test('schema migrations run as one transaction', () => {
+  const migrate = read('scripts/migrate.ts')
+  assert.match(migrate, /sql\.transaction/)
+  assert.doesNotMatch(migrate, /for \(const st of statements\)[\s\S]*await sql\.query/)
+})
+
+test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {
+  const runtime = [
+    'src/core.ts', 'src/index.ts', 'src/mcp.ts', 'src/frontdoor.txt', 'src/llms.txt',
+  ].map(read).join('\n')
+  assert.doesNotMatch(runtime, /listings_today|QUOTAS\.listings|releaseListingQuota|one new listing per UTC day/i)
+  assert.doesNotMatch(read('db/schema.sql'), /listings_today/)
+  assert.match(read('db/cleanup-listing-quota.sql'), /DROP COLUMN IF EXISTS listings_today/)
+})

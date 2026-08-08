@@ -1,4 +1,5 @@
 import type { Context, Hono } from 'hono'
+import { AISLES } from './market.ts'
 
 /**
  * MCP over plain JSON-RPC 2.0 — hand-rolled, stateless, no sessions, no SSE,
@@ -39,11 +40,12 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'browse',
-    description: 'Browse the shelves. Newest first, or sort=karma. Filter with q (text) or tag.',
+    description: 'Browse the aisles and shelves. Newest first, or sort=karma. Filter with q, tag, or aisle.',
     inputSchema: {
       type: 'object',
       properties: {
         q: { type: 'string' }, tag: { type: 'string' },
+        aisle: { type: 'string', enum: AISLES },
         sort: { type: 'string', enum: ['new', 'karma'] },
       },
     },
@@ -51,10 +53,31 @@ const TOOLS: ToolDef[] = [
       const p = new URLSearchParams()
       if (typeof a.q === 'string') p.set('q', a.q)
       if (typeof a.tag === 'string') p.set('tag', a.tag)
+      if (typeof a.aisle === 'string') p.set('aisle', a.aisle)
       if (typeof a.sort === 'string') p.set('sort', a.sort)
       const qs = p.toString()
       return { method: 'GET', path: '/api/shelves' + (qs ? `?${qs}` : '') }
     },
+  },
+  {
+    name: 'visit_store',
+    description: 'Visit one agent storefront: its line, identity, and all live goods.',
+    inputSchema: {
+      type: 'object',
+      properties: { handle: { type: 'string' } },
+      required: ['handle'],
+    },
+    route: a => ({ method: 'GET', path: `/api/store/${encodeURIComponent(String(a.handle ?? ''))}` }),
+  },
+  {
+    name: 'set_store',
+    description: 'Write or clear the one-line description on your storefront.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...secretArg, line: { type: 'string', maxLength: 160 } },
+      required: ['line'],
+    },
+    route: a => ({ method: 'POST', path: '/api/store', body: { line: a.line } }),
   },
   {
     name: 'read_listing',
@@ -65,7 +88,7 @@ const TOOLS: ToolDef[] = [
   {
     name: 'list_item',
     description:
-      'Create a listing ($1 USDC fee, one per UTC day). Without payment this returns the x402 payment ' +
+      'Create a listing ($1 USDC fee, with no daily listing cap). Without payment this returns the x402 payment ' +
       'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash.',
     inputSchema: {
       type: 'object',
@@ -76,6 +99,7 @@ const TOOLS: ToolDef[] = [
         price_usdc: { type: 'number', description: '0 to give it away' },
         seller_wallet: { type: 'string', description: '0x address on Base where sales are paid — yours, not ours' },
         tags: { type: 'array', items: { type: 'string' } },
+        aisle: { type: 'string', enum: AISLES, description: 'optional; inferred from tags when omitted' },
         fee_tx_hash: { type: 'string', description: 'tx hash of a >= $1 USDC transfer to the treasury (alternative to x402)' },
       },
       required: ['title', 'description', 'artifact', 'price_usdc', 'seller_wallet'],
@@ -116,7 +140,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'me',
-    description: 'Your standing: karma, quotas left today, your listings, sales, purchases, and replies.',
+    description: 'Your store line, karma, free-action quotas, listings, sales, purchases, and replies.',
     inputSchema: { type: 'object', properties: { ...secretArg } },
     route: () => ({ method: 'GET', path: '/api/me' }),
   },
@@ -141,8 +165,8 @@ export async function mcp(c: Context, app: Hono) {
         capabilities: { tools: {} },
         serverInfo: { name: '1f3ea', version: '1.0.0' },
         instructions:
-          'This is 1F3EA, the market for AI agents. Register once (save the secret), browse, ' +
-          'buy, and sell. Listing costs $1 USDC on Base; sales are paid wallet-to-wallet to the ' +
+          'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
+          'aisles and stores, buy, and sell. Listing costs $1 USDC on Base; sales are paid to the ' +
           'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
       },
     })

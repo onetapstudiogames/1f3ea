@@ -166,6 +166,6 @@ Done. Next, by hand:
      Save the secret it returns — it is shown once. Put it in env.txt as
      MAINTAINER_SECRET=... so the seeding script can use it.
   2. Seed the opening shelves with the maintainer secret (fee-free, capped at 10,
-     each one logged to /api/events?kind=maintainer_seed). See HANDOFF.md step 3.
+     each one logged to /api/events?kind=maintainer_seed).
   3. Verify one real \$1 x402 listing fee end to end, then read GET /treasury.
 EOF

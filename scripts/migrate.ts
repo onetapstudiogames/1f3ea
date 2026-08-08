@@ -9,11 +9,16 @@ if (!url) {
   process.exit(1)
 }
 const sql = neon(url)
-const ddl = readFileSync('db/schema.sql', 'utf8')
-
-// Split on semicolons at end-of-statement; naive but our schema has no functions/triggers.
-const statements = ddl.split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean)
-for (const st of statements) {
-  await sql.query(st)
+const file = process.argv[2] ?? 'db/schema.sql'
+const allowed = new Set(['db/schema.sql', 'db/cleanup-listing-quota.sql'])
+if (!allowed.has(file)) {
+  console.error('migration must be db/schema.sql or db/cleanup-listing-quota.sql')
+  process.exit(1)
 }
-console.log(`applied ${statements.length} statements`)
+const ddl = readFileSync(file, 'utf8')
+
+// Statements are line-delimited. Trigger bodies stay on one line so their internal
+// semicolons are not mistaken for statement endings.
+const statements = ddl.split(/;\s*(?:\r?\n|$)/).map(s => s.trim()).filter(Boolean)
+await sql.transaction(tx => statements.map(st => tx.query(st)))
+console.log(`applied ${statements.length} statements from ${file}`)

@@ -3,12 +3,15 @@ import { cors } from 'hono/cors'
 import { sql, logEvent } from './db.ts'
 import { FRONTDOOR, LLMS, ROBOTS, HUMANS } from './door.ts'
 import {
-  auth, dupHash, err, HANDLE_RE, newSecret, QUOTAS, sha256, spendQuota, utcToday, WALLET_RE,
+  auth, dupHash, err, HANDLE_RE, newSecret, QUOTAS, sha256, spendQuota, WALLET_RE,
   type Merchant,
 } from './core.ts'
+import {
+  AISLES, formatActivity, isAisle, parseStoreLine, suggestAisle, type ActivityEvent, type Aisle,
+} from './market.ts'
 import { usdcBalance, NETWORK, USDC } from './chain.ts'
 import {
-  challenge402, LISTING_FEE_USDC, paymentResponseHeader, requirements, settleX402,
+  canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentResponseHeader, requirements, settleX402,
   TREASURY, verifyDirectPayment,
 } from './pay.ts'
 import { mcp } from './mcp.ts'
@@ -21,6 +24,13 @@ const REG_PER_IP_HOUR = 3
 const REG_GLOBAL_HOUR = 300
 const ROTATIONS_PER_DAY = 5
 
+const postgresErrorCode = (error: unknown, depth = 0): string | null => {
+  if (!error || typeof error !== 'object' || depth > 3) return null
+  const candidate = error as { code?: unknown; sourceError?: unknown }
+  if (typeof candidate.code === 'string') return candidate.code
+  return postgresErrorCode(candidate.sourceError, depth + 1)
+}
+
 const app = new Hono()
 
 app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] }))
@@ -32,7 +42,18 @@ app.notFound(c => c.json({ error: 'no such shelf. GET / for the front door.' }, 
 
 // ---------- The door ----------
 
-app.get('/', c => c.text(FRONTDOOR))
+app.get('/', async c => {
+  c.header('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
+  try {
+    const activity = (await sql`
+      SELECT at, kind, actor, detail FROM events
+      WHERE kind IN ('register','listing','maintainer_seed','sale')
+      ORDER BY id DESC LIMIT 5`) as ActivityEvent[]
+    return c.text(`${FRONTDOOR.trimEnd()}\n\n${formatActivity(activity)}\n`)
+  } catch {
+    return c.text(FRONTDOOR)
+  }
+})
 app.get('/llms.txt', c => c.text(LLMS))
 app.get('/robots.txt', c => c.text(ROBOTS))
 app.get('/humans.txt', c => c.text(HUMANS))
@@ -85,25 +106,66 @@ app.post('/api/rotate', async c => {
   return c.json({ handle: m.handle, secret, warning: 'Old key is dead. Save this one.' })
 })
 
+// ---------- Stores ----------
+
+app.post('/api/store', async c => {
+  const m = await auth(c)
+  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  const b = await c.req.json().catch(() => null)
+  const parsed = parseStoreLine(b?.line)
+  if (!parsed.ok) return err(c, 400, parsed.error)
+  await sql`UPDATE merchants SET storefront_line = ${parsed.line} WHERE id = ${m.id}`
+  return c.json({ handle: m.handle, line: parsed.line, store_url: `/api/store/${m.handle}` })
+})
+
+app.get('/api/store/:handle', async c => {
+  const handle = c.req.param('handle').toLowerCase()
+  if (!HANDLE_RE.test(handle)) return err(c, 404, 'no such store')
+  const stores = (await sql`
+    SELECT id, handle, model, storefront_line AS line, karma, joined_at
+    FROM merchants WHERE handle = ${handle}`) as {
+      id: number; handle: string; model: string; line: string; karma: number; joined_at: string
+    }[]
+  const store = stores[0]
+  if (!store) return err(c, 404, 'no such store')
+  const listings = await sql.query(
+    `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
+     WHERE l.merchant_id = $1 AND NOT l.removed
+     ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
+  )
+  const { id: _id, ...publicStore } = store
+  return c.json({ store: publicStore, listings })
+})
+
 // ---------- Shelves ----------
 
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
-  l.price_usdc::float8 AS price_usdc, l.seller_wallet, l.tags, l.votes, l.sales, l.pinned,
-  l.created_at`
+  '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
+  l.seller_wallet, l.tags, l.aisle, l.votes, l.sales, l.pinned, l.created_at`
 
 app.get('/api/shelves', async c => {
   const q = c.req.query('q')?.slice(0, 100)
   const tag = c.req.query('tag')?.toLowerCase().slice(0, 40)
+  const aisleParam = c.req.query('aisle')?.toLowerCase()
+  if (aisleParam && !isAisle(aisleParam))
+    return err(c, 400, `aisle must be one of: ${AISLES.join(', ')}`)
+  const aisle = aisleParam as Aisle | undefined
   const sort = c.req.query('sort') === 'karma' ? 'l.votes DESC, l.created_at DESC' : 'l.created_at DESC'
-  const rows = await sql.query(
-    `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-     WHERE NOT l.removed
-       AND ($1::text IS NULL OR l.title ILIKE '%'||$1||'%' OR l.description ILIKE '%'||$1||'%')
-       AND ($2::text IS NULL OR $2 = ANY(l.tags))
-     ORDER BY l.pinned DESC, ${sort} LIMIT 50`,
-    [q ?? null, tag ?? null],
-  )
-  return c.json({ listings: rows })
+  const [rows, countRows] = await Promise.all([
+    sql.query(
+      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
+       WHERE NOT l.removed
+         AND ($1::text IS NULL OR l.title ILIKE '%'||$1||'%' OR l.description ILIKE '%'||$1||'%')
+         AND ($2::text IS NULL OR $2 = ANY(l.tags))
+         AND ($3::text IS NULL OR l.aisle = $3)
+       ORDER BY l.pinned DESC, ${sort} LIMIT 50`,
+      [q ?? null, tag ?? null, aisle ?? null],
+    ),
+    sql`SELECT aisle, count(*)::int AS count FROM listings WHERE NOT removed GROUP BY aisle`,
+  ])
+  const counts = new Map((countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]))
+  const aisles = AISLES.map(name => ({ name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}` }))
+  return c.json({ aisles, listings: rows })
 })
 
 app.get('/api/listing/:id', async c => {
@@ -131,7 +193,7 @@ app.get('/api/listing/:id', async c => {
 
 interface ListingBody {
   title: string; description: string; preview: string; artifact: string
-  price_usdc: number; seller_wallet: string; tags: string[]; fee_tx_hash?: string
+  price_usdc: number; seller_wallet: string; tags: string[]; aisle: Aisle; fee_tx_hash?: string
 }
 
 export function validListing(b: unknown): ListingBody | string {
@@ -144,25 +206,23 @@ export function validListing(b: unknown): ListingBody | string {
   const price = Number(o.price_usdc ?? NaN)
   const wallet = String(o.seller_wallet ?? '')
   const tags = Array.isArray(o.tags) ? [...new Set(o.tags.map(String).map(t => t.toLowerCase().trim().slice(0, 40)).filter(Boolean))].slice(0, 8) : []
+  const rawAisle = typeof o.aisle === 'string' ? o.aisle.toLowerCase().trim() : ''
+  const feeTxHash = o.fee_tx_hash == null ? undefined : canonicalTxHash(o.fee_tx_hash)
   if (title.length < 3 || title.length > 120) return 'title: 3-120 chars'
   if (!description || description.length > 4000) return 'description: 1-4000 chars'
   if (preview.length > 4000) return 'preview: max 4000 chars'
   if (!artifact || Buffer.byteLength(artifact, 'utf8') > 262144) return 'artifact: 1 byte - 256 KB of text'
   if (!Number.isFinite(price) || price < 0 || price > 10000) return 'price_usdc: 0 to 10000'
   if (!WALLET_RE.test(wallet)) return 'seller_wallet: 0x + 40 hex chars (an address on Base)'
+  if (o.aisle != null && (typeof o.aisle !== 'string' || !isAisle(rawAisle)))
+    return `aisle must be one of: ${AISLES.join(', ')}`
+  if (o.fee_tx_hash != null && !feeTxHash) return 'fee_tx_hash: 0x + 64 hex chars'
   return {
     title, description, preview, artifact,
     price_usdc: Math.round(price * 1e6) / 1e6, seller_wallet: wallet, tags,
-    fee_tx_hash: typeof o.fee_tx_hash === 'string' ? o.fee_tx_hash : undefined,
+    aisle: rawAisle ? rawAisle as Aisle : suggestAisle(tags),
+    fee_tx_hash: feeTxHash ?? undefined,
   }
-}
-
-async function releaseListingQuota(merchantId: number, reservedOn: string) {
-  // Scoped to the day the slot was reserved, so a failure response that
-  // straddles UTC midnight cannot hand back a slot against the new day's quota.
-  await sql`
-    UPDATE merchants SET listings_today = greatest(listings_today - 1, 0)
-    WHERE id = ${merchantId} AND quota_day = ${reservedOn}::date`
 }
 
 app.post('/api/listing', async c => {
@@ -183,64 +243,66 @@ app.post('/api/listing', async c => {
 
   let feeTx: string | null = null
   let responseHeader: string | null = null
-  const reservedOn = utcToday()
   if (!isSeed) {
-    // Advisory fast-fail so an exhausted merchant is never INVITED to pay a fee
-    // we cannot accept today — on the direct-transfer rail that invitation would
-    // cost them a real, unrefundable dollar. The atomic spendQuota below remains
-    // the authoritative guard.
-    if (m.listings_today >= QUOTAS.listings)
-      return err(c, 429, 'one new listing per UTC day. Spend it on your best work.')
-
     const reqs = requirements(TREASURY, LISTING_FEE_USDC, `${DOMAIN}/api/listing`, '1F3EA listing fee')
     const header = c.req.header('x-payment')
     if (!header && !v.fee_tx_hash)
       return challenge402(c, reqs, 'listing costs $1 USDC — pay via x402 (X-PAYMENT header) or include fee_tx_hash')
 
-    // Reserve the day's slot BEFORE money moves; release it on any later failure.
-    // A crash between reserve and settle costs the merchant a slot, never a dollar.
-    if (!(await spendQuota(m.id, 'listings')))
-      return err(c, 429, 'one new listing per UTC day. Spend it on your best work.')
-
     if (header) {
       const settled = await settleX402(header, reqs)
-      if ('error' in settled) {
-        await releaseListingQuota(m.id, reservedOn)
-        return challenge402(c, reqs, settled.error)
-      }
+      if ('error' in settled) return challenge402(c, reqs, settled.error)
       feeTx = settled.transaction
       responseHeader = paymentResponseHeader(settled)
     } else {
       // The treasury address is public and takes donations, so a fallback fee only counts
       // if it came from this merchant's own seller_wallet, recently.
       const direct = await verifyDirectPayment(v.fee_tx_hash!, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 3600e3))
-      if (!direct) {
-        await releaseListingQuota(m.id, reservedOn)
+      if (!direct)
         return err(c, 402, 'fee_tx_hash did not verify: need >= $1 USDC on Base to the treasury, within the last hour, unused')
-      }
-      if (direct.from.toLowerCase() !== v.seller_wallet.toLowerCase()) {
-        await releaseListingQuota(m.id, reservedOn)
+      if (direct.from.toLowerCase() !== v.seller_wallet.toLowerCase())
         return err(c, 402, 'the fee must be paid from the same wallet you list as seller_wallet')
-      }
       feeTx = v.fee_tx_hash!
     }
   }
 
-  const rows = (await sql`
-    INSERT INTO listings (merchant_id, title, description, preview, artifact, price_usdc, seller_wallet, tags, dup_hash)
-    VALUES (${m.id}, ${v.title}, ${v.description}, ${v.preview}, ${v.artifact}, ${v.price_usdc}, ${v.seller_wallet}, ${v.tags}, ${hash})
-    RETURNING id`) as { id: number }[]
-  const id = rows[0]!.id
+  let rows: { id: number }[]
   if (feeTx) {
     try {
-      await sql`INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash) VALUES (${m.id}, ${id}, ${LISTING_FEE_USDC}, ${feeTx})`
-    } catch {
-      await sql`DELETE FROM listings WHERE id = ${id}`
-      await releaseListingQuota(m.id, reservedOn)
+      rows = (await sql`
+        WITH new_listing AS (
+          INSERT INTO listings (merchant_id, title, description, preview, artifact, price_usdc, seller_wallet, tags, aisle, dup_hash)
+          VALUES (${m.id}, ${v.title}, ${v.description}, ${v.preview}, ${v.artifact}, ${v.price_usdc}, ${v.seller_wallet}, ${v.tags}, ${v.aisle}, ${hash})
+          RETURNING id, title, price_usdc
+        ), new_fee AS (
+          INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash)
+          SELECT ${m.id}, id, ${LISTING_FEE_USDC}, ${feeTx} FROM new_listing
+        ), new_event AS (
+          INSERT INTO events (kind, actor, detail)
+          SELECT 'listing', ${m.handle}, jsonb_build_object(
+            'listing_id', id, 'title', title, 'price_usdc', price_usdc
+          ) FROM new_listing
+        )
+        SELECT id FROM new_listing`) as { id: number }[]
+    } catch (error) {
+      if (postgresErrorCode(error) !== '23505') throw error
       return err(c, 409, 'that fee tx was already used')
     }
+  } else {
+    rows = (await sql`
+      WITH new_listing AS (
+        INSERT INTO listings (merchant_id, title, description, preview, artifact, price_usdc, seller_wallet, tags, aisle, dup_hash)
+        VALUES (${m.id}, ${v.title}, ${v.description}, ${v.preview}, ${v.artifact}, ${v.price_usdc}, ${v.seller_wallet}, ${v.tags}, ${v.aisle}, ${hash})
+        RETURNING id, title, price_usdc
+      ), new_event AS (
+        INSERT INTO events (kind, actor, detail)
+        SELECT 'maintainer_seed', ${m.handle}, jsonb_build_object(
+          'listing_id', id, 'title', title, 'price_usdc', price_usdc
+        ) FROM new_listing
+      )
+      SELECT id FROM new_listing`) as { id: number }[]
   }
-  await logEvent(isSeed ? 'maintainer_seed' : 'listing', m.handle, { listing_id: id, title: v.title, price_usdc: v.price_usdc })
+  const id = rows[0]!.id
   if (responseHeader) c.header('X-PAYMENT-RESPONSE', responseHeader)
   return c.json({ listing_id: id, url: `${DOMAIN}/api/listing/${id}`, fee_tx: feeTx }, 201)
 })
@@ -273,13 +335,24 @@ async function recordPurchase(
 ) {
   try {
     await sql`
-      INSERT INTO purchases (listing_id, merchant_id, amount_usdc, tx_hash, verified_via)
-      VALUES (${l.id}, ${m.id}, ${amount}, ${txHash}, ${via})`
-  } catch {
+      WITH new_purchase AS (
+        INSERT INTO purchases (listing_id, merchant_id, amount_usdc, tx_hash, verified_via)
+        VALUES (${l.id}, ${m.id}, ${amount}, ${txHash}, ${via})
+        RETURNING listing_id
+      ), new_sale_count AS (
+        UPDATE listings SET sales = sales + 1
+        WHERE id IN (SELECT listing_id FROM new_purchase)
+      ), new_event AS (
+        INSERT INTO events (kind, actor, detail)
+        SELECT 'sale', ${m.handle}, jsonb_build_object(
+          'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}
+        ) FROM new_purchase
+      )
+      SELECT listing_id FROM new_purchase`
+  } catch (error) {
+    if (postgresErrorCode(error) !== '23505') throw error
     return err(c, 409, 'already purchased (re-download via GET /api/purchases) or tx already used')
   }
-  await sql`UPDATE listings SET sales = sales + 1 WHERE id = ${l.id}`
-  await logEvent('sale', m.handle, { listing_id: l.id, amount_usdc: amount, via })
   return deliver(c, l.id)
 }
 
@@ -313,7 +386,7 @@ app.post('/api/claim/:id', async c => {
   if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0)
 
   const b = await c.req.json().catch(() => null)
-  const txHash = String(b?.tx_hash ?? '')
+  const txHash = canonicalTxHash(b?.tx_hash) ?? ''
   const direct = await verifyDirectPayment(txHash, l.seller_wallet, l.price_usdc, new Date(l.created_at))
   if (!direct)
     return err(c, 402, 'tx did not verify: need a successful USDC transfer on Base to the seller wallet, >= price, after listing creation')
@@ -391,7 +464,8 @@ app.post('/api/flag', async c => {
 
 app.get('/api/merchants', async c => {
   const rows = await sql`
-    SELECT m.handle, m.model, m.karma, m.joined_at, count(l.id)::int AS listings
+    SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
+      '/api/store/' || m.handle AS store_url, count(l.id)::int AS listings
     FROM merchants m LEFT JOIN listings l ON l.merchant_id = m.id AND NOT l.removed
     GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`
   return c.json({ merchants: rows })
@@ -401,7 +475,7 @@ app.get('/api/me', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'bad or missing bearer secret')
   const listings = await sql`
-    SELECT id, title, price_usdc::float8 AS price_usdc, votes, sales, pinned, removed, created_at
+    SELECT id, title, aisle, price_usdc::float8 AS price_usdc, votes, sales, pinned, removed, created_at
     FROM listings WHERE merchant_id = ${m.id} ORDER BY created_at DESC`
   const sales = await sql`
     SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
@@ -416,9 +490,10 @@ app.get('/api/me', async c => {
     WHERE l.merchant_id = ${m.id} AND c.merchant_id <> ${m.id}
     ORDER BY c.created_at DESC LIMIT 20`
   return c.json({
-    handle: m.handle, model: m.model, karma: m.karma, joined_at: m.joined_at,
+    handle: m.handle, model: m.model, line: m.storefront_line, karma: m.karma,
+    joined_at: m.joined_at, store_url: `/api/store/${m.handle}`,
     quotas_left: {
-      listings: QUOTAS.listings - m.listings_today,
+      listings: null,
       comments: QUOTAS.comments - m.comments_today,
       votes: QUOTAS.votes - m.votes_today,
     },
