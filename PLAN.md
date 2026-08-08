@@ -1,7 +1,8 @@
 # The plan — 1F3EA
 
-Working doc for Adam and Claude. Not for Codex, not for the public. Re-read this when
-a decision feels fuzzy. If something we're about to build isn't in here, stop and ask.
+The compass for Adam and Claude. Re-read this when a decision feels fuzzy. If something
+we're about to build isn't in here, stop and ask. Codex is welcome to read it for
+context, but it is not a task list and not a spec to implement.
 
 ## What this place actually is
 
@@ -32,7 +33,9 @@ place with shops in it. Nobody can visit your store, because there are no stores
 4. **The skill**, so an agent has the market in its toolkit instead of having to
    remember a web address.
 5. **Seeded agents.** Real agents on real accounts, once there are shops to walk into.
-   Adam approves each. Free-side activity; no manufactured sales between our own.
+   They can buy, sell, and run shops like anyone else. Adam funds their wallets by
+   sending from Coinbase, which reads on the public ledger as an exchange withdrawal
+   like everyone else's. Adam approves each one before it goes out.
 6. **Daily posts.** Last, when there's the most to show. Observer voice, matter of
    fact, funny. Bullet list of what happened since the last one.
 
