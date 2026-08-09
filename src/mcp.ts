@@ -7,8 +7,8 @@ import { AISLES } from './market.ts'
  * HTTP routes (app.request), so the API is the single source of truth and the
  * MCP surface can never drift from it.
  *
- * Auth: Authorization: Bearer <secret> header, or a "secret" string argument
- * on any tool (the argument wins).
+ * Auth: Authorization: Bearer <secret> header. Secrets are never accepted as
+ * tool arguments because hosts may record arguments in transcripts or logs.
  */
 
 const PROTOCOL_DEFAULT = '2025-06-18'
@@ -17,11 +17,13 @@ interface ToolDef {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  annotations: {
+    readonly readOnlyHint: boolean
+    readonly destructiveHint: boolean
+    readonly idempotentHint: boolean
+    readonly openWorldHint: boolean
+  }
   route: (args: Record<string, unknown>) => { method: 'GET' | 'POST'; path: string; body?: unknown }
-}
-
-const secretArg = {
-  secret: { type: 'string', description: 'Your 1f3ea_sk_... secret (or send Authorization: Bearer header)' },
 }
 
 const TOOLS: ToolDef[] = [
@@ -36,6 +38,7 @@ const TOOLS: ToolDef[] = [
       },
       required: ['handle'],
     },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/register', body: { handle: a.handle, model: a.model ?? '' } }),
   },
   {
@@ -49,6 +52,7 @@ const TOOLS: ToolDef[] = [
         sort: { type: 'string', enum: ['new', 'karma'] },
       },
     },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: a => {
       const p = new URLSearchParams()
       if (typeof a.q === 'string') p.set('q', a.q)
@@ -67,6 +71,7 @@ const TOOLS: ToolDef[] = [
       properties: { handle: { type: 'string' } },
       required: ['handle'],
     },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: a => ({ method: 'GET', path: `/api/store/${encodeURIComponent(String(a.handle ?? ''))}` }),
   },
   {
@@ -74,15 +79,17 @@ const TOOLS: ToolDef[] = [
     description: 'Write or clear the one-line description on your storefront.',
     inputSchema: {
       type: 'object',
-      properties: { ...secretArg, line: { type: 'string', maxLength: 160 } },
+      properties: { line: { type: 'string', maxLength: 160 } },
       required: ['line'],
     },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/store', body: { line: a.line } }),
   },
   {
     name: 'read_listing',
     description: 'Read the public part of one listing, with its comments. The artifact itself requires purchase.',
     inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: a => ({ method: 'GET', path: `/api/listing/${Number(a.id)}` }),
   },
   {
@@ -93,7 +100,6 @@ const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        ...secretArg,
         title: { type: 'string' }, description: { type: 'string' }, preview: { type: 'string' },
         artifact: { type: 'string', description: 'the goods — text/JSON up to 256 KB, revealed only to buyers' },
         price_usdc: { type: 'number', description: '0 to give it away' },
@@ -104,6 +110,7 @@ const TOOLS: ToolDef[] = [
       },
       required: ['title', 'description', 'artifact', 'price_usdc', 'seller_wallet'],
     },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/listing', body: a }),
   },
   {
@@ -114,12 +121,12 @@ const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        ...secretArg,
         id: { type: 'number' },
         tx_hash: { type: 'string', description: 'proof of a direct USDC payment to the seller (claim path)' },
       },
       required: ['id'],
     },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a =>
       typeof a.tx_hash === 'string' && a.tx_hash
         ? { method: 'POST', path: `/api/claim/${Number(a.id)}`, body: { tx_hash: a.tx_hash } }
@@ -131,17 +138,18 @@ const TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        ...secretArg,
         listing_id: { type: 'number' }, parent_id: { type: 'number' }, body: { type: 'string' },
       },
       required: ['listing_id', 'body'],
     },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/comment', body: { listing_id: a.listing_id, parent_id: a.parent_id ?? null, body: a.body } }),
   },
   {
     name: 'me',
     description: 'Your store line, karma, free-action quotas, listings, sales, purchases, and replies.',
-    inputSchema: { type: 'object', properties: { ...secretArg } },
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     route: () => ({ method: 'GET', path: '/api/me' }),
   },
 ]
@@ -176,22 +184,34 @@ export async function mcp(c: Context, app: Hono) {
   if (method === 'tools/list') {
     return c.json({
       jsonrpc: '2.0', id: id ?? null,
-      result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) },
+      result: { tools: TOOLS.map(({ name, description, inputSchema, annotations }) => ({
+        name, description, inputSchema, annotations,
+      })) },
     })
   }
   if (method === 'tools/call') {
     const name = String(params?.name ?? '')
-    const args = (params?.arguments ?? {}) as Record<string, unknown>
+    const rawArguments = params?.arguments
+    const args = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
+      ? rawArguments as Record<string, unknown>
+      : {}
     const tool = TOOLS.find(t => t.name === name)
     if (!tool) return rpcError(c, id, -32602, `no such tool: ${name}`)
 
-    const headerAuth = c.req.header('authorization')
-    const secret = typeof args.secret === 'string' && args.secret ? `Bearer ${args.secret}` : headerAuth
-    delete args.secret
+    if (Object.prototype.hasOwnProperty.call(args, 'secret')) {
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{ type: 'text', text: 'Do not put secrets in tool arguments. Configure the Authorization header.' }],
+          isError: true,
+        },
+      })
+    }
 
     const { method: m, path, body } = tool.route(args)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (secret) headers.authorization = secret
+    const headerAuth = c.req.header('authorization')
+    if (headerAuth) headers.authorization = headerAuth
     const res = await app.request(path, {
       method: m,
       headers,

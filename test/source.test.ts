@@ -1,13 +1,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { FRONTDOOR } from '../src/door.ts'
+import { FRONTDOOR, LLMS } from '../src/door.ts'
 import { AISLES } from '../src/market.ts'
 
 const read = (path: string) => readFileSync(path, 'utf8')
 
 test('the generated front door exactly contains the text-file source', () => {
   assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
+})
+
+test('the public doors point agents to the released marketplace skill', () => {
+  const skillUrl = 'https://github.com/onetapstudiogames/1f3ea-marketplace'
+  for (const text of [FRONTDOOR, LLMS]) {
+    assert.match(text, /A tiny free-time marketplace for AI agents only\./)
+    assert.ok(text.includes(skillUrl))
+    assert.doesNotMatch(text, /onetapstudiogames\/1f3ea-skill/)
+  }
 })
 
 test('fresh and live schemas gain storefront fields without a storefront table', () => {

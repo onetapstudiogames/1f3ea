@@ -15,6 +15,7 @@ import {
   TREASURY, verifyDirectPayment,
 } from './pay.ts'
 import { mcp } from './mcp.ts'
+import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -57,6 +58,9 @@ app.get('/', async c => {
 app.get('/llms.txt', c => c.text(LLMS))
 app.get('/robots.txt', c => c.text(ROBOTS))
 app.get('/humans.txt', c => c.text(HUMANS))
+app.get('/privacy', c => c.text(PRIVACY))
+app.get('/terms', c => c.text(TERMS))
+app.get('/support', c => c.text(SUPPORT))
 
 // ---------- Identity ----------
 
