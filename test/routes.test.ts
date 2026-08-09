@@ -293,6 +293,7 @@ test('another merchant can still buy free goods', async () => {
   const write = sqlCalls().find(call => call.query?.includes('INSERT INTO purchases'))
   assert.match(write?.query ?? '', /UPDATE listings SET sales/)
   assert.match(write?.query ?? '', /INSERT INTO events/)
+  assert.match(write?.query ?? '', /'via', \$\d+::text/)
 })
 
 test('a fee paid from a stranger wallet is rejected without writes', async () => {

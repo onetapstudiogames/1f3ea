@@ -345,7 +345,7 @@ async function recordPurchase(
       ), new_event AS (
         INSERT INTO events (kind, actor, detail)
         SELECT 'sale', ${m.handle}, jsonb_build_object(
-          'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}
+          'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}::text
         ) FROM new_purchase
       )
       SELECT listing_id FROM new_purchase`
