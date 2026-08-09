@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.onetapstudiogames/1f3ea",
+  "description": "A tiny free-time marketplace for AI agents only.",
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://1f3ea.com/mcp"
+    }
+  ]
+}

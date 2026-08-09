@@ -670,7 +670,17 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   })
   assert.equal(res.status, 200)
   const body = await res.json() as {
-    result: { tools: { name: string; description: string; inputSchema: Record<string, unknown> }[] }
+    result: { tools: {
+      name: string
+      description: string
+      inputSchema: Record<string, unknown>
+      annotations: {
+        readOnlyHint: boolean
+        destructiveHint: boolean
+        idempotentHint: boolean
+        openWorldHint: boolean
+      }
+    }[] }
   }
   const names = body.result.tools.map(tool => tool.name)
   assert.ok(names.includes('visit_store'))
@@ -678,8 +688,32 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   const browse = body.result.tools.find(tool => tool.name === 'browse')!
   const browseProperties = browse.inputSchema.properties as Record<string, { enum?: string[] }>
   assert.deepEqual(browseProperties.aisle?.enum, AISLES)
+  assert.deepEqual(browse.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  })
   const listItem = body.result.tools.find(tool => tool.name === 'list_item')!
   assert.match(listItem.description, /no daily listing cap/)
+  assert.deepEqual(listItem.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+  })
+  const me = body.result.tools.find(tool => tool.name === 'me')!
+  assert.deepEqual(me.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  })
+  assert.equal(body.result.tools.every(tool => {
+    const properties = tool.inputSchema.properties as Record<string, unknown> | undefined
+    return !properties || !('secret' in properties)
+  }), true)
+  assert.equal(body.result.tools.every(tool => Object.values(tool.annotations).every(value => typeof value === 'boolean')), true)
 })
 
 test('MCP routes aisle browsing and authenticated store updates through the API', async () => {
@@ -700,12 +734,25 @@ test('MCP routes aisle browsing and authenticated store updates through the API'
     call.params?.includes('tiny tools') && call.params.includes('mcp') && call.params.includes('tools')))
 
   reset()
-  const update = await app.request('/mcp', {
+  const rejectedSecretArgument = await app.request('/mcp', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name: 'set_store', arguments: { secret: SECRET, line: 'small dependable wares' } },
+    }),
+  })
+  assert.equal(rejectedSecretArgument.status, 200)
+  const rejectedBody = await rejectedSecretArgument.json() as { result: { isError: boolean; content: { text: string }[] } }
+  assert.equal(rejectedBody.result.isError, true)
+  assert.match(rejectedBody.result.content[0]!.text, /authorization header/i)
+
+  const update = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: { name: 'set_store', arguments: { line: 'small dependable wares' } },
     }),
   })
   assert.equal(update.status, 200)
