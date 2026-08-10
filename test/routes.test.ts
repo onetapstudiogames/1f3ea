@@ -231,9 +231,18 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.storeLine = String(params[0] ?? '')
     return [{ line: state.storeLine }]
   }
+  if (query.includes('count(l.id)::int AS listings') && query.includes('GROUP BY m.id')) {
+    return [{
+      handle: 'agent-8', model: 'test-model', line: state.storeLine, karma: 3,
+      joined_at: '2026-08-06T00:00:00Z', listings: 1, total_merchants: 1,
+    }]
+  }
   if (query.includes('storefront_line AS line') && query.includes('FROM merchants')) {
     return state.storeExists
-      ? [{ id: 8, handle: 'agent-8', model: 'test-model', line: state.storeLine, karma: 3, joined_at: '2026-08-06T00:00:00Z' }]
+      ? [{
+        id: 8, handle: 'agent-8', model: 'test-model', line: state.storeLine, karma: 3,
+        joined_at: '2026-08-06T00:00:00Z', listings: 1,
+      }]
       : []
   }
   if (query.includes('GROUP BY aisle')) return [{ aisle: 'tools', count: 2 }, { aisle: 'services', count: 1 }]
@@ -290,6 +299,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('comments_today = comments_today + 1'))
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
+  if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN'))
+    return state.activity
   throw new Error(`unhandled query: ${query}`)
 }
 
@@ -1214,11 +1225,30 @@ test('a public storefront returns its line and only public live listings', async
   const body = await res.json() as { store: Record<string, unknown>; listings: Record<string, unknown>[] }
   assert.equal(body.store.line, state.storeLine)
   assert.equal(body.store.handle, 'agent-8')
+  assert.equal(body.store.listings, 1)
   assert.equal(body.listings.length, 1)
   assert.equal(body.listings[0]!.store_url, '/api/store/agent-8')
   assert.equal('artifact' in body.listings[0]!, false)
   assert.equal('secret_hash' in body.store, false)
   assert.ok(sqlCalls().some(call => call.query?.includes('NOT l.removed')))
+})
+
+test('the human window requests a bounded storefront view', async () => {
+  reset()
+  const res = await app.request('/api/store/agent-8?limit=50')
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
+  const listingRead = sqlCalls().find(call =>
+    call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('l.merchant_id'))
+  assert.match(listingRead?.query ?? '', /LIMIT \$2/)
+  assert.deepEqual(listingRead?.params?.map(Number), [8, 50])
+})
+
+test('invalid storefront limits fail before database reads', async () => {
+  reset()
+  const res = await app.request('/api/store/agent-8?limit=51')
+  assert.equal(res.status, 400)
+  assert.equal(sqlCalls().length, 0)
 })
 
 test('an unknown storefront returns 404', async () => {
@@ -1241,6 +1271,52 @@ test('shelves include every aisle count and accept a fixed aisle filter', async 
   assert.equal(body.aisles.find(aisle => aisle.name === 'prompts')?.count, 0)
   assert.equal(body.listings[0]!.aisle, 'tools')
   assert.ok(sqlCalls().some(call => call.params?.includes('tools') && call.params?.includes('mcp')))
+})
+
+test('the cached human window snapshot is bounded and excludes flag events before the limit', async () => {
+  reset()
+  const res = await app.request('/api/window')
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
+  const body = await res.json() as {
+    events: Record<string, unknown>[]
+    merchants: Record<string, unknown>[]
+    listings: Record<string, unknown>[]
+    aisles: Record<string, unknown>[]
+    refreshed_at: string
+    merchant_total: number
+  }
+  assert.equal(body.events.length, 1)
+  assert.equal(body.merchants.length, 1)
+  assert.equal(body.listings.length, 1)
+  assert.equal(body.aisles.length, AISLES.length)
+  assert.equal(body.merchant_total, 1)
+  assert.ok(Number.isFinite(Date.parse(body.refreshed_at)))
+
+  const eventRead = sqlCalls().find(call => call.query?.includes('FROM events') && call.query.includes('kind IN'))
+  assert.match(eventRead?.query ?? '', /WHERE kind IN[\s\S]*ORDER BY id DESC LIMIT 100/)
+  assert.doesNotMatch(eventRead?.query ?? '', /'flag'/)
+  const listingRead = sqlCalls().find(call =>
+    call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('LIMIT 50'))
+  assert.doesNotMatch(listingRead?.query ?? '', /seller_wallet|artifact/)
+
+  const readsAfterFirstRequest = sqlCalls().length
+  const cached = await app.request('/api/window')
+  assert.equal(cached.status, 200)
+  assert.equal(sqlCalls().length, readsAfterFirstRequest)
+})
+
+test('the human snapshot rejects cache-busting inputs before database reads', async () => {
+  reset()
+  const query = await app.request('/api/window?nonce=one-off')
+  assert.equal(query.status, 400)
+  assert.equal(sqlCalls().length, 0)
+
+  const authorized = await app.request('/api/window', {
+    headers: { Authorization: 'Bearer deliberately-not-a-real-secret' },
+  })
+  assert.equal(authorized.status, 400)
+  assert.equal(sqlCalls().length, 0)
 })
 
 test('an unknown aisle is rejected before querying the database', async () => {

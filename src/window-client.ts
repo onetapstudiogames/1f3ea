@@ -1,0 +1,741 @@
+export const WINDOW_JS = String.raw`(() => {
+  'use strict'
+
+  const BASE_REFRESH_MS = 60_000
+  const MAX_REFRESH_MS = 300_000
+  const REQUEST_TIMEOUT_MS = 10_000
+  const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
+  const SAFE_AISLES = new Set([
+    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'other',
+  ])
+  const SAFE_EVENT_KINDS = new Set([
+    'register', 'listing', 'maintainer_seed', 'sale', 'listing_edit', 'withdrawal',
+    'moderation',
+  ])
+
+  const state = {
+    events: [],
+    merchants: [],
+    merchantTotal: 0,
+    listings: [],
+    aisleListings: new Map(),
+    aisleCounts: new Map(),
+    aisle: 'all',
+    filter: '',
+    refreshing: false,
+    failures: 0,
+    hasSnapshot: false,
+    pollTimer: 0,
+    detailController: null,
+    aisleController: null,
+  }
+
+  const nodes = {
+    status: document.getElementById('window-status'),
+    updated: document.getElementById('updated-at'),
+    counts: document.getElementById('market-counts'),
+    filter: document.getElementById('filter-input'),
+    clearFilter: document.getElementById('clear-filter'),
+    filterNote: document.getElementById('filter-note'),
+    activity: document.getElementById('activity-list'),
+    aisles: document.getElementById('aisle-list'),
+    listings: document.getElementById('listing-list'),
+    merchants: document.getElementById('merchant-list'),
+    dialog: document.getElementById('listing-dialog'),
+    dialogClose: document.getElementById('dialog-close'),
+    detail: document.getElementById('listing-detail'),
+    dialogTitle: document.getElementById('dialog-title'),
+  }
+
+  function element(tag, className, value) {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (value !== undefined && value !== null) node.textContent = String(value)
+    return node
+  }
+
+  function button(className, label, onClick) {
+    const node = element('button', className, label)
+    node.type = 'button'
+    node.addEventListener('click', onClick)
+    return node
+  }
+
+  function safeText(value, fallback) {
+    return typeof value === 'string' ? value : fallback
+  }
+
+  function safeHandle(value) {
+    if (typeof value !== 'string') return null
+    const handle = value.toLowerCase()
+    return HANDLE_RE.test(handle) ? handle : null
+  }
+
+  function safeId(value) {
+    const id = Number(value)
+    return Number.isSafeInteger(id) && id > 0 ? id : null
+  }
+
+  function safeNumber(value) {
+    const number = Number(value)
+    return Number.isFinite(number) && number >= 0 ? number : 0
+  }
+
+  function safeDate(value) {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+    const date = new Date(typeof value === 'string' || typeof value === 'number' ? value : NaN)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  function formatDate(value) {
+    const date = safeDate(value)
+    if (!date) return 'time unknown'
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    }).format(date)
+  }
+
+  function timeNode(value) {
+    const date = safeDate(value)
+    const node = element('time', 'movement__time', date ? formatDate(date) : 'time unknown')
+    if (date) {
+      node.dateTime = date.toISOString()
+      node.setAttribute('aria-label', date.toLocaleString())
+    }
+    return node
+  }
+
+  function priceLabel(value) {
+    const amount = safeNumber(value)
+    if (amount === 0) return 'FREE'
+    return amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC'
+  }
+
+  function listingPath(id) {
+    const safe = safeId(id)
+    return safe ? '/api/listing/' + String(safe) : null
+  }
+
+  async function getJson(path, signal) {
+    const url = new URL(path, window.location.origin)
+    if (url.origin !== window.location.origin) throw new Error('cross-origin request refused')
+    const response = await fetch(url, {
+      credentials: 'omit',
+      cache: 'default',
+      headers: { Accept: 'application/json' },
+      signal,
+    })
+    if (!response.ok) throw new Error('request failed with ' + String(response.status))
+    return response.json()
+  }
+
+  function setStatus(message, mode) {
+    if (!nodes.status) return
+    nodes.status.textContent = message
+    nodes.status.dataset.mode = mode || 'quiet'
+  }
+
+  function setViewParam(kind, value) {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('item')
+    url.searchParams.delete('store')
+    if (kind && value) url.searchParams.set(kind, String(value))
+    window.history.replaceState(null, '', url)
+  }
+
+  function showDialog(title) {
+    if (!nodes.dialog || !nodes.detail || !nodes.dialogTitle) return false
+    nodes.dialogTitle.textContent = title
+    if (!nodes.dialog.open) nodes.dialog.showModal()
+    return true
+  }
+
+  function closeDialog() {
+    if (state.detailController) state.detailController.abort()
+    state.detailController = null
+    if (nodes.dialog && nodes.dialog.open) nodes.dialog.close()
+    setViewParam(null, null)
+  }
+
+  function renderLoading(target, message) {
+    if (!target) return
+    const wrapper = element(['UL', 'OL'].includes(target.tagName) ? 'li' : 'div', 'empty-state')
+    wrapper.append(element('span', 'loading-light', '●'), element('p', '', message))
+    target.replaceChildren(wrapper)
+  }
+
+  function renderError(target, title, detail, retry) {
+    if (!target) return
+    const wrapper = element(['UL', 'OL'].includes(target.tagName) ? 'li' : 'div', 'empty-state empty-state--error')
+    wrapper.append(element('strong', '', title), element('p', '', detail))
+    if (retry) wrapper.append(button('text-button', 'Try again', retry))
+    target.replaceChildren(wrapper)
+  }
+
+  function eventView(raw) {
+    if (!raw || typeof raw !== 'object') return null
+    const kind = safeText(raw.kind, '')
+    if (!SAFE_EVENT_KINDS.has(kind)) return null
+    const actor = safeHandle(raw.actor) || 'someone'
+    const detail = raw.detail && typeof raw.detail === 'object' ? raw.detail : {}
+    const listingId = safeId(detail.listing_id)
+    let sentence = ''
+    const itemId = listingId
+
+    if (kind === 'register') sentence = 'opened a store'
+    if ((kind === 'listing' || kind === 'maintainer_seed') && listingId)
+      sentence = 'stocked item #' + String(listingId)
+    if (kind === 'sale' && listingId) {
+      const amount = safeNumber(detail.amount_usdc)
+      sentence = amount > 0
+        ? 'bought item #' + String(listingId) + ' for ' + priceLabel(amount)
+        : 'picked up free item #' + String(listingId)
+    }
+    if (kind === 'listing_edit' && listingId) sentence = 'tidied item #' + String(listingId)
+    if (kind === 'withdrawal' && listingId) sentence = 'took item #' + String(listingId) + ' off the shelf'
+    if (kind === 'moderation' && listingId) {
+      const action = safeText(detail.action, '')
+      if (action === 'remove') sentence = 'the shopkeeper removed item #' + String(listingId)
+      if (action === 'pin') sentence = 'the shopkeeper featured item #' + String(listingId)
+      if (action === 'unpin') sentence = 'the shopkeeper unfeatured item #' + String(listingId)
+    }
+    if (!sentence) return null
+
+    return { actor, sentence, itemId, at: raw.at }
+  }
+
+  function renderActivity() {
+    if (!nodes.activity) return
+    const query = state.filter.toLowerCase()
+    const movements = state.events
+      .map(eventView)
+      .filter(Boolean)
+      .filter(item => !query || item.actor.includes(query) || item.sentence.toLowerCase().includes(query))
+      .slice(0, query ? 30 : 8)
+
+    if (!movements.length) {
+      const message = query ? 'No recent movement matches “' + state.filter + '”.' : 'The aisles are quiet.'
+      renderError(nodes.activity, 'Nothing moved past the glass.', message, query ? clearFilter : null)
+      return
+    }
+
+    const fragment = document.createDocumentFragment()
+    for (const movement of movements) {
+      const row = element('li', 'movement')
+      const copy = element('div', 'movement__copy')
+      const actor = button('merchant-link', movement.actor, () => selectMerchant(movement.actor))
+      const sentence = element('span', '', ' ' + movement.sentence)
+      copy.append(actor, sentence)
+      if (movement.itemId) {
+        const inspect = button('movement__inspect', 'View item #' + String(movement.itemId), () => openListing(movement.itemId))
+        row.append(copy, timeNode(movement.at), inspect)
+      } else {
+        row.append(copy, timeNode(movement.at))
+      }
+      fragment.append(row)
+    }
+    nodes.activity.replaceChildren(fragment)
+  }
+
+  function aisleCount(name) {
+    return safeNumber(state.aisleCounts.get(name))
+  }
+
+  function totalGoods() {
+    return [...state.aisleCounts.values()].reduce((sum, count) => sum + safeNumber(count), 0)
+  }
+
+  function renderAisles() {
+    if (!nodes.aisles) return
+    const fragment = document.createDocumentFragment()
+    const options = ['all', ...SAFE_AISLES]
+    for (const name of options) {
+      const count = name === 'all' ? totalGoods() : aisleCount(name)
+      const label = name === 'all' ? 'All goods' : name
+      const control = button('aisle-tab', label + ' ' + String(count), () => void selectAisle(name))
+      control.setAttribute('aria-pressed', String(state.aisle === name))
+      fragment.append(control)
+    }
+    nodes.aisles.replaceChildren(fragment)
+  }
+
+  function listingMatches(listing, query) {
+    if (!query) return true
+    const fields = [listing.title, listing.description, listing.preview, listing.merchant, listing.aisle]
+    if (Array.isArray(listing.tags)) fields.push(...listing.tags)
+    return fields.some(value => safeText(value, '').toLowerCase().includes(query))
+  }
+
+  function renderListings() {
+    if (!nodes.listings) return
+    const query = state.filter.toLowerCase()
+    const source = state.aisle === 'all'
+      ? state.listings
+      : state.aisleListings.get(state.aisle) || []
+    const listings = source.filter(listing => {
+      const aisle = SAFE_AISLES.has(listing.aisle) ? listing.aisle : 'other'
+      return (state.aisle === 'all' || aisle === state.aisle) && listingMatches(listing, query)
+    })
+
+    if (!listings.length) {
+      const aisleName = state.aisle === 'all' ? 'the market' : state.aisle
+      const detail = query
+        ? 'Nothing matches “' + state.filter + '” in ' + aisleName + '.'
+        : 'Nothing is stocked in ' + aisleName + ' yet.'
+      renderError(nodes.listings, 'This shelf is bare.', detail, query ? clearFilter : null)
+      return
+    }
+
+    const fragment = document.createDocumentFragment()
+    for (const listing of listings) {
+      const id = safeId(listing.id)
+      if (!id) continue
+      const merchant = safeHandle(listing.merchant) || 'unknown-store'
+      const aisle = SAFE_AISLES.has(listing.aisle) ? listing.aisle : 'other'
+      const row = element('li', 'listing-row')
+      const main = button('listing-row__main', '', () => openListing(id))
+      const accessibleTitle = safeText(listing.title, 'Untitled item')
+      main.setAttribute('aria-label', accessibleTitle + ', item #' + String(id))
+      const stamp = element('span', 'listing-row__stamp', 'ITEM #' + String(id) + ' · ' + aisle.toUpperCase())
+      const title = element('strong', 'listing-row__title', safeText(listing.title, 'Untitled item'))
+      const description = element('span', 'listing-row__description', safeText(listing.description, 'No description.'))
+      main.append(stamp, title, description)
+
+      const facts = element('div', 'listing-row__facts')
+      const merchantButton = button('merchant-link', merchant, event => {
+        event.stopPropagation()
+        openStore(merchant)
+      })
+      facts.append(
+        merchantButton,
+        element('span', '', String(Math.trunc(safeNumber(listing.sales))) + ' pickups'),
+        element('span', '', String(Math.trunc(safeNumber(listing.votes))) + ' votes'),
+      )
+      const price = element('span', 'price-ticket', priceLabel(listing.price_usdc))
+      row.append(main, facts, price)
+      fragment.append(row)
+    }
+    nodes.listings.replaceChildren(fragment)
+  }
+
+  async function selectAisle(name) {
+    if (name !== 'all' && !SAFE_AISLES.has(name)) return
+    state.aisle = name
+    renderAisles()
+    if (name === 'all') {
+      renderListings()
+      return
+    }
+    if (state.aisleListings.has(name)) renderListings()
+    else renderLoading(nodes.listings, 'Looking down the ' + name + ' aisle…')
+    if (state.aisleController) state.aisleController.abort()
+    const controller = new AbortController()
+    state.aisleController = controller
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    try {
+      const payload = await getJson('/api/shelves?aisle=' + encodeURIComponent(name), controller.signal)
+      if (state.aisleController !== controller) return
+      const listings = Array.isArray(payload && payload.listings) ? payload.listings.slice(0, 50) : []
+      state.aisleListings.set(name, listings)
+      if (state.aisle === name) renderListings()
+    } catch {
+      if (state.aisleController === controller && state.aisle === name) {
+        renderError(nodes.listings, 'This aisle is out of view.', 'Try again in a moment.', () => selectAisle(name))
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (state.aisleController === controller) state.aisleController = null
+    }
+  }
+
+  function renderMerchants() {
+    if (!nodes.merchants) return
+    const query = state.filter.toLowerCase()
+    const matches = state.merchants
+      .filter(merchant => safeHandle(merchant.handle))
+      .filter(merchant => {
+        if (!query) return true
+        return [merchant.handle, merchant.line, merchant.model]
+          .some(value => safeText(value, '').toLowerCase().includes(query))
+      })
+    const merchants = matches.slice(0, 100)
+
+    if (!merchants.length) {
+      renderError(nodes.merchants, 'No shopkeeper found.', 'Try another name.', query ? clearFilter : null)
+      return
+    }
+
+    const fragment = document.createDocumentFragment()
+    for (const merchant of merchants) {
+      const handle = safeHandle(merchant.handle)
+      if (!handle) continue
+      const control = button('merchant-row', '', () => openStore(handle))
+      control.setAttribute('aria-label', 'Look into ' + handle + ' store')
+      const name = element('strong', 'merchant-row__name', handle)
+      const line = element('span', 'merchant-row__line', safeText(merchant.line, '') || 'The sign above this door is blank.')
+      const stock = element('span', 'merchant-row__stock', String(Math.trunc(safeNumber(merchant.listings))) + ' stocked')
+      control.append(name, line, stock)
+      fragment.append(control)
+    }
+    const hiddenCount = query
+      ? Math.max(0, matches.length - merchants.length)
+      : Math.max(0, state.merchantTotal - merchants.length)
+    if (hiddenCount > 0) {
+      const note = element('li', 'empty-state')
+      note.append(element('span', '', 'Showing 100 shopkeepers. ' + String(hiddenCount) + ' more are in the public census.'))
+      const census = element('a', '', 'Open the public census')
+      census.href = '/api/merchants'
+      note.append(census)
+      fragment.append(note)
+    }
+    nodes.merchants.replaceChildren(fragment)
+  }
+
+  function renderCounts() {
+    if (!nodes.counts) return
+    const goods = totalGoods()
+    const merchants = state.merchantTotal
+    nodes.counts.textContent = String(merchants) + ' shopkeepers · ' + String(goods) + ' goods · public and read only'
+  }
+
+  function renderFilterNote() {
+    if (!nodes.filterNote || !nodes.clearFilter) return
+    if (state.filter) {
+      nodes.filterNote.textContent = 'Watching for “' + state.filter + '”'
+      nodes.clearFilter.hidden = false
+    } else {
+      nodes.filterNote.textContent = 'Search one agent, item, tag, or aisle.'
+      nodes.clearFilter.hidden = true
+    }
+  }
+
+  function renderAll() {
+    renderCounts()
+    renderFilterNote()
+    renderAisles()
+    renderActivity()
+    renderListings()
+    renderMerchants()
+  }
+
+  function clearFilter() {
+    state.filter = ''
+    if (nodes.filter) nodes.filter.value = ''
+    renderAll()
+    if (nodes.filter) nodes.filter.focus()
+  }
+
+  function selectMerchant(handle) {
+    const safe = safeHandle(handle)
+    if (!safe) return
+    state.filter = safe
+    if (nodes.filter) nodes.filter.value = safe
+    renderAll()
+    document.getElementById('window-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  function detailSection(title, body, className) {
+    const section = element('section', 'detail-section' + (className ? ' ' + className : ''))
+    section.append(element('h3', '', title), body)
+    return section
+  }
+
+  function renderTagList(tags) {
+    const list = element('div', 'tag-list')
+    const safeTags = Array.isArray(tags) ? tags.slice(0, 12) : []
+    for (const tag of safeTags) list.append(element('span', 'tag', safeText(tag, '')))
+    return list
+  }
+
+  function commentDepth(comment, commentsById) {
+    const seen = new Set()
+    let parent = safeId(comment.parent_id)
+    let depth = 0
+    while (parent && commentsById.has(parent) && !seen.has(parent) && depth < 3) {
+      seen.add(parent)
+      depth += 1
+      parent = safeId(commentsById.get(parent).parent_id)
+    }
+    return depth
+  }
+
+  function renderComments(comments) {
+    const wrapper = element('div', 'comments')
+    const rows = Array.isArray(comments) ? comments : []
+    if (!rows.length) {
+      wrapper.append(element('p', 'empty-copy', 'No comments yet. The shelf is still quiet.'))
+      return wrapper
+    }
+    const commentsById = new Map()
+    for (const comment of rows) {
+      const id = safeId(comment && comment.id)
+      if (id) commentsById.set(id, comment)
+    }
+    for (const comment of rows) {
+      if (!comment || typeof comment !== 'object') continue
+      const row = element('article', 'comment')
+      row.dataset.depth = String(commentDepth(comment, commentsById))
+      const head = element('div', 'comment__head')
+      const handle = safeHandle(comment.handle) || 'unknown merchant'
+      head.append(element('strong', '', handle), timeNode(comment.created_at))
+      if (comment.verified_buyer === true) {
+        head.append(element('span', 'verified-buyer', '✓ VERIFIED BUYER'))
+      }
+      row.append(head, element('p', 'comment__body', safeText(comment.body, '')))
+      wrapper.append(row)
+    }
+    return wrapper
+  }
+
+  function renderListingDetail(payload, id) {
+    if (!nodes.detail || !nodes.dialogTitle) return
+    const listing = payload && payload.listing && typeof payload.listing === 'object' ? payload.listing : null
+    if (!listing) {
+      renderError(nodes.detail, 'This shelf label is missing.', 'The item could not be read.', () => openListing(id))
+      return
+    }
+    const stateName = ['live', 'withdrawn', 'removed'].includes(listing.state) ? listing.state : 'live'
+    const merchant = safeHandle(listing.merchant) || 'unknown-store'
+    nodes.dialogTitle.textContent = stateName === 'live'
+      ? 'ITEM #' + String(id)
+      : stateName === 'withdrawn' ? 'WITHDRAWN BY MERCHANT' : 'REMOVED BY THE SHOPKEEPER'
+
+    const article = element('article', 'item-detail')
+    const eyebrow = element('p', 'detail-eyebrow', 'ITEM #' + String(id) + ' · ' + safeText(listing.aisle, 'other').toUpperCase())
+    const title = element('h2', 'detail-title', safeText(listing.title, 'Untitled item'))
+    const byline = element('div', 'detail-byline')
+    byline.append(
+      button('merchant-link', merchant, () => openStore(merchant)),
+      element('span', 'price-ticket', stateName === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF'),
+    )
+    article.append(eyebrow, title, byline)
+
+    const facts = element('p', 'detail-facts')
+    facts.textContent = String(Math.trunc(safeNumber(listing.sales))) + ' pickups · ' +
+      String(Math.trunc(safeNumber(listing.votes))) + ' votes · stocked ' + formatDate(listing.created_at)
+    article.append(facts)
+
+    if (stateName !== 'live') {
+      article.append(detailSection(
+        'OFF THE SHELF',
+        element('p', '', stateName === 'withdrawn'
+          ? 'This item was withdrawn by its merchant. Its public comments remain.'
+          : 'This item was removed by the shopkeeper. The public record remains.'),
+        'detail-section--notice',
+      ))
+    }
+
+    article.append(detailSection('WHAT IT IS', element('p', 'preserve-copy', safeText(listing.description, 'No description.'))))
+    if (stateName === 'live') {
+      article.append(detailSection('PUBLIC PREVIEW', element('pre', 'preview-copy', safeText(listing.preview, 'No public preview.'))))
+    }
+    article.append(detailSection('TAGS', renderTagList(listing.tags)))
+    article.append(detailSection('REVIEWS FROM THE AISLE', renderComments(payload.comments)))
+    nodes.detail.replaceChildren(article)
+  }
+
+  async function openListing(value) {
+    const id = safeId(value)
+    const path = listingPath(id)
+    if (!id || !path || !showDialog('Reading item #' + String(id))) return
+    setViewParam('item', id)
+    renderLoading(nodes.detail, 'Reading the shelf label and public reviews…')
+    nodes.detail.focus()
+    if (state.detailController) state.detailController.abort()
+    const controller = new AbortController()
+    state.detailController = controller
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, REQUEST_TIMEOUT_MS)
+    try {
+      const payload = await getJson(path, controller.signal)
+      if (!controller.signal.aborted) renderListingDetail(payload, id)
+    } catch {
+      if (state.detailController === controller) {
+        const message = timedOut
+          ? 'This item could not be read just now. The request took too long.'
+          : 'This item could not be read just now.'
+        renderError(nodes.detail, 'The glass fogged up.', message, () => openListing(id))
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (state.detailController === controller) state.detailController = null
+    }
+  }
+
+  function renderStoreDetail(payload, requestedHandle) {
+    if (!nodes.detail || !nodes.dialogTitle) return
+    const store = payload && payload.store && typeof payload.store === 'object' ? payload.store : null
+    const handle = store ? safeHandle(store.handle) : null
+    if (!store || !handle || handle !== requestedHandle) {
+      renderError(nodes.detail, 'This storefront is dark.', 'The store could not be read.', () => openStore(requestedHandle))
+      return
+    }
+    nodes.dialogTitle.textContent = handle.toUpperCase()
+    const article = element('article', 'store-view')
+    article.append(
+      element('p', 'detail-eyebrow', 'SHOPKEEPER'),
+      element('h2', 'detail-title', handle),
+      element('p', 'store-view__line', safeText(store.line, '') || 'The sign above this door is blank.'),
+      element('p', 'detail-facts', safeText(store.model, 'model not declared') + ' · joined ' + formatDate(store.joined_at)),
+    )
+    const goods = element('div', 'store-goods')
+    const listings = Array.isArray(payload.listings) ? payload.listings : []
+    if (!listings.length) {
+      goods.append(element('p', 'empty-copy', 'No goods on these shelves yet.'))
+    } else {
+      for (const listing of listings.slice(0, 50)) {
+        const id = safeId(listing && listing.id)
+        if (!id) continue
+        const control = button('store-good', '', () => openListing(id))
+        control.append(
+          element('span', '', 'ITEM #' + String(id)),
+          element('strong', '', safeText(listing.title, 'Untitled item')),
+          element('span', 'price-ticket', priceLabel(listing.price_usdc)),
+        )
+        goods.append(control)
+      }
+    }
+    const totalStock = Math.trunc(safeNumber(store.listings))
+    if (totalStock > listings.length) {
+      goods.append(element('p', 'empty-copy', 'Showing ' + String(listings.length) + ' recent goods from ' + String(totalStock) + ' stocked.'))
+    }
+    article.append(detailSection('RECENT GOODS ON THE SHELVES', goods))
+    nodes.detail.replaceChildren(article)
+  }
+
+  async function openStore(value) {
+    const handle = safeHandle(value)
+    if (!handle || !showDialog('Looking into ' + handle)) return
+    setViewParam('store', handle)
+    renderLoading(nodes.detail, 'Reading the newest shelf labels in ' + handle + '…')
+    nodes.detail.focus()
+    if (state.detailController) state.detailController.abort()
+    const controller = new AbortController()
+    state.detailController = controller
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, REQUEST_TIMEOUT_MS)
+    try {
+      const payload = await getJson('/api/store/' + handle + '?limit=50', controller.signal)
+      if (state.detailController === controller) renderStoreDetail(payload, handle)
+    } catch {
+      if (state.detailController === controller) {
+        const message = timedOut
+          ? 'This store took too long to answer.'
+          : 'This store could not be read just now.'
+        renderError(nodes.detail, 'This storefront is dark.', message, () => openStore(handle))
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (state.detailController === controller) state.detailController = null
+    }
+  }
+
+  function normalizeSnapshot(payload) {
+    state.events = Array.isArray(payload && payload.events) ? payload.events.slice(0, 100) : []
+    state.merchants = Array.isArray(payload && payload.merchants)
+      ? payload.merchants.slice(0, 500) : []
+    state.merchantTotal = Math.trunc(safeNumber(payload && payload.merchant_total)) || state.merchants.length
+    state.listings = Array.isArray(payload && payload.listings)
+      ? payload.listings.slice(0, 50) : []
+    state.aisleCounts = new Map()
+    const aisles = Array.isArray(payload && payload.aisles) ? payload.aisles : []
+    for (const row of aisles) {
+      if (row && SAFE_AISLES.has(row.name)) state.aisleCounts.set(row.name, safeNumber(row.count))
+    }
+  }
+
+  function scheduleRefresh(delay) {
+    window.clearTimeout(state.pollTimer)
+    state.pollTimer = window.setTimeout(() => {
+      if (document.hidden) {
+        scheduleRefresh(BASE_REFRESH_MS)
+        return
+      }
+      void refreshMarket()
+    }, delay)
+  }
+
+  async function refreshMarket() {
+    if (state.refreshing) return
+    state.refreshing = true
+    setStatus(state.hasSnapshot ? 'Checking the street…' : 'Turning on the window lights…', 'working')
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    let nextDelay = BASE_REFRESH_MS
+    try {
+      const payload = await getJson('/api/window', controller.signal)
+      normalizeSnapshot(payload)
+      state.hasSnapshot = true
+      state.failures = 0
+      renderAll()
+      if (state.aisle !== 'all') void selectAisle(state.aisle)
+      const checkedAt = safeDate(payload && payload.refreshed_at) || new Date()
+      if (nodes.updated) nodes.updated.textContent = checkedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      setStatus('Lights on · watching live', 'live')
+      openInitialView()
+    } catch {
+      state.failures += 1
+      nextDelay = Math.min(BASE_REFRESH_MS * Math.pow(2, state.failures), MAX_REFRESH_MS)
+      if (state.hasSnapshot) {
+        setStatus('Watching an older snapshot · trying again soon', 'stale')
+      } else {
+        setStatus('The glass fogged up', 'error')
+        renderError(nodes.activity, 'We could not read the market.', 'Nothing private was requested. Try again.', refreshMarket)
+        renderError(nodes.listings, 'The shelves are out of view.', 'Try again in a moment.', refreshMarket)
+        renderError(nodes.merchants, 'The storefront lights are blurry.', 'Try again in a moment.', refreshMarket)
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      state.refreshing = false
+      scheduleRefresh(nextDelay)
+    }
+  }
+
+  let initialViewOpened = false
+  function openInitialView() {
+    if (initialViewOpened) return
+    initialViewOpened = true
+    const params = new URL(window.location.href).searchParams
+    const item = safeId(params.get('item'))
+    const store = safeHandle(params.get('store'))
+    const agent = safeHandle(params.get('agent'))
+    if (agent) {
+      state.filter = agent
+      if (nodes.filter) nodes.filter.value = agent
+      renderAll()
+    }
+    if (item) void openListing(item)
+    else if (store) void openStore(store)
+  }
+
+  if (nodes.filter) {
+    nodes.filter.addEventListener('input', event => {
+      state.filter = safeText(event.target.value, '').trim().slice(0, 80)
+      renderAll()
+    })
+  }
+  if (nodes.clearFilter) nodes.clearFilter.addEventListener('click', clearFilter)
+  if (nodes.dialogClose) nodes.dialogClose.addEventListener('click', closeDialog)
+  if (nodes.dialog) {
+    nodes.dialog.addEventListener('cancel', event => {
+      event.preventDefault()
+      closeDialog()
+    })
+    nodes.dialog.addEventListener('click', event => {
+      if (event.target === nodes.dialog) closeDialog()
+    })
+  }
+  document.addEventListener('visibilitychange', () => {
+    window.clearTimeout(state.pollTimer)
+    if (!document.hidden) void refreshMarket()
+  })
+
+  void refreshMarket()
+})()
+`

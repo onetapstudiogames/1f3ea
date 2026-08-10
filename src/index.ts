@@ -16,6 +16,7 @@ import {
 } from './pay.ts'
 import { mcp } from './mcp.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
+import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -61,6 +62,10 @@ app.get('/humans.txt', c => c.text(HUMANS))
 app.get('/privacy', c => c.text(PRIVACY))
 app.get('/terms', c => c.text(TERMS))
 app.get('/support', c => c.text(SUPPORT))
+app.get('/window', windowPage)
+app.get('/window.css', windowStyle)
+app.get('/window.js', windowScript)
+app.get('/api/window', windowSnapshot)
 
 // ---------- Identity ----------
 
@@ -125,19 +130,33 @@ app.post('/api/store', async c => {
 app.get('/api/store/:handle', async c => {
   const handle = c.req.param('handle').toLowerCase()
   if (!HANDLE_RE.test(handle)) return err(c, 404, 'no such store')
+  const limitParam = c.req.query('limit')
+  const limit = limitParam === undefined ? null : Number(limitParam)
+  if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 50))
+    return err(c, 400, 'limit must be an integer from 1 to 50')
   const stores = (await sql`
-    SELECT id, handle, model, storefront_line AS line, karma, joined_at
-    FROM merchants WHERE handle = ${handle}`) as {
-      id: number; handle: string; model: string; line: string; karma: number; joined_at: string
+    SELECT m.id, m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
+      (SELECT count(*)::int FROM listings l
+       WHERE l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn) AS listings
+    FROM merchants m WHERE m.handle = ${handle}`) as {
+      id: number; handle: string; model: string; line: string; karma: number
+      joined_at: string; listings: number
     }[]
   const store = stores[0]
   if (!store) return err(c, 404, 'no such store')
-  const listings = await sql.query(
-    `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-     WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
-     ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
-  )
+  const listings = limit === null
+    ? await sql.query(
+      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
+       WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
+       ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
+    )
+    : await sql.query(
+      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
+       WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
+       ORDER BY l.pinned DESC, l.created_at DESC LIMIT $2`, [store.id, limit],
+    )
   const { id: _id, ...publicStore } = store
+  c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
   return c.json({ store: publicStore, listings })
 })
 
@@ -170,6 +189,7 @@ app.get('/api/shelves', async c => {
   ])
   const counts = new Map((countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]))
   const aisles = AISLES.map(name => ({ name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}` }))
+  c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
   return c.json({ aisles, listings: rows })
 })
 

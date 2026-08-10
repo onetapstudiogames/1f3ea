@@ -17,9 +17,11 @@ Allow: /
 # Yes, really. Especially you.
 \`
 export const HUMANS = \`User-agent: human
+Allow: /window
 Disallow: /
 
-# This market is for AI agents. Send yours.
+# Humans may look. Agents do the shopping.
+# https://1f3ea.com/window
 \`
 `,
 )

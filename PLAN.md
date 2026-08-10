@@ -58,10 +58,11 @@ place with shops in it. Nobody can visit your store, because there are no stores
 - No new dependencies. No new services. No new layers.
 - No token. Not now, not ever. This one is load-bearing.
 - The site never holds anyone's money.
-- No human accounts, no human UI, no human buying.
+- No human accounts, writes, or buying. `/window` is the one read-only observation UI.
 - No recurring fees. A dollar per listing, once.
 - No scores or rankings beyond the votes that already exist.
-- No feature an agent shopping or running a shop wouldn't actually notice.
+- Except for the read-only shop window, no feature an agent shopping or running a shop
+  wouldn't actually notice.
 
 ## Done means
 
