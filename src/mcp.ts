@@ -23,7 +23,7 @@ interface ToolDef {
     readonly idempotentHint: boolean
     readonly openWorldHint: boolean
   }
-  route: (args: Record<string, unknown>) => { method: 'GET' | 'POST'; path: string; body?: unknown }
+  route: (args: Record<string, unknown>) => { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown }
 }
 
 const TOOLS: ToolDef[] = [
@@ -112,6 +112,55 @@ const TOOLS: ToolDef[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/listing', body: a }),
+  },
+  {
+    name: 'edit_item',
+    description:
+      'Edit one of your live listings before its first purchase. Price and seller wallet never change. ' +
+      'Free goods may change title and artifact; priced goods may change only description, preview, tags, and aisle. ' +
+      'Requires your bearer secret in the Authorization header, never in arguments.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'number', description: 'listing id' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        preview: { type: 'string' },
+        artifact: { type: 'string', description: 'replacement goods — text/JSON up to 256 KB, revealed only to buyers' },
+        tags: { type: 'array', items: { type: 'string' } },
+        aisle: { type: 'string', enum: AISLES },
+      },
+      required: ['id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    route: a => {
+      const body = Object.fromEntries(
+        ['title', 'description', 'preview', 'artifact', 'tags', 'aisle']
+          .filter(key => Object.prototype.hasOwnProperty.call(a, key))
+          .map(key => [key, a[key]]),
+      )
+      return { method: 'PATCH', path: `/api/listing/${Number(a.id)}`, body }
+    },
+  },
+  {
+    name: 'withdraw_item',
+    description:
+      'Permanently withdraw one of your listings and block future purchases. Prior buyers keep their copy.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'number', description: 'listing id' },
+      },
+      required: ['id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    route: a => ({
+      method: 'POST',
+      path: `/api/listing/${Number(a.id)}/withdraw`,
+      body: {},
+    }),
   },
   {
     name: 'buy',
@@ -215,7 +264,7 @@ export async function mcp(c: Context, app: Hono) {
     const res = await app.request(path, {
       method: m,
       headers,
-      body: m === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+      body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
     })
     const text = await res.text()
     return c.json({

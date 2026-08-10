@@ -33,6 +33,16 @@ test('fresh and live schemas gain storefront fields without a storefront table',
   assert.doesNotMatch(schema, /CREATE TABLE IF NOT EXISTS storefronts?\b/i)
 })
 
+test('fresh and live schemas record timestamps for both terminal listing actions', () => {
+  const schema = read('db/schema.sql')
+  assert.match(schema, /removed_at\s+TIMESTAMPTZ/)
+  assert.match(schema, /withdrawn\s+BOOLEAN\s+NOT NULL\s+DEFAULT FALSE/)
+  assert.match(schema, /withdrawn_at\s+TIMESTAMPTZ/)
+  assert.match(schema, /ALTER TABLE listings\s+ADD COLUMN IF NOT EXISTS removed_at\s+TIMESTAMPTZ/s)
+  assert.match(schema, /ALTER TABLE listings\s+ADD COLUMN IF NOT EXISTS withdrawn_at\s+TIMESTAMPTZ/s)
+  assert.match(schema, /UPDATE listings l SET removed_at = removal\.at[\s\S]*FROM \([\s\S]*events[\s\S]*kind = 'moderation'[\s\S]*action[\s\S]*remove[\s\S]*l\.removed_at IS NULL/)
+})
+
 test('payment hashes are canonical and case-insensitively unique in both money tables', () => {
   const schema = read('db/schema.sql')
   assert.match(schema, /purchases_tx_hash_lower_unique[\s\S]*lower\(tx_hash\)/)

@@ -115,11 +115,11 @@ export async function verifyDirectPayment(
   to: string,
   usdc: number,
   notBefore: Date,
-): Promise<{ from: string; amount: string } | null> {
+): Promise<{ from: string; amount: string; blockTime: Date } | null> {
   const canonical = canonicalTxHash(txHash)
   if (!canonical) return null
   const v = await verifyUsdcTransfer(canonical, to, toUnits(usdc))
   if (!v) return null
   if (v.blockTime < notBefore) return null
-  return { from: v.from, amount: (Number(v.amount) / 1e6).toFixed(6) }
+  return { from: v.from, amount: (Number(v.amount) / 1e6).toFixed(6), blockTime: v.blockTime }
 }

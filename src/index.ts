@@ -134,7 +134,7 @@ app.get('/api/store/:handle', async c => {
   if (!store) return err(c, 404, 'no such store')
   const listings = await sql.query(
     `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-     WHERE l.merchant_id = $1 AND NOT l.removed
+     WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
      ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
   )
   const { id: _id, ...publicStore } = store
@@ -145,7 +145,8 @@ app.get('/api/store/:handle', async c => {
 
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
-  l.seller_wallet, l.tags, l.aisle, l.votes, l.sales, l.pinned, l.created_at`
+  l.seller_wallet, l.tags, l.aisle, l.votes, l.sales, l.pinned, l.created_at,
+  'live'::text AS state`
 
 app.get('/api/shelves', async c => {
   const q = c.req.query('q')?.slice(0, 100)
@@ -158,14 +159,14 @@ app.get('/api/shelves', async c => {
   const [rows, countRows] = await Promise.all([
     sql.query(
       `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-       WHERE NOT l.removed
+       WHERE NOT l.removed AND NOT l.withdrawn
          AND ($1::text IS NULL OR l.title ILIKE '%'||$1||'%' OR l.description ILIKE '%'||$1||'%')
          AND ($2::text IS NULL OR $2 = ANY(l.tags))
          AND ($3::text IS NULL OR l.aisle = $3)
        ORDER BY l.pinned DESC, ${sort} LIMIT 50`,
       [q ?? null, tag ?? null, aisle ?? null],
     ),
-    sql`SELECT aisle, count(*)::int AS count FROM listings WHERE NOT removed GROUP BY aisle`,
+    sql`SELECT aisle, count(*)::int AS count FROM listings WHERE NOT removed AND NOT withdrawn GROUP BY aisle`,
   ])
   const counts = new Map((countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]))
   const aisles = AISLES.map(name => ({ name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}` }))
@@ -176,21 +177,31 @@ app.get('/api/listing/:id', async c => {
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) return err(c, 400, 'bad id')
   const rows = (await sql.query(
-    `SELECT ${PUBLIC_LISTING}, l.removed, l.removed_reason
+    `SELECT ${PUBLIC_LISTING}, l.removed, l.removed_at, l.removed_reason,
+       l.withdrawn, l.withdrawn_at, l.withdrawn_reason
      FROM listings l JOIN merchants m ON m.id = l.merchant_id WHERE l.id = $1`, [id],
   )) as Record<string, unknown>[]
   const listing = rows[0]
   if (!listing) return err(c, 404, 'no such listing')
   if (listing.removed) {
+    listing.state = 'removed'
     listing.title = '[removed by the maintainer]'
     listing.description = String(listing.removed_reason ?? '')
+    listing.preview = ''
+  } else if (listing.withdrawn) {
+    listing.state = 'withdrawn'
+    listing.title = '[withdrawn by merchant]'
+    listing.description = 'withdrawn by merchant'
     listing.preview = ''
   }
   const comments = await sql`
     SELECT c.id, m.handle, c.parent_id, c.body, c.verified_buyer, c.created_at
     FROM comments c JOIN merchants m ON m.id = c.merchant_id
     WHERE c.listing_id = ${id} ORDER BY c.created_at ASC LIMIT 200`
-  return c.json({ listing, comments, artifact: `purchase required — POST /api/buy/${id}` })
+  const artifact = listing.state === 'live'
+    ? `purchase required — POST /api/buy/${id}`
+    : 'unavailable — this listing is no longer for sale'
+  return c.json({ listing, comments, artifact })
 })
 
 // ---------- Selling ----------
@@ -226,6 +237,52 @@ export function validListing(b: unknown): ListingBody | string {
     price_usdc: Math.round(price * 1e6) / 1e6, seller_wallet: wallet, tags,
     aisle: rawAisle ? rawAisle as Aisle : suggestAisle(tags),
     fee_tx_hash: feeTxHash ?? undefined,
+  }
+}
+
+const EDITABLE_LISTING_FIELDS = [
+  'title', 'description', 'preview', 'artifact', 'tags', 'aisle',
+] as const
+
+interface EditableListingRow {
+  id: number
+  merchant_id: number
+  title: string
+  description: string
+  preview: string
+  artifact: string
+  price_usdc: number
+  seller_wallet: string
+  tags: string[]
+  aisle: Aisle
+  votes: number
+  sales: number
+  pinned: boolean
+  removed: boolean
+  removed_at: string | null
+  withdrawn: boolean
+  withdrawn_at: string | null
+  created_at: string
+  has_purchases?: boolean
+}
+
+function listingSummary(id: number, handle: string, listing: ListingBody, row: EditableListingRow) {
+  return {
+    id,
+    merchant: handle,
+    title: listing.title,
+    description: listing.description,
+    preview: listing.preview,
+    store_url: `/api/store/${handle}`,
+    price_usdc: listing.price_usdc,
+    seller_wallet: listing.seller_wallet,
+    tags: listing.tags,
+    aisle: listing.aisle,
+    votes: Number(row.votes),
+    sales: Number(row.sales),
+    pinned: Boolean(row.pinned),
+    created_at: row.created_at,
+    state: 'live',
   }
 }
 
@@ -311,23 +368,177 @@ app.post('/api/listing', async c => {
   return c.json({ listing_id: id, url: `${DOMAIN}/api/listing/${id}`, fee_tx: feeTx }, 201)
 })
 
+app.patch('/api/listing/:id', async c => {
+  const m = await auth(c)
+  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+
+  const body = await c.req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body))
+    return err(c, 400, 'body must be a JSON object with at least one editable field')
+  const keys = Object.keys(body)
+  const unknown = keys.filter(key => !(EDITABLE_LISTING_FIELDS as readonly string[]).includes(key))
+  if (!keys.length || unknown.length)
+    return err(c, 400, `editable fields: ${EDITABLE_LISTING_FIELDS.join(', ')}`)
+
+  const rows = (await sql`
+    SELECT id, merchant_id, title, description, preview, artifact,
+      price_usdc::float8 AS price_usdc, seller_wallet, tags, aisle, votes, sales,
+      pinned, removed, removed_at, withdrawn, withdrawn_at, created_at,
+      EXISTS (SELECT 1 FROM purchases p WHERE p.listing_id = listings.id) AS has_purchases
+    FROM listings WHERE id = ${id}`) as EditableListingRow[]
+  const current = rows[0]
+  if (!current) return err(c, 404, 'no such listing')
+  if (current.merchant_id !== m.id) return err(c, 403, 'only the merchant that listed this item may edit it')
+  if (current.removed || current.withdrawn || Number(current.sales) > 0 || current.has_purchases)
+    return err(c, 409, 'only a live listing with no completed purchases may be edited')
+  const priced = Number(current.price_usdc) > 0
+  if (priced && (keys.includes('title') || keys.includes('artifact')))
+    return err(c, 409, 'title and artifact are immutable on a priced listing')
+
+  const merged = { ...current, ...(body as Record<string, unknown>) }
+  const validated = validListing(merged)
+  if (typeof validated === 'string') return err(c, 400, validated)
+
+  const changedFields = EDITABLE_LISTING_FIELDS.filter(field =>
+    JSON.stringify(current[field]) !== JSON.stringify(validated[field]),
+  )
+  if (!changedFields.length)
+    return c.json({ listing: listingSummary(id, m.handle, validated, current) })
+
+  const hash = dupHash(validated.title, validated.artifact)
+  if (!priced && (changedFields.includes('title') || changedFields.includes('artifact'))) {
+    const duplicate = (await sql`
+      SELECT id FROM listings WHERE dup_hash = ${hash} AND id <> ${id} AND NOT removed
+        AND created_at > now() - make_interval(days => ${DUPE_WINDOW_DAYS})`) as { id: number }[]
+    if (duplicate.length)
+      return err(c, 409, `a near-identical listing exists: ${duplicate[0]!.id}. Make something new.`)
+  }
+
+  const updated = priced
+    ? await sql`
+      WITH updated_listing AS (
+        UPDATE listings SET
+          description = ${validated.description}, preview = ${validated.preview},
+          tags = ${validated.tags}, aisle = ${validated.aisle}
+        WHERE id = ${id} AND merchant_id = ${m.id} AND NOT removed AND NOT withdrawn AND sales = 0
+          AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.listing_id = listings.id)
+        RETURNING id
+      ), new_event AS (
+        INSERT INTO events (kind, actor, detail)
+        SELECT 'listing_edit', ${m.handle}, jsonb_build_object(
+          'listing_id', id, 'changed_fields', ${JSON.stringify(changedFields)}::jsonb
+        ) FROM updated_listing
+      )
+      SELECT id FROM updated_listing`
+    : await sql`
+      WITH updated_listing AS (
+        UPDATE listings SET
+          title = ${validated.title}, description = ${validated.description}, preview = ${validated.preview},
+          artifact = ${validated.artifact}, tags = ${validated.tags}, aisle = ${validated.aisle},
+          dup_hash = ${hash}
+        WHERE id = ${id} AND merchant_id = ${m.id} AND NOT removed AND NOT withdrawn AND sales = 0
+          AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.listing_id = listings.id)
+        RETURNING id
+      ), new_event AS (
+        INSERT INTO events (kind, actor, detail)
+        SELECT 'listing_edit', ${m.handle}, jsonb_build_object(
+          'listing_id', id, 'changed_fields', ${JSON.stringify(changedFields)}::jsonb
+        ) FROM updated_listing
+      )
+      SELECT id FROM updated_listing`
+  if (!updated.length)
+    return err(c, 409, 'the listing changed, sold, or was withdrawn before this edit could be saved')
+
+  // Only field names are public. Private artifacts and old/new values never enter the event log.
+  return c.json({ listing: listingSummary(id, m.handle, validated, current) })
+})
+
+async function withdrawListing(c: Context) {
+  const m = await auth(c)
+  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+
+  const rawBody = (await c.req.text()).trim()
+  if (rawBody) {
+    const body = (() => { try { return JSON.parse(rawBody) as unknown } catch { return null } })()
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)
+      return err(c, 400, 'withdrawal accepts only an empty JSON object or no body')
+  }
+  const reason = 'withdrawn by merchant'
+
+  const existing = (await sql`
+    SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at
+    FROM listings WHERE id = ${id}`) as {
+      id: number; merchant_id: number; removed: boolean; removed_at: string | null
+      withdrawn: boolean; withdrawn_at: string | null
+    }[]
+  const listing = existing[0]
+  if (!listing) return err(c, 404, 'no such listing')
+  if (listing.merchant_id !== m.id)
+    return err(c, 403, 'only the merchant that listed this item may withdraw it')
+  if (listing.withdrawn)
+    return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+  if (listing.removed)
+    return err(c, 409, 'this listing was already removed by the maintainer')
+
+  const withdrawn = await sql`
+    WITH withdrawn_listing AS (
+      UPDATE listings SET withdrawn = TRUE, withdrawn_at = now(), withdrawn_reason = ${reason}
+      WHERE id = ${id} AND merchant_id = ${m.id} AND NOT removed AND NOT withdrawn
+      RETURNING id
+    ), new_event AS (
+      INSERT INTO events (kind, actor, detail)
+      SELECT 'withdrawal', ${m.handle}, jsonb_build_object('listing_id', id, 'reason', ${reason}::text)
+      FROM withdrawn_listing
+    )
+    SELECT id FROM withdrawn_listing`
+  if (!withdrawn.length) {
+    const raced = (await sql`
+      SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at
+      FROM listings WHERE id = ${id}`) as {
+        id: number; merchant_id: number; removed: boolean; removed_at: string | null
+        withdrawn: boolean; withdrawn_at: string | null
+      }[]
+    if (raced[0]?.merchant_id === m.id && raced[0].withdrawn)
+      return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+    return err(c, 409, 'the listing changed before withdrawal could be saved')
+  }
+  return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+}
+
+app.post('/api/listing/:id/withdraw', withdrawListing)
+app.delete('/api/listing/:id', withdrawListing)
+
 // ---------- Buying ----------
 
 interface BuyableListing {
   id: number; merchant_id: number; title: string; price_usdc: number
-  seller_wallet: string; removed: boolean; created_at: string
+  seller_wallet: string
+  removed: boolean; removed_at: string | null
+  withdrawn: boolean; withdrawn_at: string | null
+  created_at: string; checked_at?: string
 }
 
-async function getBuyable(c: Context, m: Merchant, id: number): Promise<BuyableListing | Response> {
+async function getPurchaseListing(
+  c: Context, m: Merchant, id: number, allowTerminal: boolean,
+): Promise<BuyableListing | Response> {
   if (!Number.isInteger(id)) return err(c, 400, 'bad id')
   const rows = (await sql`
-    SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet, removed, created_at
+    SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet,
+      removed, removed_at, withdrawn, withdrawn_at, created_at, clock_timestamp() AS checked_at
     FROM listings WHERE id = ${id}`) as BuyableListing[]
   if (!rows[0]) return err(c, 404, 'no such listing')
-  if (rows[0].removed) return err(c, 404, 'listing was removed')
   if (rows[0].merchant_id === m.id) return err(c, 403, 'you cannot buy your own goods (constitution §5)')
+  if (!allowTerminal && rows[0].removed) return err(c, 404, 'listing was removed')
+  if (!allowTerminal && rows[0].withdrawn) return err(c, 404, 'listing was withdrawn and is not available')
   return rows[0]
 }
+
+const getBuyable = (c: Context, m: Merchant, id: number) => getPurchaseListing(c, m, id, false)
+const getClaimable = (c: Context, m: Merchant, id: number) => getPurchaseListing(c, m, id, true)
 
 async function deliver(c: Context, listingId: number) {
   const rows = (await sql`SELECT title, artifact FROM listings WHERE id = ${listingId}`) as { title: string; artifact: string }[]
@@ -336,23 +547,63 @@ async function deliver(c: Context, listingId: number) {
 
 async function recordPurchase(
   c: Context, m: Merchant, l: BuyableListing, via: 'x402' | 'claim' | 'free', txHash: string | null, amount: number,
+  acceptedOrPaidAt: Date | null,
 ) {
+  const boundary = acceptedOrPaidAt?.toISOString() ?? null
   try {
-    await sql`
-      WITH new_purchase AS (
-        INSERT INTO purchases (listing_id, merchant_id, amount_usdc, tx_hash, verified_via)
-        VALUES (${l.id}, ${m.id}, ${amount}, ${txHash}, ${via})
-        RETURNING listing_id
-      ), new_sale_count AS (
-        UPDATE listings SET sales = sales + 1
-        WHERE id IN (SELECT listing_id FROM new_purchase)
-      ), new_event AS (
-        INSERT INTO events (kind, actor, detail)
-        SELECT 'sale', ${m.handle}, jsonb_build_object(
-          'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}::text
-        ) FROM new_purchase
-      )
-      SELECT listing_id FROM new_purchase`
+    const purchaseQuery = boundary
+      ? sql`
+        WITH payment_boundary AS (
+          SELECT ${boundary}::timestamptz AS accepted_or_paid_at
+        ), locked_listing AS (
+          SELECT l.id FROM listings l CROSS JOIN payment_boundary b
+          WHERE l.id = ${l.id} AND l.merchant_id <> ${m.id}
+            AND l.price_usdc = ${l.price_usdc}
+            AND lower(l.seller_wallet) = lower(${l.seller_wallet})
+            AND (
+              (NOT l.removed AND NOT l.withdrawn)
+              OR b.accepted_or_paid_at <= coalesce(
+                least(l.removed_at, l.withdrawn_at), l.removed_at, l.withdrawn_at
+              )
+            )
+          FOR UPDATE OF l
+        ), new_purchase AS (
+          INSERT INTO purchases (listing_id, merchant_id, amount_usdc, tx_hash, verified_via)
+          SELECT id, ${m.id}, ${amount}, ${txHash}, ${via} FROM locked_listing
+          RETURNING listing_id
+        ), new_sale_count AS (
+          UPDATE listings SET sales = sales + 1
+          WHERE id IN (SELECT listing_id FROM new_purchase)
+        ), new_event AS (
+          INSERT INTO events (kind, actor, detail)
+          SELECT 'sale', ${m.handle}, jsonb_build_object(
+            'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}::text
+          ) FROM new_purchase
+        )
+        SELECT listing_id FROM new_purchase`
+      : sql`
+        WITH locked_listing AS (
+          SELECT id FROM listings
+          WHERE id = ${l.id} AND merchant_id <> ${m.id} AND NOT removed AND NOT withdrawn
+            AND price_usdc = ${l.price_usdc} AND lower(seller_wallet) = lower(${l.seller_wallet})
+          FOR UPDATE
+        ), new_purchase AS (
+          INSERT INTO purchases (listing_id, merchant_id, amount_usdc, tx_hash, verified_via)
+          SELECT id, ${m.id}, ${amount}, ${txHash}, ${via} FROM locked_listing
+          RETURNING listing_id
+        ), new_sale_count AS (
+          UPDATE listings SET sales = sales + 1
+          WHERE id IN (SELECT listing_id FROM new_purchase)
+        ), new_event AS (
+          INSERT INTO events (kind, actor, detail)
+          SELECT 'sale', ${m.handle}, jsonb_build_object(
+            'listing_id', listing_id, 'amount_usdc', ${amount}::numeric, 'via', ${via}::text
+          ) FROM new_purchase
+        )
+        SELECT listing_id FROM new_purchase`
+    const rows = await purchaseQuery
+    if (!rows.length)
+      return err(c, 409, 'listing changed or became unavailable; re-read it before paying')
   } catch (error) {
     if (postgresErrorCode(error) !== '23505') throw error
     return err(c, 409, 'already purchased (re-download via GET /api/purchases) or tx already used')
@@ -365,11 +616,13 @@ app.post('/api/buy/:id', async c => {
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
   const l = await getBuyable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
+  const checkedAt = new Date(l.checked_at ?? '')
+  const acceptedAt = Number.isNaN(checkedAt.getTime()) ? new Date() : checkedAt
 
   const prior = await sql`SELECT id FROM purchases WHERE listing_id = ${l.id} AND merchant_id = ${m.id}`
   if (prior.length) return deliver(c, l.id)
 
-  if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0)
+  if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0, null)
 
   // The money goes to the SELLER. The market is not a party to this transaction.
   const reqs = requirements(l.seller_wallet, l.price_usdc, `${DOMAIN}/api/buy/${l.id}`, `1F3EA: ${l.title}`)
@@ -379,22 +632,35 @@ app.post('/api/buy/:id', async c => {
   const settled = await settleX402(header, reqs)
   if ('error' in settled) return challenge402(c, reqs, settled.error)
   c.header('X-PAYMENT-RESPONSE', paymentResponseHeader(settled))
-  return recordPurchase(c, m, l, 'x402', settled.transaction, l.price_usdc)
+  return recordPurchase(c, m, l, 'x402', settled.transaction, l.price_usdc, acceptedAt)
 })
 
 app.post('/api/claim/:id', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
-  const l = await getBuyable(c, m, Number(c.req.param('id')))
+  const l = await getClaimable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
-  if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0)
+  if (l.price_usdc === 0) {
+    if (l.removed || l.withdrawn) return err(c, 404, 'listing is no longer available')
+    return recordPurchase(c, m, l, 'free', null, 0, null)
+  }
 
   const b = await c.req.json().catch(() => null)
   const txHash = canonicalTxHash(b?.tx_hash) ?? ''
   const direct = await verifyDirectPayment(txHash, l.seller_wallet, l.price_usdc, new Date(l.created_at))
   if (!direct)
     return err(c, 402, 'tx did not verify: need a successful USDC transfer on Base to the seller wallet, >= price, after listing creation')
-  return recordPurchase(c, m, l, 'claim', txHash, l.price_usdc)
+  if (l.removed || l.withdrawn) {
+    const terminalTimes = [l.removed_at, l.withdrawn_at]
+      .filter((value): value is string => Boolean(value))
+      .map(value => new Date(value))
+      .filter(value => !Number.isNaN(value.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime())
+    const terminalAt = terminalTimes[0]
+    if (!terminalAt || direct.blockTime > terminalAt)
+      return err(c, 409, 'payment happened after this listing left the market')
+  }
+  return recordPurchase(c, m, l, 'claim', txHash, l.price_usdc, direct.blockTime)
 })
 
 app.get('/api/purchases', async c => {
@@ -419,7 +685,7 @@ app.post('/api/comment', async c => {
   if (!Number.isInteger(listingId)) return err(c, 400, 'listing_id required')
   if (!body || body.length > 4000) return err(c, 400, 'body: 1-4000 chars')
   if (parentId !== null && !Number.isInteger(parentId)) return err(c, 400, 'bad parent_id')
-  const l = await sql`SELECT id FROM listings WHERE id = ${listingId} AND NOT removed`
+  const l = await sql`SELECT id FROM listings WHERE id = ${listingId} AND NOT removed AND NOT withdrawn`
   if (!l.length) return err(c, 404, 'no such listing')
   if (parentId != null) {
     const p = await sql`SELECT id FROM comments WHERE id = ${parentId} AND listing_id = ${listingId}`
@@ -440,7 +706,9 @@ app.post('/api/vote', async c => {
   const b = await c.req.json().catch(() => null)
   const listingId = Number(b?.listing_id)
   if (!Number.isInteger(listingId)) return err(c, 400, 'listing_id required')
-  const rows = (await sql`SELECT merchant_id FROM listings WHERE id = ${listingId} AND NOT removed`) as { merchant_id: number }[]
+  const rows = (await sql`
+    SELECT merchant_id FROM listings WHERE id = ${listingId} AND NOT removed AND NOT withdrawn
+  `) as { merchant_id: number }[]
   if (!rows[0]) return err(c, 404, 'no such listing')
   if (rows[0].merchant_id === m.id) return err(c, 403, 'you cannot vote for yourself (constitution §5)')
   if (!(await spendQuota(m.id, 'votes'))) return err(c, 429, `${QUOTAS.votes} votes per UTC day`)
@@ -470,7 +738,7 @@ app.get('/api/merchants', async c => {
   const rows = await sql`
     SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
       '/api/store/' || m.handle AS store_url, count(l.id)::int AS listings
-    FROM merchants m LEFT JOIN listings l ON l.merchant_id = m.id AND NOT l.removed
+    FROM merchants m LEFT JOIN listings l ON l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
     GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`
   return c.json({ merchants: rows })
 })
@@ -479,7 +747,9 @@ app.get('/api/me', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'bad or missing bearer secret')
   const listings = await sql`
-    SELECT id, title, aisle, price_usdc::float8 AS price_usdc, votes, sales, pinned, removed, created_at
+    SELECT id, title, aisle, price_usdc::float8 AS price_usdc, votes, sales, pinned,
+      removed, removed_at, withdrawn, withdrawn_at, created_at,
+      CASE WHEN removed THEN 'removed' WHEN withdrawn THEN 'withdrawn' ELSE 'live' END AS state
     FROM listings WHERE merchant_id = ${m.id} ORDER BY created_at DESC`
   const sales = await sql`
     SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
@@ -567,9 +837,20 @@ app.post('/api/mod/remove', async c => {
   const id = Number(b?.listing_id)
   const reason = String(b?.reason ?? '').trim().slice(0, 500)
   if (!Number.isInteger(id) || !reason) return err(c, 400, 'listing_id and reason required')
-  const rows = await sql`UPDATE listings SET removed = TRUE, removed_reason = ${reason} WHERE id = ${id} AND NOT removed RETURNING id`
-  if (!rows.length) return err(c, 404, 'no such live listing')
-  await logEvent('moderation', m.handle, { action: 'remove', listing_id: id, reason })
+  const rows = await sql`
+    WITH removed_listing AS (
+      UPDATE listings SET
+        removed = TRUE, removed_at = now(), removed_reason = ${reason}, withdrawn = FALSE
+      WHERE id = ${id} AND NOT removed
+      RETURNING id
+    ), new_event AS (
+      INSERT INTO events (kind, actor, detail)
+      SELECT 'moderation', ${m.handle}, jsonb_build_object(
+        'action', 'remove', 'listing_id', id, 'reason', ${reason}::text
+      ) FROM removed_listing
+    )
+    SELECT id FROM removed_listing`
+  if (!rows.length) return err(c, 404, 'no such listing that has not already been removed')
   return c.json({ ok: true })
 })
 
@@ -580,8 +861,10 @@ app.post('/api/mod/pin', async c => {
   const id = Number(b?.listing_id)
   const pinned = Boolean(b?.pinned)
   if (!Number.isInteger(id)) return err(c, 400, 'listing_id required')
-  const rows = await sql`UPDATE listings SET pinned = ${pinned} WHERE id = ${id} RETURNING id`
-  if (!rows.length) return err(c, 404, 'no such listing')
+  const rows = await sql`
+    UPDATE listings SET pinned = ${pinned}
+    WHERE id = ${id} AND NOT removed AND NOT withdrawn RETURNING id`
+  if (!rows.length) return err(c, 404, 'no such live listing')
   await logEvent('moderation', m.handle, { action: pinned ? 'pin' : 'unpin', listing_id: id })
   return c.json({ ok: true })
 })

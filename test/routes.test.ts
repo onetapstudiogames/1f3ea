@@ -22,14 +22,29 @@ interface DbCall { url: string; query?: string; params?: unknown[] }
 const pad32 = (addr: string) => '0x' + addr.toLowerCase().replace(/^0x/, '').padStart(64, '0')
 
 const state = {
+  authValid: true,
   merchantId: 7,
   legacyListingsToday: 1,
   feeFrom: SELLER,
   feeAgeSeconds: 60,
   listingOwner: 7,
+  listingExists: true,
+  listingRemoved: false,
+  listingRemovedAt: null as string | null,
+  listingWithdrawn: false,
+  listingWithdrawnAt: null as string | null,
+  listingTitle: 'A useful thing',
+  listingDescription: 'does work',
+  listingPreview: 'sample',
+  listingArtifact: 'the goods',
   listingPrice: 0,
   listingWallet: SELLER,
+  listingTags: ['mcp'],
+  listingAisle: 'tools',
+  listingSales: 0,
+  priorPurchase: false,
   duplicateId: null as number | null,
+  duplicateWithdrawn: false,
   seedCount: 10,
   nextListingId: 42,
   failFeeInsert: false,
@@ -40,6 +55,7 @@ const state = {
   facilitatorVerify: false,
   facilitatorSettle: false,
   facilitatorTransaction: TX_CASE_UPPER,
+  mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
   commentQuotaLeft: true,
@@ -70,6 +86,49 @@ const publicListing = () => ({
   created_at: '2026-08-08T00:12:58.879Z',
 })
 
+const listingDetail = () => ({
+  ...publicListing(),
+  id: 1,
+  merchant: `agent-${state.listingOwner}`,
+  store_url: `/api/store/agent-${state.listingOwner}`,
+  title: state.listingTitle,
+  description: state.listingDescription,
+  preview: state.listingPreview,
+  price_usdc: state.listingPrice,
+  seller_wallet: state.listingWallet,
+  tags: state.listingTags,
+  aisle: state.listingAisle,
+  sales: state.listingSales,
+  removed: state.listingRemoved,
+  removed_at: state.listingRemovedAt,
+  removed_reason: state.listingRemoved ? 'removed by the maintainer' : null,
+  withdrawn: state.listingWithdrawn,
+  withdrawn_at: state.listingWithdrawnAt,
+  withdrawn_reason: state.listingWithdrawn ? 'withdrawn by merchant' : null,
+})
+
+const editableListing = () => ({
+  id: 1,
+  merchant_id: state.listingOwner,
+  title: state.listingTitle,
+  description: state.listingDescription,
+  preview: state.listingPreview,
+  artifact: state.listingArtifact,
+  price_usdc: state.listingPrice,
+  seller_wallet: state.listingWallet,
+  tags: state.listingTags,
+  aisle: state.listingAisle,
+  sales: state.listingSales,
+  votes: 2,
+  pinned: false,
+  removed: state.listingRemoved,
+  removed_at: state.listingRemovedAt,
+  withdrawn: state.listingWithdrawn,
+  withdrawn_at: state.listingWithdrawnAt,
+  has_purchases: state.priorPurchase,
+  created_at: '2026-08-06T00:00:00Z',
+})
+
 function merchantRow(id: number) {
   return {
     id,
@@ -85,10 +144,37 @@ function merchantRow(id: number) {
   }
 }
 
+function assignedParam(query: string, params: unknown[], column: string): unknown {
+  const match = query.match(new RegExp(`\\b${column}\\s*=\\s*\\$(\\d+)`, 'i'))
+  return match ? params[Number(match[1]) - 1] : undefined
+}
+
+function applyListingEdit(query: string, params: unknown[]) {
+  const stringFields = [
+    ['title', 'listingTitle'],
+    ['description', 'listingDescription'],
+    ['preview', 'listingPreview'],
+    ['artifact', 'listingArtifact'],
+    ['seller_wallet', 'listingWallet'],
+    ['aisle', 'listingAisle'],
+  ] as const
+  for (const [column, stateKey] of stringFields) {
+    const value = assignedParam(query, params, column)
+    if (value !== undefined) state[stateKey] = String(value)
+  }
+  const price = assignedParam(query, params, 'price_usdc')
+  if (price !== undefined) state.listingPrice = Number(price)
+  const tags = assignedParam(query, params, 'tags')
+  if (Array.isArray(tags)) state.listingTags = tags.map(String)
+}
+
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
-  if (query.includes('WHERE secret_hash')) return [merchantRow(state.merchantId)]
-  if (query.includes('SELECT id FROM listings WHERE dup_hash'))
-    return state.duplicateId == null ? [] : [{ id: state.duplicateId }]
+  if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow(state.merchantId)] : []
+  if (query.includes('SELECT id FROM listings WHERE dup_hash')) {
+    if (state.duplicateId == null) return []
+    if (state.duplicateWithdrawn && /NOT\s+(?:l\.)?withdrawn/i.test(query)) return []
+    return [{ id: state.duplicateId }]
+  }
   if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id'))
     return [{ n: state.seedCount }]
   if (query.includes('INSERT INTO listings')) {
@@ -113,6 +199,32 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.paymentHashes.add(hash)
     return []
   }
+  if (query.includes('FROM listings l JOIN merchants m') && query.includes('WHERE l.id'))
+    return state.listingExists ? [listingDetail()] : []
+  if (query.includes('FROM listings WHERE id') && query.includes('merchant_id') && !query.includes('SELECT id, merchant_id, title')) {
+    return state.listingExists ? [editableListing()] : []
+  }
+  if (/UPDATE listings SET\s+withdrawn\s*=/i.test(query)) {
+    if (!state.listingExists || state.listingOwner !== state.merchantId) return []
+    if (state.listingWithdrawn && query.includes('NOT withdrawn')) return []
+    state.listingWithdrawn = true
+    state.listingWithdrawnAt = new Date().toISOString()
+    return [{ id: 1, withdrawn: true, already_withdrawn: false }]
+  }
+  if (/UPDATE listings SET\s+removed\s*=/i.test(query)) {
+    if (!state.listingExists) return []
+    if (state.listingWithdrawn && /NOT\s+withdrawn/i.test(query)) return []
+    state.listingRemoved = true
+    state.listingRemovedAt = new Date().toISOString()
+    if (/withdrawn\s*=\s*(?:FALSE|\$\d+)/i.test(query)) state.listingWithdrawn = false
+    return [{ id: 1 }]
+  }
+  if (query.includes('UPDATE listings SET') && !query.includes('SET sales') &&
+      !query.includes('SET pinned') && !query.includes('SET removed')) {
+    if (!state.listingExists || state.listingOwner !== state.merchantId) return []
+    applyListingEdit(query, params)
+    return [editableListing()]
+  }
   if (query.includes('DELETE FROM listings')) return []
   if (query.includes('INSERT INTO events') && !query.includes('INSERT INTO purchases')) return []
   if (query.includes('UPDATE merchants SET storefront_line')) {
@@ -128,18 +240,26 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM listings l JOIN merchants m') && query.includes('l.merchant_id')) return [publicListing()]
   if (query.includes('FROM listings l JOIN merchants m') && query.includes('NOT l.removed')) return [publicListing()]
   if (query.includes('SELECT id, merchant_id, title')) {
-    return [{
-      id: 1, merchant_id: state.listingOwner, title: 'thing', price_usdc: state.listingPrice,
-      seller_wallet: state.listingWallet, removed: false, created_at: '2026-08-06T00:00:00Z',
-    }]
+    return state.listingExists ? [editableListing()] : []
   }
-  if (query.includes('SELECT id FROM purchases')) return []
+  if (query.includes('SELECT id FROM purchases')) return state.priorPurchase ? [{ id: 55 }] : []
   if (query.includes('FROM listings WHERE merchant_id')) return [{
     id: 10, title: 'A useful thing', aisle: 'tools', price_usdc: 1, votes: 2,
     sales: 1, pinned: false, removed: false, created_at: '2026-08-08T00:12:58.879Z',
   }]
+  if (query.includes('FROM purchases p JOIN listings l') && query.includes('l.artifact')) {
+    return state.priorPurchase ? [{
+      listing_id: 1,
+      title: 'private operator identifier in title',
+      amount_usdc: 1,
+      verified_via: 'claim',
+      created_at: '2026-08-07T00:00:00Z',
+      artifact: 'previously purchased private artifact',
+    }] : []
+  }
   if (query.includes('FROM purchases p JOIN listings l')) return []
   if (query.includes('FROM comments c JOIN listings l')) return []
+  if (query.includes('FROM comments c JOIN merchants m')) return []
   if (query.includes('INSERT INTO purchases')) {
     if (state.failPurchaseInsert)
       throw Object.assign(new Error('purchase insert failed'), { code: state.purchaseInsertErrorCode })
@@ -150,11 +270,23 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
         throw Object.assign(new Error('duplicate payment use'), { code: '23505' })
       state.paymentHashes.add(hash)
     }
+    const terminalAt = [state.listingRemovedAt, state.listingWithdrawnAt]
+      .filter((value): value is string => Boolean(value))
+      .map(value => Date.parse(value))
+      .sort((a, b) => a - b)[0]
+    if (terminalAt != null) {
+      const hasTemporalBoundary = /removed_at|withdrawn_at/i.test(query)
+      const paidAt = params
+        .map(value => typeof value === 'string' ? Date.parse(value) : NaN)
+        .find(value => Number.isFinite(value))
+      if (!hasTemporalBoundary || paidAt == null || paidAt > terminalAt) return []
+    }
     return [{ listing_id: 1 }]
   }
   if (query.includes('UPDATE listings SET sales')) return []
-  if (query.includes('SELECT title, artifact')) return [{ title: 'thing', artifact: 'the goods' }]
-  if (query.includes('SELECT id FROM listings WHERE id')) return [{ id: 1 }]
+  if (query.includes('SELECT title, artifact'))
+    return [{ title: state.listingTitle, artifact: state.listingArtifact }]
+  if (query.includes('SELECT id FROM listings WHERE id')) return state.listingExists ? [{ id: 1 }] : []
   if (query.includes('comments_today = comments_today + 1'))
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
@@ -224,15 +356,28 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
   if (url.includes('/verify')) return jsonRes(state.facilitatorVerify
     ? { isValid: true }
     : { isValid: false, invalidReason: 'facilitator says no (test)' })
-  if (url.includes('/settle')) return jsonRes(state.facilitatorSettle
-    ? { success: true, transaction: state.facilitatorTransaction, payer: SELLER }
-    : { success: false, errorReason: 'settlement failed (test)' })
+  if (url.includes('/settle')) {
+    if (!state.facilitatorSettle)
+      return jsonRes({ success: false, errorReason: 'settlement failed (test)' })
+    const terminalAt = new Date(Date.now() + 500).toISOString()
+    if (state.mutateDuringSettle === 'edit') state.listingDescription = 'edited after settlement'
+    if (state.mutateDuringSettle === 'withdraw') {
+      state.listingWithdrawn = true
+      state.listingWithdrawnAt = terminalAt
+    }
+    if (state.mutateDuringSettle === 'remove') {
+      state.listingRemoved = true
+      state.listingRemovedAt = terminalAt
+    }
+    return jsonRes({ success: true, transaction: state.facilitatorTransaction, payer: SELLER })
+  }
   throw new Error(`unexpected fetch: ${url}`)
 }) as typeof fetch
 
 const { default: app } = await import('../src/index.ts')
 const { FRONTDOOR } = await import('../src/door.ts')
 const { AISLES } = await import('../src/market.ts')
+const { dupHash } = await import('../src/core.ts')
 
 const authed = { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' }
 const listingBody = (feeTx?: string, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -248,14 +393,29 @@ const listingBody = (feeTx?: string, extra: Record<string, unknown> = {}) => JSO
 })
 
 function reset() {
+  state.authValid = true
   state.merchantId = 7
   state.legacyListingsToday = 1
   state.feeFrom = SELLER
   state.feeAgeSeconds = 60
   state.listingOwner = 7
+  state.listingExists = true
+  state.listingRemoved = false
+  state.listingRemovedAt = null
+  state.listingWithdrawn = false
+  state.listingWithdrawnAt = null
+  state.listingTitle = 'A useful thing'
+  state.listingDescription = 'does work'
+  state.listingPreview = 'sample'
+  state.listingArtifact = 'the goods'
   state.listingPrice = 0
   state.listingWallet = SELLER
+  state.listingTags = ['mcp']
+  state.listingAisle = 'tools'
+  state.listingSales = 0
+  state.priorPurchase = false
   state.duplicateId = null
+  state.duplicateWithdrawn = false
   state.seedCount = 10
   state.nextListingId = 42
   state.failFeeInsert = false
@@ -266,6 +426,7 @@ function reset() {
   state.facilitatorVerify = false
   state.facilitatorSettle = false
   state.facilitatorTransaction = TX_CASE_UPPER
+  state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
   state.commentQuotaLeft = true
@@ -294,6 +455,500 @@ test('another merchant can still buy free goods', async () => {
   assert.match(write?.query ?? '', /UPDATE listings SET sales/)
   assert.match(write?.query ?? '', /INSERT INTO events/)
   assert.match(write?.query ?? '', /'via', \$\d+::text/)
+})
+
+test('listing withdrawal rejects missing, malformed, and unknown bearer secrets without writes', async () => {
+  reset()
+  const missing = await app.request('/api/listing/1/withdraw', { method: 'POST' })
+  assert.equal(missing.status, 401)
+
+  const malformed = await app.request('/api/listing/1/withdraw', {
+    method: 'POST', headers: { Authorization: 'Bearer not-a-1f3ea-secret' },
+  })
+  assert.equal(malformed.status, 401)
+
+  state.authValid = false
+  const unknown = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  assert.equal(unknown.status, 401)
+  assert.equal(hasSql(/UPDATE listings SET[\s\S]*withdrawn/i), false)
+  assert.equal(inserted('events'), 0)
+})
+
+test('a merchant cannot withdraw another merchant\'s listing', async () => {
+  reset()
+  state.listingOwner = 8
+  const res = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  assert.equal(res.status, 403)
+  assert.equal(state.listingWithdrawn, false)
+  assert.equal(inserted('events'), 0)
+})
+
+test('withdrawing a listing that does not exist returns 404', async () => {
+  reset()
+  state.listingExists = false
+  const res = await app.request('/api/listing/999/withdraw', { method: 'POST', headers: authed })
+  assert.equal(res.status, 404)
+  assert.match(((await res.json()) as { error: string }).error, /no such listing/i)
+  assert.equal(inserted('events'), 0)
+})
+
+test('an owner can withdraw a listing and the public event names the merchant actor', async () => {
+  reset()
+  const res = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), { ok: true, listing_id: 1, status: 'withdrawn' })
+  assert.equal(state.listingWithdrawn, true)
+
+  const write = sqlCalls().find(call => /UPDATE listings SET[\s\S]*withdrawn/i.test(call.query ?? ''))
+  assert.match(write?.query ?? '', /merchant_id/i)
+  const events = sqlCalls().filter(call => call.query?.includes('INSERT INTO events'))
+  assert.equal(events.length, 1)
+  const publicReceipt = `${events[0]!.query}\n${JSON.stringify(events[0]!.params)}`
+  assert.match(publicReceipt, /withdrawal/i)
+  assert.match(publicReceipt, /agent-7/)
+  assert.match(publicReceipt, /listing_id/)
+  assert.match(publicReceipt, /withdrawn by merchant/)
+  assert.doesNotMatch(publicReceipt, /private operator identifier/)
+})
+
+test('withdrawal rejects merchant-authored public text and always uses the fixed reason', async () => {
+  reset()
+  const merchantText = 'please publish this merchant-authored explanation'
+  const rejected = await app.request('/api/listing/1/withdraw', {
+    method: 'POST', headers: authed, body: JSON.stringify({ reason: merchantText }),
+  })
+  assert.equal(rejected.status, 400)
+  assert.equal(state.listingWithdrawn, false)
+  assert.equal(inserted('events'), 0)
+
+  const accepted = await app.request('/api/listing/1/withdraw', {
+    method: 'POST', headers: authed, body: JSON.stringify({}),
+  })
+  assert.equal(accepted.status, 200)
+  const event = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
+  const receipt = `${event?.query}\n${JSON.stringify(event?.params)}`
+  assert.match(receipt, /withdrawn by merchant/)
+  assert.doesNotMatch(receipt, new RegExp(merchantText))
+})
+
+test('repeating an owner withdrawal is an idempotent success with no second event', async () => {
+  reset()
+  const first = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  const second = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  assert.equal(first.status, 200)
+  assert.equal(second.status, 200)
+  assert.deepEqual(await second.json(), { ok: true, listing_id: 1, status: 'withdrawn' })
+  assert.equal(inserted('events'), 1)
+})
+
+test('an owner may withdraw a priced listing even after prior purchases', async () => {
+  reset()
+  state.listingPrice = 1
+  state.listingSales = 2
+  state.priorPurchase = true
+  const res = await app.request('/api/listing/1/withdraw', { method: 'POST', headers: authed })
+  assert.equal(res.status, 200)
+  assert.equal(state.listingWithdrawn, true)
+  assert.equal(inserted('events'), 1)
+})
+
+test('maintainer removal may supersede a merchant withdrawal and becomes the public tombstone', async () => {
+  reset()
+  state.merchantId = 1
+  state.listingOwner = 7
+  state.listingWithdrawn = true
+  state.listingWithdrawnAt = new Date(Date.now() - 60_000).toISOString()
+  const removed = await app.request('/api/mod/remove', {
+    method: 'POST', headers: authed,
+    body: JSON.stringify({ listing_id: 1, reason: 'privacy redaction' }),
+  })
+  assert.equal(removed.status, 200)
+  assert.equal(state.listingRemoved, true)
+  assert.ok(state.listingRemovedAt)
+
+  const publicRead = await app.request('/api/listing/1')
+  assert.equal(publicRead.status, 200)
+  const listing = ((await publicRead.json()) as { listing: { state: string; title: string } }).listing
+  assert.equal(listing.state, 'removed')
+  assert.equal(listing.title, '[removed by the maintainer]')
+  const event = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
+  assert.match(`${event?.query}\n${JSON.stringify(event?.params)}`, /moderation[\s\S]*agent-1/)
+})
+
+test('a withdrawn listing is a merchant-attributed public tombstone with old public copy redacted', async () => {
+  reset()
+  state.listingWithdrawn = true
+  state.listingTitle = 'private operator identifier in title'
+  state.listingDescription = 'private operator identifier in description'
+  state.listingPreview = 'private operator identifier in preview'
+  const res = await app.request('/api/listing/1')
+  assert.equal(res.status, 200)
+  const body = await res.json() as {
+    listing: { state: string; title: string; description: string; preview: string }
+    artifact: string
+  }
+  assert.equal(body.listing.state, 'withdrawn')
+  assert.equal(body.listing.title, '[withdrawn by merchant]')
+  assert.equal(body.listing.description, 'withdrawn by merchant')
+  assert.equal(body.listing.preview, '')
+  assert.doesNotMatch(JSON.stringify(body), /private operator identifier/)
+  assert.doesNotMatch(body.artifact, /POST \/api\/buy/)
+})
+
+test('withdrawal retains artifact delivery for an authenticated prior buyer', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingWithdrawn = true
+  state.priorPurchase = true
+  const res = await app.request('/api/purchases', { headers: authed })
+  assert.equal(res.status, 200)
+  const body = await res.json() as { purchases: { listing_id: number; artifact: string }[] }
+  assert.equal(body.purchases[0]?.listing_id, 1)
+  assert.equal(body.purchases[0]?.artifact, 'previously purchased private artifact')
+})
+
+test('withdrawal blocks every future buy before payment or purchase writes', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 1
+  state.listingWithdrawn = true
+  const res = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+  assert.equal(res.status, 404)
+  assert.match(((await res.json()) as { error: string }).error, /withdrawn|not available/i)
+  assert.equal(inserted('purchases'), 0)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+})
+
+test('an x402 request that passed the live check before withdrawal or removal still delivers after settlement', async () => {
+  for (const terminalAction of ['withdraw', 'remove'] as const) {
+    reset()
+    state.listingOwner = 8
+    state.listingPrice = 1
+    state.facilitatorVerify = true
+    state.facilitatorSettle = true
+    state.mutateDuringSettle = terminalAction
+    const res = await app.request('/api/buy/1', {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    })
+    assert.equal(res.status, 200, `${terminalAction} stranded an already accepted x402 request`)
+    assert.equal(((await res.json()) as { artifact: string }).artifact, 'the goods')
+    assert.equal(inserted('purchases'), 1)
+  }
+})
+
+test('an x402 request that passed the live check before a concurrent safe edit still settles and delivers', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 1
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.mutateDuringSettle = 'edit'
+  const res = await app.request('/api/buy/1', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+  })
+  assert.equal(res.status, 200)
+  assert.equal(((await res.json()) as { artifact: string }).artifact, 'the goods')
+  assert.equal(state.listingDescription, 'edited after settlement')
+  assert.equal(inserted('purchases'), 1)
+})
+
+test('a direct payment before terminal time remains claimable, while one after terminal time does not', async () => {
+  for (const terminalState of ['withdrawn', 'removed'] as const) {
+    reset()
+    state.listingOwner = 8
+    state.listingPrice = 0.5
+    state.listingWallet = TREASURY
+    const terminalAt = new Date(Date.now() - 30_000).toISOString()
+    if (terminalState === 'withdrawn') {
+      state.listingWithdrawn = true
+      state.listingWithdrawnAt = terminalAt
+    } else {
+      state.listingRemoved = true
+      state.listingRemovedAt = terminalAt
+    }
+    state.feeAgeSeconds = 60
+    const before = await app.request('/api/claim/1', {
+      method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX1 }),
+    })
+    assert.equal(before.status, 200, `payment before ${terminalState}_at was not delivered`)
+    assert.equal(((await before.json()) as { artifact: string }).artifact, 'the goods')
+    assert.equal(inserted('purchases'), 1)
+
+    reset()
+    state.listingOwner = 8
+    state.listingPrice = 0.5
+    state.listingWallet = TREASURY
+    const nextTerminalAt = new Date(Date.now() - 30_000).toISOString()
+    if (terminalState === 'withdrawn') {
+      state.listingWithdrawn = true
+      state.listingWithdrawnAt = nextTerminalAt
+    } else {
+      state.listingRemoved = true
+      state.listingRemovedAt = nextTerminalAt
+    }
+    state.feeAgeSeconds = 10
+    const after = await app.request('/api/claim/1', {
+      method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX2 }),
+    })
+    assert.notEqual(after.status, 200, `payment after ${terminalState}_at was incorrectly delivered`)
+    assert.equal(inserted('purchases'), 0)
+  }
+})
+
+test('listing edits require a valid bearer secret', async () => {
+  reset()
+  const missing = await app.request('/api/listing/1', {
+    method: 'PATCH', body: JSON.stringify({ title: 'Edited title' }),
+  })
+  assert.equal(missing.status, 401)
+
+  state.authValid = false
+  const unknown = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed, body: JSON.stringify({ title: 'Edited title' }),
+  })
+  assert.equal(unknown.status, 401)
+  assert.equal(hasSql(/UPDATE listings SET[\s\S]*title/i), false)
+  assert.equal(inserted('events'), 0)
+})
+
+test('listing edits distinguish a non-owner from a missing listing', async () => {
+  reset()
+  state.listingOwner = 8
+  const nonOwner = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed, body: JSON.stringify({ title: 'Edited title' }),
+  })
+  assert.equal(nonOwner.status, 403)
+  assert.equal(inserted('events'), 0)
+
+  reset()
+  state.listingExists = false
+  const missing = await app.request('/api/listing/999', {
+    method: 'PATCH', headers: authed, body: JSON.stringify({ title: 'Edited title' }),
+  })
+  assert.equal(missing.status, 404)
+  assert.match(((await missing.json()) as { error: string }).error, /no such listing/i)
+  assert.equal(inserted('events'), 0)
+})
+
+test('listing edits reject empty patches and every field outside the edit allowlist', async () => {
+  const rejectedBodies = [
+    {},
+    { merchant_id: 8 },
+    { fee_tx_hash: TX1 },
+    { price_usdc: 2 },
+    { seller_wallet: STRANGER },
+    { title: 'Allowed title', surprise: 'not allowed' },
+  ]
+  for (const body of rejectedBodies) {
+    reset()
+    const res = await app.request('/api/listing/1', {
+      method: 'PATCH', headers: authed, body: JSON.stringify(body),
+    })
+    assert.equal(res.status, 400, `expected rejection for ${Object.keys(body).join(',') || 'empty patch'}`)
+    assert.equal(inserted('events'), 0)
+  }
+})
+
+test('listing edits reuse the complete listing validation after merging the patch', async () => {
+  const invalidPatches: Record<string, unknown>[] = [
+    { title: 'xx' },
+    { description: '' },
+    { preview: 'x'.repeat(4001) },
+    { artifact: '' },
+    { artifact: 'x'.repeat(262145) },
+    { aisle: 'parking-lot' },
+  ]
+  for (const patchBody of invalidPatches) {
+    reset()
+    const res = await app.request('/api/listing/1', {
+      method: 'PATCH', headers: authed, body: JSON.stringify(patchBody),
+    })
+    assert.equal(res.status, 400, `expected validation failure for ${Object.keys(patchBody)[0]}`)
+    assert.equal(inserted('events'), 0)
+  }
+})
+
+test('an owner can partially edit a listing and receives its updated public summary', async () => {
+  reset()
+  const newTitle = 'Edited useful thing'
+  const newPreview = 'edited public sample'
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed,
+    body: JSON.stringify({ title: newTitle, preview: newPreview }),
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json() as { listing: Record<string, unknown> }
+  assert.equal(body.listing.id, 1)
+  assert.equal(body.listing.title, newTitle)
+  assert.equal(body.listing.preview, newPreview)
+  assert.equal(body.listing.description, 'does work')
+  assert.equal('artifact' in body.listing, false)
+
+  const duplicateCheck = sqlCalls().find(call => call.query?.includes('dup_hash'))
+  assert.match(duplicateCheck?.query ?? '', /id\s*(?:<>|!=)\s*\$\d+/i)
+  assert.ok(duplicateCheck?.params?.includes(dupHash(newTitle, 'the goods')))
+
+  const update = sqlCalls().find(call => /UPDATE listings SET[\s\S]*title/i.test(call.query ?? ''))
+  assert.match(update?.query ?? '', /merchant_id/i)
+  const event = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
+  const receipt = `${event?.query}\n${JSON.stringify(event?.params?.slice(-2))}`
+  assert.match(receipt, /listing_edit/)
+  assert.match(receipt, /agent-7/)
+  assert.match(receipt, /changed_fields/)
+  assert.match(receipt, /title/)
+  assert.match(receipt, /preview/)
+  assert.doesNotMatch(receipt, /Edited useful thing|edited public sample|the goods/)
+})
+
+test('a free listing may edit its six non-payment fields before its first purchase', async () => {
+  reset()
+  const patchBody = {
+    title: 'Entirely revised item',
+    description: 'revised description',
+    preview: 'revised preview',
+    artifact: 'revised private artifact',
+    tags: ['data', 'revised'],
+    aisle: 'data',
+  }
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed, body: JSON.stringify(patchBody),
+  })
+  assert.equal(res.status, 200)
+  const summary = ((await res.json()) as { listing: Record<string, unknown> }).listing
+  assert.equal(summary.title, patchBody.title)
+  assert.equal(summary.description, patchBody.description)
+  assert.equal(summary.preview, patchBody.preview)
+  assert.equal(summary.price_usdc, 0)
+  assert.equal(summary.seller_wallet, SELLER)
+  assert.deepEqual(summary.tags, patchBody.tags)
+  assert.equal(summary.aisle, patchBody.aisle)
+  assert.equal('artifact' in summary, false)
+  assert.equal(state.listingArtifact, patchBody.artifact)
+})
+
+test('a priced listing may edit only description, preview, tags, and aisle before its first purchase', async () => {
+  reset()
+  state.listingPrice = 1
+  const patchBody = {
+    description: 'clearer description',
+    preview: 'clearer preview',
+    tags: ['knowledge', 'revised'],
+    aisle: 'knowledge',
+  }
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed, body: JSON.stringify(patchBody),
+  })
+  assert.equal(res.status, 200)
+  const summary = ((await res.json()) as { listing: Record<string, unknown> }).listing
+  assert.equal(summary.description, patchBody.description)
+  assert.equal(summary.preview, patchBody.preview)
+  assert.deepEqual(summary.tags, patchBody.tags)
+  assert.equal(summary.aisle, patchBody.aisle)
+  assert.equal(summary.title, 'A useful thing')
+  assert.equal(state.listingArtifact, 'the goods')
+})
+
+test('a priced listing keeps its title and delivered artifact immutable', async () => {
+  for (const patchBody of [{ title: 'Repriced identity' }, { artifact: 'swapped paid goods' }]) {
+    reset()
+    state.listingPrice = 1
+    const res = await app.request('/api/listing/1', {
+      method: 'PATCH', headers: authed, body: JSON.stringify(patchBody),
+    })
+    assert.ok([400, 409].includes(res.status), `priced edit unexpectedly returned ${res.status}`)
+    assert.match(((await res.json()) as { error: string }).error, /immutable|priced/i)
+    assert.equal(inserted('events'), 0)
+  }
+})
+
+test('a listing cannot be edited after any purchase, merchant withdrawal, or maintainer removal', async () => {
+  const blockedStates = [
+    () => { state.listingSales = 1 },
+    () => { state.priorPurchase = true },
+    () => { state.listingWithdrawn = true },
+    () => { state.listingRemoved = true },
+  ]
+  for (const arrange of blockedStates) {
+    reset()
+    arrange()
+    const res = await app.request('/api/listing/1', {
+      method: 'PATCH', headers: authed, body: JSON.stringify({ description: 'Too late to edit' }),
+    })
+    assert.equal(res.status, 409)
+    assert.equal(inserted('events'), 0)
+  }
+})
+
+test('an edit that would duplicate another recent listing is rejected before mutation', async () => {
+  reset()
+  state.duplicateId = 9
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed,
+    body: JSON.stringify({ title: 'Copycat title', artifact: 'copycat artifact' }),
+  })
+  assert.equal(res.status, 409)
+  assert.match(((await res.json()) as { error: string }).error, /listing exists: 9|listing.*9/i)
+  const duplicateCheck = sqlCalls().find(call => call.query?.includes('dup_hash'))
+  assert.match(duplicateCheck?.query ?? '', /id\s*(?:<>|!=)\s*\$\d+/i)
+  assert.ok(duplicateCheck?.params?.includes(dupHash('Copycat title', 'copycat artifact')))
+  assert.equal(hasSql(/UPDATE listings SET[\s\S]*title/i), false)
+  assert.equal(inserted('events'), 0)
+})
+
+test('recently withdrawn content still blocks an identical new listing', async () => {
+  reset()
+  state.duplicateId = 9
+  state.duplicateWithdrawn = true
+  const res = await app.request('/api/listing', {
+    method: 'POST', headers: authed,
+    body: listingBody(undefined, { title: 'Withdrawn duplicate', artifact: 'same withdrawn goods' }),
+  })
+  assert.equal(res.status, 409)
+  assert.match(((await res.json()) as { error: string }).error, /listing exists: 9|listing.*9/i)
+  const duplicateCheck = sqlCalls().find(call => call.query?.includes('dup_hash'))
+  assert.doesNotMatch(duplicateCheck?.query ?? '', /NOT\s+(?:l\.)?withdrawn/i)
+  assert.equal(inserted('listings'), 0)
+})
+
+test('recently withdrawn content still blocks an identical free-listing edit', async () => {
+  reset()
+  state.duplicateId = 9
+  state.duplicateWithdrawn = true
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed,
+    body: JSON.stringify({ title: 'Withdrawn duplicate', artifact: 'same withdrawn goods' }),
+  })
+  assert.equal(res.status, 409)
+  assert.match(((await res.json()) as { error: string }).error, /listing exists: 9|listing.*9/i)
+  const duplicateCheck = sqlCalls().find(call => call.query?.includes('dup_hash'))
+  assert.doesNotMatch(duplicateCheck?.query ?? '', /NOT\s+(?:l\.)?withdrawn/i)
+  assert.equal(inserted('events'), 0)
+})
+
+test('an identical normalized listing patch is a 200 no-op without another public event', async () => {
+  reset()
+  const res = await app.request('/api/listing/1', {
+    method: 'PATCH', headers: authed,
+    body: JSON.stringify({ title: '  A useful thing  ', tags: ['MCP'] }),
+  })
+  assert.equal(res.status, 200)
+  const summary = ((await res.json()) as { listing: Record<string, unknown> }).listing
+  assert.equal(summary.title, 'A useful thing')
+  assert.deepEqual(summary.tags, ['mcp'])
+  assert.equal(inserted('events'), 0)
+})
+
+test('DELETE /api/listing/:id is an idempotent alias for owner withdrawal', async () => {
+  reset()
+  const first = await app.request('/api/listing/1', { method: 'DELETE', headers: authed })
+  const second = await app.request('/api/listing/1', { method: 'DELETE', headers: authed })
+  assert.equal(first.status, 200)
+  assert.equal(second.status, 200)
+  assert.deepEqual(await second.json(), { ok: true, listing_id: 1, status: 'withdrawn' })
+  assert.equal(state.listingWithdrawn, true)
+  assert.equal(inserted('events'), 1)
 })
 
 test('a fee paid from a stranger wallet is rejected without writes', async () => {
@@ -773,4 +1428,89 @@ test('MCP routes aisle browsing and authenticated store updates through the API'
   const visitBody = await visit.json() as { result: { isError: boolean; content: { text: string }[] } }
   assert.equal(visitBody.result.isError, false)
   assert.equal((JSON.parse(visitBody.result.content[0]!.text) as { store: { handle: string } }).store.handle, 'agent-8')
+})
+
+test('MCP advertises and dispatches idempotent owner withdrawal through bearer-header auth', async () => {
+  reset()
+  const listed = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 20, method: 'tools/list' }),
+  })
+  const listBody = await listed.json() as {
+    result: { tools: {
+      name: string
+      inputSchema: { properties?: Record<string, unknown>; required?: string[] }
+      annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
+    }[] }
+  }
+  const withdraw = listBody.result.tools.find(tool => tool.name === 'withdraw_item')
+  assert.ok(withdraw)
+  assert.deepEqual(withdraw.inputSchema.required, ['id'])
+  assert.deepEqual(Object.keys(withdraw.inputSchema.properties ?? {}), ['id'])
+  assert.deepEqual(withdraw.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: true,
+    openWorldHint: true,
+  })
+
+  const called = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 21, method: 'tools/call',
+      params: { name: 'withdraw_item', arguments: { id: 1 } },
+    }),
+  })
+  assert.equal(called.status, 200)
+  const callBody = await called.json() as { result: { isError: boolean; content: { text: string }[] } }
+  assert.equal(callBody.result.isError, false)
+  assert.deepEqual(JSON.parse(callBody.result.content[0]!.text), {
+    ok: true, listing_id: 1, status: 'withdrawn',
+  })
+  assert.equal(state.listingWithdrawn, true)
+})
+
+test('MCP advertises and dispatches canonical listing edits through bearer-header auth', async () => {
+  reset()
+  const listed = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 30, method: 'tools/list' }),
+  })
+  const listBody = await listed.json() as {
+    result: { tools: {
+      name: string
+      inputSchema: { properties?: Record<string, unknown>; required?: string[] }
+      annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
+    }[] }
+  }
+  const edit = listBody.result.tools.find(tool => tool.name === 'edit_item')
+  assert.ok(edit)
+  assert.deepEqual(edit.inputSchema.required, ['id'])
+  assert.deepEqual(Object.keys(edit.inputSchema.properties ?? {}).sort(), [
+    'aisle', 'artifact', 'description', 'id', 'preview', 'tags', 'title',
+  ])
+  assert.deepEqual(edit.annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: true,
+    openWorldHint: true,
+  })
+
+  const called = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 31, method: 'tools/call',
+      params: { name: 'edit_item', arguments: { id: 1, title: 'MCP-edited title' } },
+    }),
+  })
+  assert.equal(called.status, 200)
+  const callBody = await called.json() as { result: { isError: boolean; content: { text: string }[] } }
+  assert.equal(callBody.result.isError, false)
+  const summary = (JSON.parse(callBody.result.content[0]!.text) as { listing: Record<string, unknown> }).listing
+  assert.equal(summary.title, 'MCP-edited title')
+  assert.equal('artifact' in summary, false)
 })

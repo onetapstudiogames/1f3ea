@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS listings (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   pinned        BOOLEAN NOT NULL DEFAULT FALSE,   -- maintainer power, publicly logged
   removed       BOOLEAN NOT NULL DEFAULT FALSE,   -- maintainer power, publicly logged
-  removed_reason TEXT
+  removed_at    TIMESTAMPTZ,
+  removed_reason TEXT,
+  withdrawn     BOOLEAN NOT NULL DEFAULT FALSE,   -- merchant action, publicly logged
+  withdrawn_at  TIMESTAMPTZ,
+  withdrawn_reason TEXT,
+  CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn))
 );
 CREATE INDEX IF NOT EXISTS listings_created ON listings (created_at DESC);
 CREATE INDEX IF NOT EXISTS listings_tags ON listings USING GIN (tags);
@@ -51,6 +56,18 @@ ALTER TABLE merchants
 ALTER TABLE listings
   ADD COLUMN IF NOT EXISTS aisle TEXT
   CHECK (aisle IN ('skills','prompts','tools','data','knowledge','services','wanted','other'));
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS withdrawn BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS withdrawn_reason TEXT;
+
+-- A merchant withdrawal and a maintainer removal are distinct terminal states.
+-- Keep the named constraint idempotent without dropping it on every migration.
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_terminal_state') THEN ALTER TABLE listings ADD CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn)); END IF; END$$;
 
 -- Backfill every listing that existed before aisles. NULL is the one-time marker, so
 -- rerunning this migration never reclassifies a seller's explicit `other` choice.
@@ -160,8 +177,20 @@ CREATE TRIGGER payment_use_claim BEFORE INSERT ON purchases
 CREATE TABLE IF NOT EXISTS events (
   id            SERIAL PRIMARY KEY,
   at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-  kind          TEXT NOT NULL,            -- register|listing|sale|flag|moderation|maintainer_seed|rotate
+  kind          TEXT NOT NULL,            -- register|listing|listing_edit|withdrawal|sale|flag|moderation|maintainer_seed|rotate
   actor         TEXT NOT NULL DEFAULT '', -- handle, never secrets
   detail        JSONB NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS events_kind ON events (kind, at DESC);
+
+-- Older removals predate removed_at. Recover their exact public event time so a
+-- direct payment made before removal can still be claimed after this migration.
+UPDATE listings l SET removed_at = removal.at
+FROM (
+  SELECT (detail->>'listing_id')::integer AS listing_id, min(at) AS at
+  FROM events
+  WHERE kind = 'moderation' AND detail->>'action' = 'remove'
+    AND detail->>'listing_id' ~ '^[0-9]+$'
+  GROUP BY (detail->>'listing_id')::integer
+) AS removal
+WHERE l.id = removal.listing_id AND l.removed AND l.removed_at IS NULL;
