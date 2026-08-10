@@ -61,6 +61,12 @@ test('schema migrations run as one transaction', () => {
   assert.doesNotMatch(migrate, /for \(const st of statements\)[\s\S]*await sql\.query/)
 })
 
+test('deployment passes the pulled database environment to either Node runtime', () => {
+  const deploy = read('scripts/deploy.sh')
+  assert.ok(deploy.includes('node --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
+  assert.ok(deploy.includes('node.exe --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
+})
+
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {
   const runtime = [
     'src/core.ts', 'src/index.ts', 'src/mcp.ts', 'src/frontdoor.txt', 'src/llms.txt',

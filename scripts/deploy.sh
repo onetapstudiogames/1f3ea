@@ -51,12 +51,13 @@ JQN() { # JQN <json> <node-expression over `d`>
 }
 RUN_MIGRATE() {
   if node --experimental-strip-types -e "" >/dev/null 2>&1; then
-    npm run migrate
+    node --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts
     return
   fi
 
   if command -v node.exe >/dev/null 2>&1 && node.exe --experimental-strip-types -e "" >/dev/null 2>&1; then
-    node.exe --experimental-strip-types scripts/migrate.ts
+    # WSL does not forward variables sourced in Bash to Windows executables.
+    node.exe --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts
     return
   fi
 
