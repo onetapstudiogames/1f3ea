@@ -49,6 +49,21 @@ PB() { # PB <path> [extra-json] — keys come from the environment, never argv
 JQN() { # JQN <json> <node-expression over `d`>
   node -e 'const d=JSON.parse(process.argv[1]);const v=eval(process.argv[2]);process.stdout.write(v==null?"":String(v))' "$1" "$2"
 }
+RUN_MIGRATE() {
+  if node --experimental-strip-types -e "" >/dev/null 2>&1; then
+    npm run migrate
+    return
+  fi
+
+  if command -v node.exe >/dev/null 2>&1 && node.exe --experimental-strip-types -e "" >/dev/null 2>&1; then
+    node.exe --experimental-strip-types scripts/migrate.ts
+    return
+  fi
+
+  echo "!! Need Node 24+ with --experimental-strip-types for schema migration"
+  echo "   Bash found an older node first, and no compatible node.exe fallback was available."
+  exit 1
+}
 
 echo "== 0. preflight"
 VC whoami >/dev/null || { echo "!! VERCEL_TOKEN rejected"; exit 1; }
@@ -90,7 +105,7 @@ done
 echo "== 4. schema"
 [ -d node_modules ] || npm ci --no-audit --no-fund
 set -a; . "./$ENVFILE"; set +a
-npm run migrate
+RUN_MIGRATE
 
 echo "== 5. deploy"
 DEPLOY_URL=$(VC deploy --prod --yes | tail -1 | tr -d '\r')
