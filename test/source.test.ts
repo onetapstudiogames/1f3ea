@@ -65,6 +65,7 @@ test('deployment passes the pulled database environment to either Node runtime',
   const deploy = read('scripts/deploy.sh')
   assert.ok(deploy.includes('node --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
   assert.ok(deploy.includes('node.exe --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
+  assert.doesNotMatch(deploy, /curl[^\n]*\|\s*head\s+-c/)
 })
 
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {

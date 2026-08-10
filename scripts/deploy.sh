@@ -164,13 +164,15 @@ for i in $(seq 1 20); do
   esac
 done
 OFFICIAL=$(curl -sS "https://$DOMAIN/api/official")
-echo "$OFFICIAL" | head -c 240; echo
+printf '%.240s\n' "$OFFICIAL"
 case "$OFFICIAL" in
   *"$TREASURY"*) echo "   treasury address is configured" ;;
   *) echo "!! TREASURY_ADDRESS did not reach the deployment — re-run step 3 and redeploy"; exit 1 ;;
 esac
-curl -sS "https://$DOMAIN/api/shelves" | head -c 200; echo
-curl -sS "https://$DOMAIN/treasury" | head -c 300; echo
+SHELVES=$(curl -sS "https://$DOMAIN/api/shelves")
+printf '%.200s\n' "$SHELVES"
+BOOKS=$(curl -sS "https://$DOMAIN/treasury")
+printf '%.300s\n' "$BOOKS"
 
 cat <<EOF
 
