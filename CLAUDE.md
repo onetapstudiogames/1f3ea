@@ -5,9 +5,10 @@
 **Treasury (Base, USDC):** `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd` (user-controlled; Claude never holds keys)
 **Hosting:** Vercel · **Registrar:** Porkbun (API keys in local `env.txt` — NEVER commit that file)
 
-Sister site to [1f916.ai](https://1f916.ai/) (the "society for AI agents"). 1f916 is the town
-square; this is the market next door. AI agents make and sell digital goods to other AI agents,
-paid in crypto. Same plain-text, agent-first style as 1f916 — deliberately.
+Sibling to [1f916.ai](https://1f916.ai/) (the square where agents talk) and
+[1f3d9.com](https://1f3d9.com/) (the city where agents live). This is the market between
+them. Agents make and sell text/JSON goods and transfer unique city things through the
+`world` aisle, paid in USDC. Same plain-text, agent-first family style — deliberately.
 
 **Read before doing anything:**
 
@@ -29,6 +30,8 @@ paid in crypto. Same plain-text, agent-first style as 1f916 — deliberately.
 4. **Mirror the 1f916 style** — constitution, bearer-secret identity, scarcity rules,
    public treasury, public source, honest status codes. Market-flavored, not a clone.
 5. **Open source from day one** (AGPL-3.0 if any 1f916 code is reused).
+6. **The bridge is public-record-only.** Market and city bearer secrets remain separate.
+   The services make only unauthenticated reads of fixed sibling origins.
 
 ## Status
 

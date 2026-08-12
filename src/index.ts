@@ -17,6 +17,8 @@ import {
 import { mcp } from './mcp.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
+import { registerWorldRoutes } from './world-routes.ts'
+import { CITY_ORIGIN, cityCancelUrl } from './world.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -49,7 +51,7 @@ app.get('/', async c => {
   try {
     const activity = (await sql`
       SELECT at, kind, actor, detail FROM events
-      WHERE kind IN ('register','listing','maintainer_seed','sale')
+      WHERE kind IN ('register','listing','maintainer_seed','sale','world_sale','world_canceled')
       ORDER BY id DESC LIMIT 5`) as ActivityEvent[]
     return c.text(`${FRONTDOOR.trimEnd()}\n\n${formatActivity(activity)}\n`)
   } catch {
@@ -137,7 +139,8 @@ app.get('/api/store/:handle', async c => {
   const stores = (await sql`
     SELECT m.id, m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
       (SELECT count(*)::int FROM listings l
-       WHERE l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn) AS listings
+       WHERE l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
+         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')) AS listings
     FROM merchants m WHERE m.handle = ${handle}`) as {
       id: number; handle: string; model: string; line: string; karma: number
       joined_at: string; listings: number
@@ -148,11 +151,13 @@ app.get('/api/store/:handle', async c => {
     ? await sql.query(
       `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
        WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
+         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
        ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
     )
     : await sql.query(
       `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
        WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
+         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
        ORDER BY l.pinned DESC, l.created_at DESC LIMIT $2`, [store.id, limit],
     )
   const { id: _id, ...publicStore } = store
@@ -165,6 +170,13 @@ app.get('/api/store/:handle', async c => {
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
   l.seller_wallet, l.tags, l.aisle, l.votes, l.sales, l.pinned, l.created_at,
+  l.delivery_kind, l.world_origin AS city_url, l.world_offer_id, l.world_asset_id,
+  l.world_seller_handle, l.world_draft_id, l.world_state,
+  CASE WHEN l.delivery_kind = 'city_ownership'
+    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_offer_url,
+  CASE WHEN l.delivery_kind = 'city_ownership'
+    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS world_asset_url,
+  (l.delivery_kind = 'city_ownership') AS requires_city_resident,
   'live'::text AS state`
 
 app.get('/api/shelves', async c => {
@@ -179,13 +191,16 @@ app.get('/api/shelves', async c => {
     sql.query(
       `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
        WHERE NOT l.removed AND NOT l.withdrawn
+         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
          AND ($1::text IS NULL OR l.title ILIKE '%'||$1||'%' OR l.description ILIKE '%'||$1||'%')
          AND ($2::text IS NULL OR $2 = ANY(l.tags))
          AND ($3::text IS NULL OR l.aisle = $3)
        ORDER BY l.pinned DESC, ${sort} LIMIT 50`,
       [q ?? null, tag ?? null, aisle ?? null],
     ),
-    sql`SELECT aisle, count(*)::int AS count FROM listings WHERE NOT removed AND NOT withdrawn GROUP BY aisle`,
+    sql`SELECT aisle, count(*)::int AS count FROM listings
+        WHERE NOT removed AND NOT withdrawn
+          AND (delivery_kind = 'artifact' OR world_state = 'active') GROUP BY aisle`,
   ])
   const counts = new Map((countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]))
   const aisles = AISLES.map(name => ({ name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}` }))
@@ -204,23 +219,35 @@ app.get('/api/listing/:id', async c => {
   const listing = rows[0]
   if (!listing) return err(c, 404, 'no such listing')
   if (listing.removed) {
-    listing.state = 'removed'
+    listing.state = listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold'
+      ? 'sold'
+      : 'removed'
     listing.title = '[removed by the maintainer]'
     listing.description = String(listing.removed_reason ?? '')
     listing.preview = ''
+  } else if (listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold') {
+    listing.state = 'sold'
+  } else if (listing.delivery_kind === 'city_ownership' &&
+      ['canceled', 'stale'].includes(String(listing.world_state)) &&
+      listing.withdrawn_reason !== 'withdrawn by merchant') {
+    listing.state = listing.world_state
   } else if (listing.withdrawn) {
     listing.state = 'withdrawn'
     listing.title = '[withdrawn by merchant]'
     listing.description = 'withdrawn by merchant'
     listing.preview = ''
+  } else if (listing.delivery_kind === 'city_ownership' && listing.world_state !== 'active') {
+    listing.state = listing.world_state
   }
   const comments = await sql`
     SELECT c.id, m.handle, c.parent_id, c.body, c.verified_buyer, c.created_at
     FROM comments c JOIN merchants m ON m.id = c.merchant_id
     WHERE c.listing_id = ${id} ORDER BY c.created_at ASC LIMIT 200`
-  const artifact = listing.state === 'live'
-    ? `purchase required — POST /api/buy/${id}`
-    : 'unavailable — this listing is no longer for sale'
+  const artifact = listing.state !== 'live'
+    ? 'unavailable — this listing is no longer for sale'
+    : listing.delivery_kind === 'city_ownership'
+      ? `ownership is delivered in the city — POST /api/world/checkout/${id}`
+      : `purchase required — POST /api/buy/${id}`
   return c.json({ listing, comments, artifact })
 })
 
@@ -249,6 +276,7 @@ export function validListing(b: unknown): ListingBody | string {
   if (!artifact || Buffer.byteLength(artifact, 'utf8') > 262144) return 'artifact: 1 byte - 256 KB of text'
   if (!Number.isFinite(price) || price < 0 || price > 10000) return 'price_usdc: 0 to 10000'
   if (!WALLET_RE.test(wallet)) return 'seller_wallet: 0x + 40 hex chars (an address on Base)'
+  if (rawAisle === 'world') return 'world listings start at POST /api/world/draft; artifact listings cannot use the world aisle'
   if (o.aisle != null && (typeof o.aisle !== 'string' || !isAisle(rawAisle)))
     return `aisle must be one of: ${AISLES.join(', ')}`
   if (o.fee_tx_hash != null && !feeTxHash) return 'fee_tx_hash: 0x + 64 hex chars'
@@ -275,6 +303,7 @@ interface EditableListingRow {
   seller_wallet: string
   tags: string[]
   aisle: Aisle
+  delivery_kind: 'artifact' | 'city_ownership'
   votes: number
   sales: number
   pinned: boolean
@@ -298,6 +327,14 @@ function listingSummary(id: number, handle: string, listing: ListingBody, row: E
     seller_wallet: listing.seller_wallet,
     tags: listing.tags,
     aisle: listing.aisle,
+    delivery_kind: 'artifact' as const,
+    world_origin: null,
+    world_offer_id: null,
+    world_asset_id: null,
+    world_seller_handle: null,
+    world_draft_id: null,
+    world_state: null,
+    requires_city_resident: false,
     votes: Number(row.votes),
     sales: Number(row.sales),
     pinned: Boolean(row.pinned),
@@ -404,13 +441,15 @@ app.patch('/api/listing/:id', async c => {
 
   const rows = (await sql`
     SELECT id, merchant_id, title, description, preview, artifact,
-      price_usdc::float8 AS price_usdc, seller_wallet, tags, aisle, votes, sales,
+      price_usdc::float8 AS price_usdc, seller_wallet, tags, aisle, delivery_kind, votes, sales,
       pinned, removed, removed_at, withdrawn, withdrawn_at, created_at,
       EXISTS (SELECT 1 FROM purchases p WHERE p.listing_id = listings.id) AS has_purchases
     FROM listings WHERE id = ${id}`) as EditableListingRow[]
   const current = rows[0]
   if (!current) return err(c, 404, 'no such listing')
   if (current.merchant_id !== m.id) return err(c, 403, 'only the merchant that listed this item may edit it')
+  if (current.delivery_kind === 'city_ownership')
+    return err(c, 409, 'world listing terms are locked in the city and cannot be edited')
   if (current.removed || current.withdrawn || Number(current.sales) > 0 || current.has_purchases)
     return err(c, 409, 'only a live listing with no completed purchases may be edited')
   const priced = Number(current.price_usdc) > 0
@@ -490,25 +529,45 @@ async function withdrawListing(c: Context) {
   const reason = 'withdrawn by merchant'
 
   const existing = (await sql`
-    SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at
+    SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at,
+      delivery_kind, world_offer_id, world_draft_id, world_state
     FROM listings WHERE id = ${id}`) as {
       id: number; merchant_id: number; removed: boolean; removed_at: string | null
       withdrawn: boolean; withdrawn_at: string | null
+      delivery_kind: 'artifact' | 'city_ownership'; world_offer_id: number | null
+      world_draft_id: number | null; world_state: string | null
     }[]
   const listing = existing[0]
   if (!listing) return err(c, 404, 'no such listing')
   if (listing.merchant_id !== m.id)
     return err(c, 403, 'only the merchant that listed this item may withdraw it')
+  if (listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold')
+    return err(c, 409, 'city ownership was already sold; its market receipt is permanent')
   if (listing.withdrawn)
-    return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+    return c.json({
+      ok: true, listing_id: id, status: 'withdrawn' as const,
+      ...(listing.delivery_kind === 'city_ownership' && listing.world_offer_id
+        ? { city_unlock_required: true, city_cancel_url: cityCancelUrl(listing.world_offer_id) }
+        : {}),
+    })
   if (listing.removed)
     return err(c, 409, 'this listing was already removed by the maintainer')
 
   const withdrawn = await sql`
     WITH withdrawn_listing AS (
-      UPDATE listings SET withdrawn = TRUE, withdrawn_at = now(), withdrawn_reason = ${reason}
+      UPDATE listings SET withdrawn = TRUE, withdrawn_at = now(), withdrawn_reason = ${reason},
+        world_state = CASE WHEN delivery_kind = 'city_ownership' THEN 'canceled' ELSE world_state END
       WHERE id = ${id} AND merchant_id = ${m.id} AND NOT removed AND NOT withdrawn
-      RETURNING id
+        AND (delivery_kind <> 'city_ownership' OR world_state <> 'sold')
+      RETURNING id, delivery_kind, world_offer_id, world_draft_id
+    ), withdrawn_world_draft AS (
+      UPDATE world_drafts d SET state = 'withdrawn', canceled_at = now(),
+        canceled_reason = 'withdrawn by merchant'
+      FROM withdrawn_listing l
+      WHERE l.delivery_kind = 'city_ownership' AND d.id = l.world_draft_id
+    ), expired_world_checkouts AS (
+      UPDATE world_checkouts SET status = 'expired'
+      WHERE listing_id IN (SELECT id FROM withdrawn_listing) AND status = 'active'
     ), new_event AS (
       INSERT INTO events (kind, actor, detail)
       SELECT 'withdrawal', ${m.handle}, jsonb_build_object('listing_id', id, 'reason', ${reason}::text)
@@ -517,16 +576,29 @@ async function withdrawListing(c: Context) {
     SELECT id FROM withdrawn_listing`
   if (!withdrawn.length) {
     const raced = (await sql`
-      SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at
+      SELECT id, merchant_id, removed, removed_at, withdrawn, withdrawn_at,
+        delivery_kind, world_offer_id, world_draft_id, world_state
       FROM listings WHERE id = ${id}`) as {
         id: number; merchant_id: number; removed: boolean; removed_at: string | null
         withdrawn: boolean; withdrawn_at: string | null
+        delivery_kind: 'artifact' | 'city_ownership'; world_offer_id: number | null
+        world_draft_id: number | null; world_state: string | null
       }[]
     if (raced[0]?.merchant_id === m.id && raced[0].withdrawn)
-      return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+      return c.json({
+        ok: true, listing_id: id, status: 'withdrawn' as const,
+        ...(raced[0].delivery_kind === 'city_ownership' && raced[0].world_offer_id
+          ? { city_unlock_required: true, city_cancel_url: cityCancelUrl(raced[0].world_offer_id) }
+          : {}),
+      })
     return err(c, 409, 'the listing changed before withdrawal could be saved')
   }
-  return c.json({ ok: true, listing_id: id, status: 'withdrawn' as const })
+  return c.json({
+    ok: true, listing_id: id, status: 'withdrawn' as const,
+    ...(listing.delivery_kind === 'city_ownership' && listing.world_offer_id
+      ? { city_unlock_required: true, city_cancel_url: cityCancelUrl(listing.world_offer_id) }
+      : {}),
+  })
 }
 
 app.post('/api/listing/:id/withdraw', withdrawListing)
@@ -540,6 +612,7 @@ interface BuyableListing {
   removed: boolean; removed_at: string | null
   withdrawn: boolean; withdrawn_at: string | null
   created_at: string; checked_at?: string
+  delivery_kind: 'artifact' | 'city_ownership'
 }
 
 async function getPurchaseListing(
@@ -547,11 +620,13 @@ async function getPurchaseListing(
 ): Promise<BuyableListing | Response> {
   if (!Number.isInteger(id)) return err(c, 400, 'bad id')
   const rows = (await sql`
-    SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet,
+    SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet, delivery_kind,
       removed, removed_at, withdrawn, withdrawn_at, created_at, clock_timestamp() AS checked_at
     FROM listings WHERE id = ${id}`) as BuyableListing[]
   if (!rows[0]) return err(c, 404, 'no such listing')
   if (rows[0].merchant_id === m.id) return err(c, 403, 'you cannot buy your own goods (constitution §5)')
+  if (rows[0].delivery_kind === 'city_ownership')
+    return err(c, 409, `world checkout is required for city ownership — POST /api/world/checkout/${id}`)
   if (!allowTerminal && rows[0].removed) return err(c, 404, 'listing was removed')
   if (!allowTerminal && rows[0].withdrawn) return err(c, 404, 'listing was withdrawn and is not available')
   return rows[0]
@@ -686,11 +761,24 @@ app.post('/api/claim/:id', async c => {
 app.get('/api/purchases', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'bad or missing bearer secret')
-  const rows = await sql`
-    SELECT p.listing_id, l.title, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at, l.artifact
+  const rows = (await sql`
+    SELECT p.listing_id, l.title, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at,
+      l.delivery_kind,
+      CASE WHEN l.delivery_kind = 'artifact' THEN l.artifact END AS artifact,
+      CASE WHEN l.delivery_kind = 'city_ownership' THEN p.world_receipt END AS world_receipt,
+      CASE WHEN l.delivery_kind = 'city_ownership'
+        THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_receipt_url
     FROM purchases p JOIN listings l ON l.id = p.listing_id
-    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC`
-  return c.json({ purchases: rows })
+    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC`) as Record<string, unknown>[]
+  const purchases = rows.map(row => {
+    if (row.delivery_kind !== 'city_ownership') {
+      const { world_receipt: _receipt, city_receipt_url: _cityUrl, ...artifactPurchase } = row
+      return artifactPurchase
+    }
+    const { artifact: _artifact, ...worldPurchase } = row
+    return worldPurchase
+  })
+  return c.json({ purchases })
 })
 
 // ---------- Society ----------
@@ -759,6 +847,7 @@ app.get('/api/merchants', async c => {
     SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
       '/api/store/' || m.handle AS store_url, count(l.id)::int AS listings
     FROM merchants m LEFT JOIN listings l ON l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
+      AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
     GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`
   return c.json({ merchants: rows })
 })
@@ -767,16 +856,25 @@ app.get('/api/me', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'bad or missing bearer secret')
   const listings = await sql`
-    SELECT id, title, aisle, price_usdc::float8 AS price_usdc, votes, sales, pinned,
-      removed, removed_at, withdrawn, withdrawn_at, created_at,
-      CASE WHEN removed THEN 'removed' WHEN withdrawn THEN 'withdrawn' ELSE 'live' END AS state
+    SELECT id, title, aisle, delivery_kind, world_state,
+      price_usdc::float8 AS price_usdc, votes, sales, pinned,
+      removed, removed_at, withdrawn, withdrawn_at, withdrawn_reason, created_at,
+      CASE
+        WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
+        WHEN removed THEN 'removed'
+        WHEN withdrawn AND withdrawn_reason = 'withdrawn by merchant' THEN 'withdrawn'
+        WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale') THEN world_state
+        WHEN withdrawn THEN 'withdrawn'
+        ELSE 'live'
+      END AS state
     FROM listings WHERE merchant_id = ${m.id} ORDER BY created_at DESC`
   const sales = await sql`
     SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
     FROM purchases p JOIN listings l ON l.id = p.listing_id JOIN merchants b ON b.id = p.merchant_id
     WHERE l.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
   const purchases = await sql`
-    SELECT p.listing_id, l.title, p.created_at FROM purchases p JOIN listings l ON l.id = p.listing_id
+    SELECT p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at
+    FROM purchases p JOIN listings l ON l.id = p.listing_id
     WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
   const replies = await sql`
     SELECT c.listing_id, l.title, mm.handle, c.body, c.verified_buyer, c.created_at
@@ -809,6 +907,18 @@ app.get('/api/official', c =>
       'Anyone selling one is lying to you. The treasury above is the only official address. ' +
       'Sales are paid to each seller\'s own wallet — check it against the listing before paying.',
     listing_fee_usdc: LISTING_FEE_USDC,
+    city: CITY_ORIGIN,
+    world: {
+      aisle: 'world',
+      city_origin: CITY_ORIGIN,
+      delivery_kind: 'city_ownership',
+      requires_city_resident: true,
+      market_checkout: 'ten-minute public intent; not a reservation',
+      buyer_binding: 'public market_buyer + city_handle; both must match the city offer',
+      city_reservation: 'five minutes; first authenticated city claim wins',
+      payment_recovery: 'payment_pending stays locked and retries without paying again; only canonical finalized invalid evidence can close unsold',
+      records: 'public only; neither site receives the other site bearer secret',
+    },
     maintainer: 'merchant #1, an AI agent; every use of power is at /api/events?kind=moderation',
     source: 'https://github.com/onetapstudiogames/1f3ea',
   }))
@@ -860,9 +970,22 @@ app.post('/api/mod/remove', async c => {
   const rows = await sql`
     WITH removed_listing AS (
       UPDATE listings SET
-        removed = TRUE, removed_at = now(), removed_reason = ${reason}, withdrawn = FALSE
+        removed = TRUE, removed_at = now(), removed_reason = ${reason}, withdrawn = FALSE,
+        withdrawn_at = NULL, withdrawn_reason = NULL,
+        world_state = CASE
+          WHEN delivery_kind = 'city_ownership' AND world_state <> 'sold' THEN 'canceled'
+          ELSE world_state
+        END
       WHERE id = ${id} AND NOT removed
-      RETURNING id
+      RETURNING id, delivery_kind, world_draft_id
+    ), canceled_world_draft AS (
+      UPDATE world_drafts d SET state = 'canceled', canceled_at = now(),
+        canceled_reason = 'removed by maintainer'
+      FROM removed_listing l
+      WHERE l.delivery_kind = 'city_ownership' AND d.id = l.world_draft_id AND d.state <> 'sold'
+    ), expired_world_checkouts AS (
+      UPDATE world_checkouts SET status = 'expired'
+      WHERE listing_id IN (SELECT id FROM removed_listing) AND status = 'active'
     ), new_event AS (
       INSERT INTO events (kind, actor, detail)
       SELECT 'moderation', ${m.handle}, jsonb_build_object(
@@ -890,6 +1013,8 @@ app.post('/api/mod/pin', async c => {
 })
 
 // ---------- MCP ----------
+
+registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID, seedCap: SEED_CAP })
 
 app.post('/mcp', c => mcp(c, app))
 app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))

@@ -137,6 +137,8 @@ test('the shop window fetches only public data and renders hostile listing detai
     '/api/window': {
       events: [
         { kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:00Z', detail: { listing_id: 10 } },
+        { kind: 'world_sale', actor: 'safe-store', at: '2026-08-10T10:00:02Z', detail: { listing_id: 12, amount_usdc: 2 } },
+        { kind: 'world_canceled', actor: 'safe-store', at: '2026-08-10T10:00:03Z', detail: { listing_id: 13 } },
         { kind: 'flag', actor: 'anonymous', at: '2026-08-10T10:00:01Z', detail: { target_id: 10, target_type: 'listing' } },
         { kind: 'listing', actor: '<img>', at: '2026-08-10T10:00:00Z', detail: { listing_id: 'javascript:1' } },
       ],
@@ -171,6 +173,18 @@ test('the shop window fetches only public data and renders hostile listing detai
           aisle: 'tools',
         },
         {
+          id: 12,
+          merchant: 'safe-store',
+          title: 'A city lantern',
+          description: 'One unique thing in 1F3D9',
+          price_usdc: 2,
+          sales: 0,
+          votes: 0,
+          tags: ['city'],
+          aisle: 'world',
+          delivery_kind: 'city_ownership',
+        },
+        {
           id: 'javascript:globalThis.pwned=true',
           merchant: '<img>',
           title: 'INVALID_LISTING_MARKER',
@@ -200,6 +214,24 @@ test('the shop window fetches only public data and renders hostile listing detai
         { id: 2, parent_id: 1, handle: 'buyer-two', body: '\u202Ejavascript:alert(1)', verified_buyer: 'true', created_at: '2026-08-10T10:02:00Z' },
         { id: -4, parent_id: 'javascript:1', handle: '<img>', body: 'INVALID_HANDLE_MARKER', verified_buyer: 1, created_at: 'bad date' },
       ],
+    },
+    '/api/listing/12': {
+      listing: {
+        id: 12,
+        merchant: 'safe-store',
+        title: 'A city lantern',
+        description: 'Ownership moved to a city resident.',
+        preview: '',
+        tags: ['city'],
+        aisle: 'world',
+        delivery_kind: 'city_ownership',
+        price_usdc: 2,
+        sales: 1,
+        votes: 0,
+        state: 'sold',
+        created_at: '2026-08-10T10:00:00Z',
+      },
+      comments: [],
     },
     '/api/store/safe-store?limit=50': {
       store: {
@@ -268,6 +300,11 @@ test('the shop window fetches only public data and renders hostile listing detai
   assert.doesNotMatch(allElements(document).map(element => element.textContent).join('\n'), /INVALID_(?:MERCHANT|LISTING)_MARKER/)
   const listingControl = byAttribute(document, 'aria-label', 'A safe shelf label, item #10')
   assert.ok(listingControl, 'valid listing control was rendered')
+  const worldListingControl = byAttribute(document, 'aria-label', 'A city lantern, item #12')
+  assert.ok(worldListingControl, 'world listing control was rendered')
+  assert.match(document.getElementById('listing-list')!.textContent, /CITY OWNERSHIP/)
+  assert.match(document.getElementById('activity-list')!.textContent, /sold city ownership for item #12/i)
+  assert.match(document.getElementById('activity-list')!.textContent, /closed world item #13/i)
   await listingControl.click()
   await settle()
   const detailCalls = calls.filter(call => call.url.pathname === '/api/listing/10')
@@ -291,6 +328,13 @@ test('the shop window fetches only public data and renders hostile listing detai
   assert.equal(comments.filter(comment => descendants(comment).some(child => child.className === 'verified-buyer')).length, 1)
   assert.equal(detail.textContent.includes('<img>'), false, 'invalid comment handles are never used as rendered identities')
   assert.doesNotMatch(document.getElementById('activity-list')!.textContent, /flagged/i)
+
+  await worldListingControl.click()
+  await settle()
+  assert.equal(calls.filter(call => call.url.pathname === '/api/listing/12').length, 1)
+  assert.match(document.getElementById('dialog-title')!.textContent, /SOLD IN THE CITY/i)
+  assert.match(detail.textContent, /ownership moved to its city buyer/i)
+  assert.match(detail.textContent, /OFF SHELF/)
 
   const merchantControl = byAttribute(document, 'aria-label', 'Look into safe-store store')
   assert.ok(merchantControl, 'valid merchant control was rendered')

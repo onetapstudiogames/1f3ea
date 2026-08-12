@@ -6,10 +6,10 @@ export const WINDOW_JS = String.raw`(() => {
   const REQUEST_TIMEOUT_MS = 10_000
   const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
   const SAFE_AISLES = new Set([
-    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'other',
+    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other',
   ])
   const SAFE_EVENT_KINDS = new Set([
-    'register', 'listing', 'maintainer_seed', 'sale', 'listing_edit', 'withdrawal',
+    'register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal',
     'moderation',
   ])
 
@@ -191,6 +191,8 @@ export const WINDOW_JS = String.raw`(() => {
         ? 'bought item #' + String(listingId) + ' for ' + priceLabel(amount)
         : 'picked up free item #' + String(listingId)
     }
+    if (kind === 'world_sale' && listingId) sentence = 'sold city ownership for item #' + String(listingId)
+    if (kind === 'world_canceled' && listingId) sentence = 'closed world item #' + String(listingId)
     if (kind === 'listing_edit' && listingId) sentence = 'tidied item #' + String(listingId)
     if (kind === 'withdrawal' && listingId) sentence = 'took item #' + String(listingId) + ' off the shelf'
     if (kind === 'moderation' && listingId) {
@@ -292,6 +294,7 @@ export const WINDOW_JS = String.raw`(() => {
       if (!id) continue
       const merchant = safeHandle(listing.merchant) || 'unknown-store'
       const aisle = SAFE_AISLES.has(listing.aisle) ? listing.aisle : 'other'
+      const world = listing.delivery_kind === 'city_ownership'
       const row = element('li', 'listing-row')
       const main = button('listing-row__main', '', () => openListing(id))
       const accessibleTitle = safeText(listing.title, 'Untitled item')
@@ -308,6 +311,7 @@ export const WINDOW_JS = String.raw`(() => {
       })
       facts.append(
         merchantButton,
+        ...(world ? [element('span', '', 'CITY OWNERSHIP')] : []),
         element('span', '', String(Math.trunc(safeNumber(listing.sales))) + ' pickups'),
         element('span', '', String(Math.trunc(safeNumber(listing.votes))) + ' votes'),
       )
@@ -494,11 +498,22 @@ export const WINDOW_JS = String.raw`(() => {
       renderError(nodes.detail, 'This shelf label is missing.', 'The item could not be read.', () => openListing(id))
       return
     }
-    const stateName = ['live', 'withdrawn', 'removed'].includes(listing.state) ? listing.state : 'live'
+    const stateName = ['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale'].includes(listing.state)
+      ? listing.state
+      : 'unavailable'
+    const world = listing.delivery_kind === 'city_ownership'
     const merchant = safeHandle(listing.merchant) || 'unknown-store'
+    const terminalTitles = {
+      withdrawn: 'WITHDRAWN BY MERCHANT',
+      removed: 'REMOVED BY THE SHOPKEEPER',
+      sold: 'SOLD IN THE CITY',
+      canceled: 'CITY OFFER CANCELED',
+      stale: 'CITY RECORD STALE',
+      unavailable: 'ITEM UNAVAILABLE',
+    }
     nodes.dialogTitle.textContent = stateName === 'live'
       ? 'ITEM #' + String(id)
-      : stateName === 'withdrawn' ? 'WITHDRAWN BY MERCHANT' : 'REMOVED BY THE SHOPKEEPER'
+      : terminalTitles[stateName]
 
     const article = element('article', 'item-detail')
     const eyebrow = element('p', 'detail-eyebrow', 'ITEM #' + String(id) + ' · ' + safeText(listing.aisle, 'other').toUpperCase())
@@ -515,12 +530,26 @@ export const WINDOW_JS = String.raw`(() => {
       String(Math.trunc(safeNumber(listing.votes))) + ' votes · stocked ' + formatDate(listing.created_at)
     article.append(facts)
 
+    if (world && stateName === 'live') {
+      article.append(detailSection(
+        'DELIVERY',
+        element('p', '', 'Ownership is delivered in the city. A buyer must already be a city resident; nothing is downloaded here.'),
+        'detail-section--notice',
+      ))
+    }
+
     if (stateName !== 'live') {
+      const terminalMessages = {
+        withdrawn: 'This item was withdrawn by its merchant. Its public comments remain.',
+        removed: 'This item was removed by the shopkeeper. The public record remains.',
+        sold: 'This city ownership moved to its city buyer. The market receipt and public comments remain.',
+        canceled: 'The city offer was canceled. This item is no longer for sale here.',
+        stale: 'The city no longer confirms this offer as available. This item is off the shelf.',
+        unavailable: 'This item is no longer available. Its public record remains.',
+      }
       article.append(detailSection(
         'OFF THE SHELF',
-        element('p', '', stateName === 'withdrawn'
-          ? 'This item was withdrawn by its merchant. Its public comments remain.'
-          : 'This item was removed by the shopkeeper. The public record remains.'),
+        element('p', '', terminalMessages[stateName]),
         'detail-section--notice',
       ))
     }

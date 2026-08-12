@@ -71,6 +71,6 @@ export async function spendQuota(merchantId: number, kind: keyof typeof QUOTAS):
   return (rows as unknown[]).length > 0
 }
 
-export function err(c: Context, status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500, message: string) {
+export function err(c: Context, status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500 | 502 | 503, message: string) {
   return c.json({ error: message }, status)
 }

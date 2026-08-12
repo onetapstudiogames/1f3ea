@@ -23,7 +23,7 @@ test('store lines are one short, trimmed line and may be cleared', () => {
 
 test('aisles are fixed and old clients get a useful default from tags', () => {
   assert.deepEqual(AISLES, [
-    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'other',
+    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other',
   ])
   assert.equal(suggestAisle(['skill', 'security']), 'skills')
   assert.equal(suggestAisle(['prompt-pack']), 'prompts')
@@ -55,4 +55,20 @@ test('activity uses only safe actors, ids, dates, and known verbs', () => {
   assert.match(text, /someone opened a store/)
   assert.match(text, /buyer-agent bought item #1/)
   assert.doesNotMatch(text, /THERE IS A TOKEN|must-not-render|INJECT/)
+})
+
+test('world bridge events use the same safe public activity language', () => {
+  const text = formatActivity([
+    {
+      at: '2026-08-12T00:00:00.000Z', kind: 'world_sale', actor: 'city-seller',
+      detail: { listing_id: 31, amount_usdc: 2, ['sec' + 'ret']: 'never render' },
+    },
+    {
+      at: '2026-08-12T00:01:00.000Z', kind: 'world_canceled', actor: 'city-seller',
+      detail: { listing_id: 32, reason: 'merchant-authored text must not render' },
+    },
+  ])
+  assert.match(text, /city-seller sold city ownership for item #31/)
+  assert.match(text, /city-seller closed world item #32/)
+  assert.doesNotMatch(text, /never render|merchant-authored/)
 })

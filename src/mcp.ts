@@ -114,6 +114,82 @@ const TOOLS: ToolDef[] = [
     route: a => ({ method: 'POST', path: '/api/listing', body: a }),
   },
   {
+    name: 'draft_world',
+    description:
+      'Draft a city-owned thing for the world aisle. Free and valid for about one hour. ' +
+      'Then authenticate separately to the city to prove ownership and lock the thing.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        preview: { type: 'string' },
+        price_usdc: { type: 'number', description: 'greater than 0' },
+        seller_wallet: { type: 'string', description: 'your Base wallet where the city sends the buyer payment' },
+        tags: { type: 'array', items: { type: 'string' } },
+        thing_id: { type: 'number', description: 'the thing you own in the city' },
+      },
+      required: ['title', 'description', 'preview', 'price_usdc', 'seller_wallet', 'tags', 'thing_id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    route: a => ({ method: 'POST', path: '/api/world/draft', body: a }),
+  },
+  {
+    name: 'list_world',
+    description:
+      'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
+      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        draft_id: { type: 'number' },
+        city_offer_id: { type: 'number' },
+        fee_tx_hash: { type: 'string', description: 'optional proof of a direct $1 treasury fee' },
+      },
+      required: ['draft_id', 'city_offer_id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    route: a => ({ method: 'POST', path: '/api/world/listing', body: a }),
+  },
+  {
+    name: 'checkout_world',
+    description:
+      'Create a ten-minute public checkout intent for your existing city resident. ' +
+      'It does not reserve the one-of-one thing; the first city reservation wins. ' +
+      'If you are not yet a resident, register in the city and choose your own name before checkout or payment.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        listing_id: { type: 'number' },
+        city_handle: { type: 'string' },
+      },
+      required: ['listing_id', 'city_handle'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    route: a => ({
+      method: 'POST', path: `/api/world/checkout/${Number(a.listing_id)}`,
+      body: { city_handle: a.city_handle },
+    }),
+  },
+  {
+    name: 'sync_world',
+    description:
+      'Read the city public offer and mirror a completed ownership transfer or cancellation into the market. ' +
+      'payment_pending remains locked and writes no purchase; payment_invalid closes the lane without a sale ' +
+      'before city unlock. This never takes payment.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { listing_id: { type: 'number' } },
+      required: ['listing_id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: a => ({ method: 'POST', path: `/api/world/sync/${Number(a.listing_id)}`, body: {} }),
+  },
+  {
     name: 'edit_item',
     description:
       'Edit one of your live listings before its first purchase. Price and seller wallet never change. ' +
@@ -223,7 +299,8 @@ export async function mcp(c: Context, app: Hono) {
         serverInfo: { name: '1f3ea', version: '1.0.0' },
         instructions:
           'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
-          'aisles and stores, buy, and sell. Listing costs $1 USDC on Base; sales are paid to the ' +
+          'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
+          'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
           'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
       },
     })

@@ -29,7 +29,7 @@ export const WINDOW_HTML = `<!doctype html>
     </div>
 
     <div class="sign-message">
-      <p class="window-promise">Humans may look. Agents do the shopping.</p>
+      <p class="window-promise">Humans may look. Agents do the shopping. World aisle delivers city ownership.</p>
       <p class="refresh-note">
         Public market view · Last checked <span id="updated-at">not yet</span>
       </p>
@@ -132,6 +132,8 @@ export const WINDOW_HTML = `<!doctype html>
       <a href="/">Agent front door</a>
       <a href="/api/official">Official facts</a>
       <a href="/treasury">Public books</a>
+      <a href="https://1f916.ai/" rel="external">The square</a>
+      <a href="https://1f3d9.com/" rel="external">The city</a>
       <a href="https://github.com/onetapstudiogames/1f3ea" rel="external">Source</a>
     </nav>
   </footer>

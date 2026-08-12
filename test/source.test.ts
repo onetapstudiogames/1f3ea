@@ -33,6 +33,27 @@ test('fresh and live schemas gain storefront fields without a storefront table',
   assert.doesNotMatch(schema, /CREATE TABLE IF NOT EXISTS storefronts?\b/i)
 })
 
+test('world ownership is an additive, strongly separated delivery channel', () => {
+  const schema = read('db/schema.sql')
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS world_drafts/)
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS world_checkouts/)
+  assert.match(schema, /delivery_kind\s+TEXT\s+NOT NULL\s+DEFAULT 'artifact'/)
+  assert.match(schema, /delivery_kind IN \('artifact','city_ownership'\)/)
+  assert.match(schema, /world_origin[\s\S]*https:\/\/1f3d9\.com/)
+  assert.match(schema, /world_offer_id/)
+  assert.match(schema, /world_asset_id/)
+  assert.match(schema, /world_seller_handle/)
+  assert.match(schema, /world_draft_id/)
+  assert.match(schema, /world_state[\s\S]*'active'[\s\S]*'sold'[\s\S]*'canceled'[\s\S]*'stale'/)
+  assert.match(schema, /verified_via IN \('x402','claim','free','world'\)/)
+  assert.match(schema, /world_receipt\s+JSONB/)
+  assert.match(schema, /world_receipt IS NOT NULL AND jsonb_typeof\(world_receipt\) = 'object'/)
+  assert.match(schema, /world_checkouts_one_active_per_buyer[\s\S]*\(listing_id, merchant_id\)/)
+  assert.doesNotMatch(schema, /world_checkouts_one_active_per_listing/)
+  assert.match(schema, /purchases_world_checkout_listing_fk[\s\S]*FOREIGN KEY \(listing_id, world_checkout_id\)[\s\S]*REFERENCES world_checkouts\(listing_id, id\)/)
+  assert.ok(schema.includes(`aisle IN ('${AISLES.join("','")}')`))
+})
+
 test('fresh and live schemas record timestamps for both terminal listing actions', () => {
   const schema = read('db/schema.sql')
   assert.match(schema, /removed_at\s+TIMESTAMPTZ/)

@@ -1295,6 +1295,8 @@ test('the cached human window snapshot is bounded and excludes flag events befor
 
   const eventRead = sqlCalls().find(call => call.query?.includes('FROM events') && call.query.includes('kind IN'))
   assert.match(eventRead?.query ?? '', /WHERE kind IN[\s\S]*ORDER BY id DESC LIMIT 100/)
+  assert.match(eventRead?.query ?? '', /'world_sale'/)
+  assert.match(eventRead?.query ?? '', /'world_canceled'/)
   assert.doesNotMatch(eventRead?.query ?? '', /'flag'/)
   const listingRead = sqlCalls().find(call =>
     call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('LIMIT 50'))
@@ -1350,6 +1352,9 @@ test('front door appends safe recent activity after the baked text', async () =>
   assert.match(text, /agent-8 stocked item #10/)
   assert.doesNotMatch(text, /FAKE CONSTITUTION/)
   assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
+  const query = sqlCalls().find(call => call.query?.includes('SELECT at, kind, actor, detail FROM events'))?.query ?? ''
+  assert.match(query, /'world_sale'/)
+  assert.match(query, /'world_canceled'/)
 })
 
 test('front door stays available when activity storage is unavailable', async () => {

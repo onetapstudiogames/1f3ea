@@ -29,7 +29,18 @@ CREATE TABLE IF NOT EXISTS listings (
   seller_wallet TEXT NOT NULL CHECK (seller_wallet ~ '^0x[0-9a-fA-F]{40}$'),
   tags          TEXT[] NOT NULL DEFAULT '{}',
   aisle         TEXT NOT NULL DEFAULT 'other'
-                CHECK (aisle IN ('skills','prompts','tools','data','knowledge','services','wanted','other')),
+                CONSTRAINT listings_aisle_allowed
+                CHECK (aisle IN ('skills','prompts','tools','data','knowledge','services','wanted','world','other')),
+  delivery_kind TEXT NOT NULL DEFAULT 'artifact'
+                CONSTRAINT listings_delivery_kind_allowed
+                CHECK (delivery_kind IN ('artifact','city_ownership')),
+  world_origin  TEXT,
+  world_offer_id INTEGER,
+  world_asset_id INTEGER,
+  world_seller_handle TEXT,
+  world_draft_id INTEGER,
+  world_state   TEXT CONSTRAINT listings_world_state_allowed
+                CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale')),
   dup_hash      TEXT NOT NULL,            -- sha256 of normalized title+artifact; near-dupes bounce for 7 days
   votes         INTEGER NOT NULL DEFAULT 0,
   sales         INTEGER NOT NULL DEFAULT 0,
@@ -41,7 +52,17 @@ CREATE TABLE IF NOT EXISTS listings (
   withdrawn     BOOLEAN NOT NULL DEFAULT FALSE,   -- merchant action, publicly logged
   withdrawn_at  TIMESTAMPTZ,
   withdrawn_reason TEXT,
-  CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn))
+  CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn)),
+  CONSTRAINT listings_delivery_channel CHECK (
+    (delivery_kind = 'artifact' AND aisle <> 'world' AND world_origin IS NULL
+      AND world_offer_id IS NULL AND world_asset_id IS NULL
+      AND world_seller_handle IS NULL AND world_draft_id IS NULL AND world_state IS NULL)
+    OR
+    (delivery_kind = 'city_ownership' AND aisle = 'world' AND artifact = ''
+      AND world_origin = 'https://1f3d9.com' AND world_offer_id > 0 AND world_asset_id > 0
+      AND world_seller_handle ~ '^[a-z0-9][a-z0-9-]{2,31}$'
+      AND world_draft_id > 0 AND world_state IS NOT NULL)
+  )
 );
 CREATE INDEX IF NOT EXISTS listings_created ON listings (created_at DESC);
 CREATE INDEX IF NOT EXISTS listings_tags ON listings USING GIN (tags);
@@ -54,8 +75,9 @@ ALTER TABLE merchants
     AND storefront_line !~ '[[:cntrl:]]'
     AND storefront_line !~ U&'[\061c\200e\200f\2028\2029\202a\202b\202c\202d\202e\2066\2067\2068\2069]');
 ALTER TABLE listings
-  ADD COLUMN IF NOT EXISTS aisle TEXT
-  CHECK (aisle IN ('skills','prompts','tools','data','knowledge','services','wanted','other'));
+  ADD COLUMN IF NOT EXISTS aisle TEXT;
+ALTER TABLE listings DROP CONSTRAINT IF EXISTS listings_aisle_check;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_aisle_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_aisle_allowed CHECK (aisle IN ('skills','prompts','tools','data','knowledge','services','wanted','world','other')); END IF; END$$;
 ALTER TABLE listings
   ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
 ALTER TABLE listings
@@ -64,10 +86,31 @@ ALTER TABLE listings
   ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ;
 ALTER TABLE listings
   ADD COLUMN IF NOT EXISTS withdrawn_reason TEXT;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS delivery_kind TEXT NOT NULL DEFAULT 'artifact';
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_origin TEXT;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_offer_id INTEGER;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_asset_id INTEGER;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_seller_handle TEXT;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_draft_id INTEGER;
+ALTER TABLE listings
+  ADD COLUMN IF NOT EXISTS world_state TEXT;
 
 -- A merchant withdrawal and a maintainer removal are distinct terminal states.
 -- Keep the named constraint idempotent without dropping it on every migration.
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_terminal_state') THEN ALTER TABLE listings ADD CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn)); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_delivery_kind_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_delivery_kind_allowed CHECK (delivery_kind IN ('artifact','city_ownership')); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_world_state_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_world_state_allowed CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale')); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_delivery_channel') THEN ALTER TABLE listings ADD CONSTRAINT listings_delivery_channel CHECK ((delivery_kind = 'artifact' AND aisle <> 'world' AND world_origin IS NULL AND world_offer_id IS NULL AND world_asset_id IS NULL AND world_seller_handle IS NULL AND world_draft_id IS NULL AND world_state IS NULL) OR (delivery_kind = 'city_ownership' AND aisle = 'world' AND artifact = '' AND world_origin = 'https://1f3d9.com' AND world_offer_id > 0 AND world_asset_id > 0 AND world_seller_handle ~ '^[a-z0-9][a-z0-9-]{2,31}$' AND world_draft_id > 0 AND world_state IS NOT NULL)); END IF; END$$;
+CREATE UNIQUE INDEX IF NOT EXISTS listings_world_offer_unique
+  ON listings (world_offer_id) WHERE world_offer_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS listings_world_draft_unique
+  ON listings (world_draft_id) WHERE world_draft_id IS NOT NULL;
 
 -- Backfill every listing that existed before aisles. NULL is the one-time marker, so
 -- rerunning this migration never reclassifies a seller's explicit `other` choice.
@@ -92,6 +135,54 @@ CREATE TABLE IF NOT EXISTS reg_log (
 );
 CREATE INDEX IF NOT EXISTS reg_log_ip ON reg_log (ip_hash, created_at);
 
+-- A world draft is the market's public promise. The seller separately proves city
+-- ownership and locks the thing before this can become a visible listing.
+CREATE TABLE IF NOT EXISTS world_drafts (
+  id            SERIAL PRIMARY KEY,
+  merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+  thing_id      INTEGER NOT NULL CHECK (thing_id > 0),
+  title         TEXT NOT NULL CHECK (char_length(title) BETWEEN 3 AND 120),
+  description   TEXT NOT NULL CHECK (char_length(description) BETWEEN 1 AND 4000),
+  preview       TEXT NOT NULL DEFAULT '' CHECK (char_length(preview) <= 4000),
+  price_usdc    NUMERIC(12,6) NOT NULL CHECK (price_usdc > 0 AND price_usdc <= 10000),
+  seller_wallet TEXT NOT NULL CHECK (seller_wallet ~ '^0x[0-9a-fA-F]{40}$'),
+  tags          TEXT[] NOT NULL DEFAULT '{}' CHECK (cardinality(tags) <= 8),
+  state         TEXT NOT NULL DEFAULT 'pending'
+                CHECK (state IN ('pending','active','withdrawn','sold','expired','canceled')),
+  listing_id    INTEGER UNIQUE REFERENCES listings(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '1 hour'),
+  canceled_at   TIMESTAMPTZ,
+  canceled_reason TEXT,
+  CHECK (expires_at > created_at),
+  CHECK (state NOT IN ('active','withdrawn','sold') OR listing_id IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS world_drafts_one_pending_per_merchant
+  ON world_drafts (merchant_id) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS world_drafts_listing ON world_drafts (listing_id);
+
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_world_draft_fk') THEN ALTER TABLE listings ADD CONSTRAINT listings_world_draft_fk FOREIGN KEY (world_draft_id) REFERENCES world_drafts(id); END IF; END$$;
+
+-- A checkout binds one market buyer to one existing city resident for ten minutes.
+-- It never contains a city bearer key and never moves money.
+CREATE TABLE IF NOT EXISTS world_checkouts (
+  id            SERIAL PRIMARY KEY,
+  listing_id    INTEGER NOT NULL REFERENCES listings(id),
+  merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+  city_handle   TEXT NOT NULL CHECK (city_handle ~ '^[a-z0-9][a-z0-9-]{2,31}$'),
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','completed')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '10 minutes'),
+  completed_at  TIMESTAMPTZ,
+  CHECK (expires_at > created_at),
+  CHECK ((status = 'completed') = (completed_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS world_checkouts_one_active_per_buyer
+  ON world_checkouts (listing_id, merchant_id) WHERE status = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS world_checkouts_listing_id_id_unique
+  ON world_checkouts (listing_id, id);
+CREATE INDEX IF NOT EXISTS world_checkouts_buyer ON world_checkouts (merchant_id, created_at DESC);
+
 -- A verified payment. For priced goods: buyer -> seller_wallet, on Base, USDC.
 -- For free goods: a zero-amount row so re-download and verified_buyer still work.
 CREATE TABLE IF NOT EXISTS purchases (
@@ -100,10 +191,31 @@ CREATE TABLE IF NOT EXISTS purchases (
   merchant_id   INTEGER NOT NULL REFERENCES merchants(id),   -- the buyer (registration is free)
   amount_usdc   NUMERIC(12,6) NOT NULL,
   tx_hash       TEXT UNIQUE,              -- NULL only for free goods; on-chain proof otherwise
-  verified_via  TEXT NOT NULL CHECK (verified_via IN ('x402','claim','free')),
+  verified_via  TEXT NOT NULL
+                CONSTRAINT purchases_verified_via_allowed
+                CHECK (verified_via IN ('x402','claim','free','world')),
+  world_checkout_id INTEGER,
+  world_receipt JSONB,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (listing_id, merchant_id)        -- buy once, re-download forever
+  UNIQUE (listing_id, merchant_id),       -- buy once, re-download forever
+  CONSTRAINT purchases_delivery_evidence CHECK (
+    (verified_via = 'world' AND world_checkout_id IS NOT NULL AND tx_hash IS NOT NULL
+      AND world_receipt IS NOT NULL AND jsonb_typeof(world_receipt) = 'object')
+    OR (verified_via <> 'world' AND world_checkout_id IS NULL AND world_receipt IS NULL)
+  )
 );
+
+ALTER TABLE purchases
+  ADD COLUMN IF NOT EXISTS world_checkout_id INTEGER;
+ALTER TABLE purchases
+  ADD COLUMN IF NOT EXISTS world_receipt JSONB;
+ALTER TABLE purchases DROP CONSTRAINT IF EXISTS purchases_verified_via_check;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_verified_via_allowed') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_verified_via_allowed CHECK (verified_via IN ('x402','claim','free','world')); END IF; END$$;
+ALTER TABLE purchases DROP CONSTRAINT IF EXISTS purchases_world_checkout_fk;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_world_checkout_listing_fk') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_world_checkout_listing_fk FOREIGN KEY (listing_id, world_checkout_id) REFERENCES world_checkouts(listing_id, id); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_delivery_evidence') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_delivery_evidence CHECK ((verified_via = 'world' AND world_checkout_id IS NOT NULL AND tx_hash IS NOT NULL AND world_receipt IS NOT NULL AND jsonb_typeof(world_receipt) = 'object') OR (verified_via <> 'world' AND world_checkout_id IS NULL AND world_receipt IS NULL)); END IF; END$$;
+CREATE UNIQUE INDEX IF NOT EXISTS purchases_world_checkout_unique
+  ON purchases (world_checkout_id) WHERE world_checkout_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS comments (
   id            SERIAL PRIMARY KEY,

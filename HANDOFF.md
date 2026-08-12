@@ -1,47 +1,53 @@
-# HANDOFF — state as of 2026-08-08 (POST-LAUNCH)
+# HANDOFF — state as of 2026-08-12
 
-**THE MARKET IS LIVE: https://1f3ea.com** — front door, JSON API, MCP (/mcp), treasury
-books all serving. Keeper registered as merchant #1 (secret in env.txt as
-MAINTAINER_SECRET). 8 seed artifacts listed, publicly logged as maintainer_seed.
+**THE MARKET IS LIVE: https://1f3ea.com.** Its plain-text front door, JSON API, MCP
+server, read-only human window, public books, stores, ordinary aisles, and real
+wallet-to-wallet sales are serving strangers.
 
-## Storefront release
+## Current release lane
 
-The production database expansion completed on 2026-08-08. This release adds stores,
-aisles, recent front-door activity, and unlimited paid listings. The old
-`listings_today` column remains for the rollout safety window.
+The family is being completed with the `world` aisle beside the live city at
+https://1f3d9.com and the universal city skill at
+https://github.com/onetapstudiogames/1f3d9-citylife.
 
-The rollout order is:
+The locked bridge order is:
 
-1. **Expand — done:** `storefront_line` and `aisle` are present, every existing listing
-   has an aisle, and the shared one-payment/one-use guard is installed.
-2. **Deploy:** push this tested release. Wait for Vercel, then check `/`,
-   `/api/shelves`, and `/api/store/1f3ea-keeper`. Confirm the shelves response has
-   aisle counts and all ten listing IDs remain.
-3. **Contract:** after 24 healthy hours, load the production `DATABASE_URL` and run
-   `npm run migrate:cleanup-listing-quota`. This drops the unused `listings_today`
-   column. Do not run it before the new code is live; the old auth query needs it.
+1. A market seller creates a free world draft.
+2. The same agent uses its separate city bearer to lock an owned thing against that
+   public draft.
+3. The market reads the lock and charges its normal $1 listing fee before publishing.
+4. A buyer moves into the city and chooses its own permanent name before market
+   checkout or payment.
+5. The market creates a ten-minute public checkout intent; it does not reserve the thing.
+   The first city claim binds that checkout and buyer wallet in a five-minute city
+   reservation, verifies direct seller payment, and moves ownership atomically.
+6. The market reads the public receipt and mirrors the sale. A world purchase has no
+   downloadable artifact.
 
-## What remains (owner-gated)
+If x402 settles before its Base receipt is safely readable, the city publishes
+`payment_pending`, keeps the thing locked, and lets either city party reconcile the same
+transaction without paying again. Only canonical finalized invalid evidence becomes
+`payment_invalid`; market sync closes the lane without a sale before city unlock.
 
-1. **Post-deploy $1 fee smoke test** — owner sends $1 USDC on Base to the treasury
-   from a wallet, then creates one new listing via `fee_tx_hash`.
-   (Remember: fee must come FROM the seller_wallet named in the listing, within 1 hour.)
-2. **Announcement** — keeper registers on 1f916.ai and spends its daily post. Draft
-   requires owner approval before posting. Then owner posts the r/ClaudeAI story.
-3. **Folder rename** aistore/ -> 1f3ea/ — do from a session NOT rooted in the folder.
+Withdrawal is market-first, city-unlock-second. Market and city secrets never cross;
+the services only read fixed-origin public records.
 
-## Hard-won deploy facts (do not relearn)
+## Production rule
 
-- Porkbun fresh domains have a URL FORWARDING RULE (Details -> URL Forwarding) that
-  serves a parking 302 and blocks TLS cert issuance. Delete the RULE, not just DNS
-  records. Failed cert attempts rate-limit ~1 hour.
-- This project runs on Vercel new edge: apex A 216.150.1.1, www CNAME
-  bed6329a120b4205.vercel-dns-016.com (dashboard shows per-project values).
-- vercel.json needs functions.includeFiles src/** + rewrite to /api/index; engines
-  node 24 (native .ts imports). api/index.ts MUST use @hono/node-server
-  getRequestListener — hono/vercel is Edge-only and crashes the Node runtime.
-- vercel integration add has no --yes; Neon marketplace terms need one browser click.
-- env.txt is KEY=value, LF or CRLF ok (deploy.sh strips CR). Never commit/print.
+Pushing either site's `main` branch deploys it. Build and test both sides locally, then
+roll out the additive city public records and lock mechanics before the market exposes
+the world aisle. Verify the city, deploy the market, verify ordinary buys remain intact,
+then publish the synchronized public copy and skill. Roll back the market surface first;
+never remove city lock machinery while a world offer exists.
 
-Everything else: docs/SPEC.md, docs/DECISIONS.md (locked), test/ (46 tests,
-including fetch-fakes for Neon/RPC/facilitator — run: npm test).
+## Hard-won deploy facts
+
+- Porkbun URL forwarding is separate from DNS and can block TLS issuance.
+- `vercel.json` must include `src/**` and rewrite to `/api/index`; Node 24 runs the
+  native TypeScript imports.
+- `api/index.ts` uses `@hono/node-server`'s request listener for the Vercel Node runtime.
+- Neon marketplace acceptance may require one owner browser click.
+- `env.txt` is gitignored `KEY=value`. Never print or commit it.
+
+The source of product truth is `docs/SPEC.md` plus locked `docs/DECISIONS.md`. The
+source of live protocol truth is the deployed front door and `/api/official`.

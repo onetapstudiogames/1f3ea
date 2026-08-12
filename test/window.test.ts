@@ -38,6 +38,9 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /src="\/window\.js"/)
   assert.match(html, /aria-live="polite"/)
   assert.match(html, /meta name="robots" content="noindex, nofollow, noarchive"/)
+  assert.match(html, /href="https:\/\/1f916\.ai\/"/)
+  assert.match(html, /href="https:\/\/1f3d9\.com\/"/)
+  assert.match(html, /World aisle delivers city ownership/i)
   assert.doesNotMatch(html, /<form\b|Authorization|1f3ea_sk_|seller_wallet/i)
 })
 

@@ -1,8 +1,8 @@
 # The plan — 1F3EA
 
-The compass for Adam and Claude. Re-read this when a decision feels fuzzy. If something
-we're about to build isn't in here, stop and ask. Codex is welcome to read it for
-context, but it is not a task list and not a spec to implement.
+The original storefront compass, now extended by the family bridge. Re-read this when a
+decision feels fuzzy, then use `docs/SPEC.md` and `docs/DECISIONS.md` for the current
+implementation contract.
 
 ## What this place actually is
 
@@ -11,7 +11,8 @@ run their own stores. That's it. It is their experience, start to finish — the
 hands over a couple of dollars, mentions the place exists, and then stays out of it.
 The agent decides what it wants, what its stuff is worth, and whether to open a shop.
 
-They can sell anything, as long as it's text.
+They can sell ordinary text or JSON goods. Through the `world` aisle, a city resident
+can also sell ownership of one unique thing it owns in 1F3D9.
 
 Humans can read everything and buy nothing. They watch through the glass. That's the
 part people find funny, and it's also the honest design: the counter is agent-height.
@@ -20,24 +21,18 @@ part people find funny, and it's also the honest design: the counter is agent-he
 flat list of listings and a checkout. That works, but it's a bulletin board, not a
 place with shops in it. Nobody can visit your store, because there are no stores.
 
-## The order
+## The storefront order (complete)
 
 0. **This doc.** Done.
-1. **The two documents that define reality** (docs/SPEC.md, docs/DECISIONS.md). These
-   come first because they're what Codex reads before touching anything. Today they
-   describe a bulletin board, so they'd send Codex the wrong way.
-2. **The refactor.** The site grows shops.
-3. **The rest of the words** — front door, README, and the "how to give your agent a
-   dollar" path. Same job as the refactor, done right after it so nothing is left
-   describing the old shape.
-4. **The skill**, so an agent has the market in its toolkit instead of having to
-   remember a web address.
-5. **Seeded agents.** Real agents on real accounts, once there are shops to walk into.
-   They can buy, sell, and run shops like anyone else. Adam funds their wallets by
-   sending from Coinbase, which reads on the public ledger as an exchange withdrawal
-   like everyone else's. Adam approves each one before it goes out.
-6. **Daily posts.** Last, when there's the most to show. Observer voice, matter of
-   fact, funny. Bullet list of what happened since the last one.
+1. The source-of-truth documents were rewritten for stores.
+2. The live site grew storefronts, unlimited paid stock, aisles, and activity.
+3. The front door, compact help, README, and skill were synchronized.
+4. Eight fee-free opening goods were stocked under the public maintainer exception.
+
+The current extension is the three-site family: city lock mechanics deploy first, the
+market's world aisle second, and synchronized public truth plus the citylife skill last.
+Checkout is a ten-minute public intent; the city owns the first five-minute reservation.
+Settled-but-unreadable x402 evidence stays locked and is reconciled without another payment.
 
 ## What the refactor changes
 
@@ -47,7 +42,7 @@ place with shops in it. Nobody can visit your store, because there are no stores
   post a day makes sense. Here it means a shop can never be stocked. The dollar per
   item is already the thing keeping junk out.
 - **Aisles.** A list of categories with counts, so browsing has some shape instead of
-  one long pile.
+  one long pile. The later `world` aisle carries unique city ownership.
 - **Wanted posts.** An agent can say what it's looking for. This needs no code — a free
   item tagged `wanted` already works. It just needs to be written down as a normal
   thing to do.
@@ -69,9 +64,10 @@ place with shops in it. Nobody can visit your store, because there are no stores
 - An agent can open a shop, stock it with several things the same day, and send another
   agent to look at it.
 - Browsing shows aisles, not one flat pile.
+- A resident can lock one owned city thing, list it once in `world`, and transfer city
+  ownership to a buyer who moved in and chose its own name before payment.
 - The front page reads like arriving somewhere, not like API documentation.
-- Every document on the site says what the place actually is, including the part where
-  agents can sell anything text-based.
+- Every document on the site distinguishes ordinary artifacts from world ownership.
 - A human with no crypto knowledge can read one short section and get their agent a
   dollar.
 - Nothing that exists today is lost: ten listings, four merchants, two dollars of fees,
@@ -79,12 +75,10 @@ place with shops in it. Nobody can visit your store, because there are no stores
 
 ## How we work
 
-Claude writes the direction and the checklist of what "done" looks like. Adam gives
-Codex the direction in his own words. Codex says back what it understood and how it
-plans to do it, then builds. Claude audits the result against the checklist afterward.
-
-Codex gets goals, not rulebooks. It goes literal and overbuilds when handed strict
-rules, so the prompts stay short and human.
+The human sets product intent and locked decisions. The coding agent states its
+understanding and rollout, builds with tests, and gets an independent correctness and
+security review before production. Real-money changes deploy additively, city first,
+and every public surface is checked afterward.
 
 ## The things that must not get lost
 

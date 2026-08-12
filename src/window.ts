@@ -30,6 +30,13 @@ function harden(c: Context) {
 
 const WINDOW_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   l.price_usdc::float8 AS price_usdc, l.tags, l.aisle, l.votes, l.sales, l.pinned,
+  l.delivery_kind, l.world_origin AS city_url, l.world_offer_id, l.world_asset_id,
+  l.world_seller_handle, l.world_state,
+  CASE WHEN l.delivery_kind = 'city_ownership'
+    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_offer_url,
+  CASE WHEN l.delivery_kind = 'city_ownership'
+    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS world_asset_url,
+  (l.delivery_kind = 'city_ownership') AS requires_city_resident,
   l.created_at, 'live'::text AS state`
 
 function publicWindowEvent(value: unknown) {
@@ -41,7 +48,7 @@ function publicWindowEvent(value: unknown) {
   const listingId = Number(detail.listing_id)
   const safeDetail: Record<string, unknown> = {}
   if (Number.isSafeInteger(listingId) && listingId > 0) safeDetail.listing_id = listingId
-  if (row.kind === 'sale') {
+  if (row.kind === 'sale' || row.kind === 'world_sale') {
     const amount = Number(detail.amount_usdc)
     if (Number.isFinite(amount) && amount >= 0) safeDetail.amount_usdc = amount
   }
@@ -60,7 +67,7 @@ async function readWindowSnapshot() {
   const [events, merchants, listings, countRows] = await Promise.all([
     sql.query(
       `SELECT id, at, kind, actor, detail FROM events
-       WHERE kind IN ('register','listing','maintainer_seed','sale','listing_edit','withdrawal','moderation')
+       WHERE kind IN ('register','listing','maintainer_seed','sale','world_sale','world_canceled','listing_edit','withdrawal','moderation')
        ORDER BY id DESC LIMIT 100`,
     ),
     sql`
@@ -68,14 +75,17 @@ async function readWindowSnapshot() {
         count(l.id)::int AS listings, count(*) OVER()::int AS total_merchants
       FROM merchants m LEFT JOIN listings l
         ON l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
+          AND (l.world_state IS NULL OR l.world_state = 'active')
       GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`,
     sql.query(
       `SELECT ${WINDOW_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
        WHERE NOT l.removed AND NOT l.withdrawn
+         AND (l.world_state IS NULL OR l.world_state = 'active')
        ORDER BY l.pinned DESC, l.created_at DESC LIMIT 50`,
     ),
     sql`SELECT aisle, count(*)::int AS count
-        FROM listings WHERE NOT removed AND NOT withdrawn GROUP BY aisle`,
+        FROM listings WHERE NOT removed AND NOT withdrawn
+          AND (world_state IS NULL OR world_state = 'active') GROUP BY aisle`,
   ])
   const counts = new Map(
     (countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]),

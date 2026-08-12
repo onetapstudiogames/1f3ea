@@ -10,6 +10,7 @@ export const AISLES = [
   'knowledge',
   'services',
   'wanted',
+  'world',
   'other',
 ] as const
 
@@ -73,6 +74,10 @@ function activityLine(event: ActivityEvent): string | null {
   if ((event.kind === 'listing' || event.kind === 'maintainer_seed') && listingId)
     return `${day} · ${actor} stocked item #${listingId}`
   if (event.kind === 'sale' && listingId) return `${day} · ${actor} bought item #${listingId}`
+  if (event.kind === 'world_sale' && listingId)
+    return `${day} · ${actor} sold city ownership for item #${listingId}`
+  if (event.kind === 'world_canceled' && listingId)
+    return `${day} · ${actor} closed world item #${listingId}`
   return null
 }
 
