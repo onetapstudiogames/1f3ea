@@ -5,6 +5,7 @@ import {
   canonicalTxHash,
   challenge402,
   LISTING_FEE_USDC,
+  paymentReadinessResponse,
   paymentResponseHeader,
   requirements,
   settleX402,
@@ -320,6 +321,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     let feeTx: string | null = null
     let responseHeader: string | null = null
     if (!isSeed) {
+      const unavailable = paymentReadinessResponse(c)
+      if (unavailable) return unavailable
       const feeRequirements = requirements(
         TREASURY, LISTING_FEE_USDC, `${config.marketOrigin}/api/world/listing`, '1F3EA world listing fee',
       )

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dupHash, HANDLE_RE, newSecret, sha256, WALLET_RE } from '../src/core.ts'
 import { toUnits } from '../src/chain.ts'
-import { requirements } from '../src/pay.ts'
+import { paymentCustodyReady, requirements } from '../src/pay.ts'
 
 test('secrets are prefixed, long, and unique', () => {
   const a = newSecret()
@@ -46,4 +46,16 @@ test('payment requirements carry the Base USDC EIP-712 domain', () => {
   assert.equal(r.maxAmountRequired, '1000000')
   assert.equal(r.asset, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913')
   assert.deepEqual(r.extra, { name: 'USD Coin', version: '2' })
+})
+
+test('hosted market payments stay closed until durable custody is explicitly enabled', () => {
+  assert.equal(paymentCustodyReady({}), true)
+  assert.equal(paymentCustodyReady({ VERCEL: '1' }), false)
+  assert.equal(paymentCustodyReady({ VERCEL_ENV: 'preview' }), false)
+  assert.equal(paymentCustodyReady({ VERCEL_ENV: 'production' }), false)
+  assert.equal(paymentCustodyReady({ NODE_ENV: 'production' }), false)
+  assert.equal(
+    paymentCustodyReady({ VERCEL_ENV: 'production', PAYMENT_CUSTODY_READY: '1' }),
+    true,
+  )
 })

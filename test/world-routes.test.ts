@@ -475,6 +475,32 @@ test('activation fails closed on city outage, malformed JSON, and ownership mism
   }
 })
 
+test('hosted world-listing fees stop before payment work while custody is closed', async () => {
+  reset()
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+
+  try {
+    const response = await app.request('/api/world/listing', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+    })
+    assert.equal(response.status, 503)
+    assert.equal(state.rpcCalls, 0)
+    assert.equal(state.dbCalls.some(call => /INSERT\s+INTO\s+(?:fees|listings)/i.test(call.query)), false)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
 test('a proved city lock still needs the normal fee and activates atomically after direct proof', async () => {
   reset()
   const challenge = await app.request('/api/world/listing', {

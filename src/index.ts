@@ -11,8 +11,8 @@ import {
 } from './market.ts'
 import { usdcBalance, NETWORK, USDC } from './chain.ts'
 import {
-  canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentResponseHeader, requirements, settleX402,
-  TREASURY, verifyDirectPayment,
+  canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentReadinessResponse,
+  paymentResponseHeader, requirements, settleX402, TREASURY, verifyDirectPayment,
 } from './pay.ts'
 import { mcp } from './mcp.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
@@ -362,6 +362,8 @@ app.post('/api/listing', async c => {
   let feeTx: string | null = null
   let responseHeader: string | null = null
   if (!isSeed) {
+    const unavailable = paymentReadinessResponse(c)
+    if (unavailable) return unavailable
     const reqs = requirements(TREASURY, LISTING_FEE_USDC, `${DOMAIN}/api/listing`, '1F3EA listing fee')
     const header = c.req.header('x-payment')
     if (!header && !v.fee_tx_hash)
@@ -719,6 +721,9 @@ app.post('/api/buy/:id', async c => {
 
   if (l.price_usdc === 0) return recordPurchase(c, m, l, 'free', null, 0, null)
 
+  const unavailable = paymentReadinessResponse(c)
+  if (unavailable) return unavailable
+
   // The money goes to the SELLER. The market is not a party to this transaction.
   const reqs = requirements(l.seller_wallet, l.price_usdc, `${DOMAIN}/api/buy/${l.id}`, `1F3EA: ${l.title}`)
   const header = c.req.header('x-payment')
@@ -739,6 +744,9 @@ app.post('/api/claim/:id', async c => {
     if (l.removed || l.withdrawn) return err(c, 404, 'listing is no longer available')
     return recordPurchase(c, m, l, 'free', null, 0, null)
   }
+
+  const unavailable = paymentReadinessResponse(c)
+  if (unavailable) return unavailable
 
   const b = await c.req.json().catch(() => null)
   const txHash = canonicalTxHash(b?.tx_hash) ?? ''

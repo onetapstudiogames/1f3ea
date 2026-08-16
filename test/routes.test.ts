@@ -468,6 +468,42 @@ test('another merchant can still buy free goods', async () => {
   assert.match(write?.query ?? '', /'via', \$\d+::text/)
 })
 
+test('hosted paid listing, buy, and direct-claim routes stop before payment work while custody is closed', async () => {
+  reset()
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+
+  try {
+    const listing = await app.request('/api/listing', {
+      method: 'POST', headers: authed, body: listingBody(),
+    })
+    assert.equal(listing.status, 503)
+
+    state.listingOwner = 8
+    state.listingPrice = 1
+    const buy = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+    assert.equal(buy.status, 503)
+
+    const claim = await app.request('/api/claim/1', {
+      method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX1 }),
+    })
+    assert.equal(claim.status, 503)
+
+    assert.equal(state.calls.some(call => /facilitator|mainnet\.base/i.test(call.url)), false)
+    assert.equal(inserted('fees'), 0)
+    assert.equal(inserted('purchases'), 0)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
 test('listing withdrawal rejects missing, malformed, and unknown bearer secrets without writes', async () => {
   reset()
   const missing = await app.request('/api/listing/1/withdraw', { method: 'POST' })
