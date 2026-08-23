@@ -61,7 +61,9 @@ transaction hash proves only one paid action across purchases and listing fees.
 
 ## Release checklist
 
-1. Apply `db/migrations/20260822_hosted_market_signin.sql` to the intended database.
+1. Follow `docs/RELEASE_MIGRATIONS.md`: use the guarded preview command, test preview,
+   create a production recovery point, then use the separately guarded production
+   command. Do not apply the full schema as this release's remote migration.
 2. Set the exact public origin and approved OAuth clients; the stable ChatGPT client
    metadata is restricted to `https://chatgpt.com/oauth/client.json` and its exact
    published redirect.
