@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { sql, logEvent } from './db.ts'
@@ -9,16 +10,24 @@ import {
 import {
   AISLES, formatActivity, isAisle, parseStoreLine, suggestAisle, type ActivityEvent, type Aisle,
 } from './market.ts'
-import { usdcBalance, NETWORK, USDC } from './chain.ts'
+import { usdcBalance, NETWORK, USDC, verifyPersonalSignature } from './chain.ts'
 import {
   canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentReadinessResponse,
   paymentResponseHeader, requirements, settleX402, TREASURY, verifyDirectPayment,
 } from './pay.ts'
 import { mcp } from './mcp.ts'
+import {
+  configureMarketOAuthMerchantResolver,
+  mountMarketOAuthRoutes,
+} from './market-oauth.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 import { registerWorldRoutes } from './world-routes.ts'
 import { CITY_ORIGIN, cityCancelUrl } from './world.ts'
+import {
+  DIRECT_PURCHASE_INTENT_TTL_MS, directPaymentWindowError, purchaseIntentChallenge,
+  type DirectPurchaseIntent,
+} from './direct-payments.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -37,7 +46,10 @@ const postgresErrorCode = (error: unknown, depth = 0): string | null => {
 
 const app = new Hono()
 
-app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] }))
+const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
+app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
+mountMarketOAuthRoutes(app)
+configureMarketOAuthMerchantResolver()
 app.onError((e, c) => {
   console.error(e)
   return c.json({ error: 'internal' }, 500)
@@ -617,6 +629,62 @@ interface BuyableListing {
   delivery_kind: 'artifact' | 'city_ownership'
 }
 
+interface DirectPurchaseIntentRow extends Omit<DirectPurchaseIntent, 'buyer'> {
+  merchant_id: number
+  superseded_at: string | null
+  claimed_at: string | null
+}
+
+function directIntentForBuyer(row: DirectPurchaseIntentRow, buyer: string): DirectPurchaseIntent {
+  return {
+    id: row.id,
+    listing_id: row.listing_id,
+    buyer,
+    payer_wallet: row.payer_wallet,
+    seller_wallet: row.seller_wallet,
+    network: row.network,
+    asset: row.asset,
+    minimum_amount_usdc: row.minimum_amount_usdc,
+    challenge_nonce: row.challenge_nonce,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+  }
+}
+
+function parseDirectIntentBody(input: unknown): { payer_wallet: string } | string {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    return 'body must contain exactly: payer_wallet'
+  const keys = Object.keys(input)
+  if (keys.length !== 1 || keys[0] !== 'payer_wallet')
+    return 'body must contain exactly: payer_wallet'
+  const payerWallet = (input as { payer_wallet?: unknown }).payer_wallet
+  if (typeof payerWallet !== 'string' || !WALLET_RE.test(payerWallet))
+    return 'payer_wallet must be a 0x wallet address'
+  return { payer_wallet: payerWallet.toLowerCase() }
+}
+
+interface DirectClaimBody {
+  intent_id: number
+  tx_hash: string
+  payer_signature: string
+}
+
+function parseDirectClaimBody(input: unknown): DirectClaimBody | string {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    return 'body must contain exactly: intent_id, tx_hash, payer_signature'
+  const keys = Object.keys(input).sort()
+  if (keys.join(',') !== 'intent_id,payer_signature,tx_hash')
+    return 'body must contain exactly: intent_id, tx_hash, payer_signature'
+  const body = input as Record<string, unknown>
+  if (typeof body.intent_id !== 'number' || !Number.isInteger(body.intent_id) || body.intent_id < 1)
+    return 'intent_id must be a positive integer'
+  const txHash = canonicalTxHash(body.tx_hash)
+  if (!txHash) return 'tx_hash must be 0x followed by 64 hex characters'
+  if (typeof body.payer_signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(body.payer_signature))
+    return 'payer_signature must be a 65-byte personal_sign signature'
+  return { intent_id: body.intent_id, tx_hash: txHash, payer_signature: body.payer_signature }
+}
+
 async function getPurchaseListing(
   c: Context, m: Merchant, id: number, allowTerminal: boolean,
 ): Promise<BuyableListing | Response> {
@@ -640,6 +708,99 @@ const getClaimable = (c: Context, m: Merchant, id: number) => getPurchaseListing
 async function deliver(c: Context, listingId: number) {
   const rows = (await sql`SELECT title, artifact FROM listings WHERE id = ${listingId}`) as { title: string; artifact: string }[]
   return c.json({ listing_id: listingId, title: rows[0]!.title, artifact: rows[0]!.artifact })
+}
+
+async function createDirectPurchaseIntent(
+  c: Context,
+  merchant: Merchant,
+  listing: BuyableListing,
+  payerWallet: string,
+  startedAt: Date,
+) {
+  const createdAt = startedAt.toISOString()
+  const expiresAt = new Date(startedAt.getTime() + DIRECT_PURCHASE_INTENT_TTL_MS).toISOString()
+  const nonce = randomBytes(32).toString('hex')
+  try {
+    const rows = (await sql`
+      WITH current_terms AS (
+        SELECT l.id, l.price_usdc, lower(l.seller_wallet) AS seller_wallet
+        FROM listings l
+        WHERE l.id = ${listing.id} AND l.merchant_id <> ${merchant.id}
+          AND l.delivery_kind = 'artifact' AND NOT l.removed AND NOT l.withdrawn
+          AND l.price_usdc = ${listing.price_usdc}
+          AND lower(l.seller_wallet) = lower(${listing.seller_wallet})
+          AND NOT EXISTS (
+            SELECT 1 FROM purchases p WHERE p.listing_id = l.id AND p.merchant_id = ${merchant.id}
+          )
+      ), fresh_intent AS (
+        INSERT INTO direct_purchase_intents (
+          merchant_id, listing_id, payer_wallet, seller_wallet, network, asset,
+          minimum_amount_usdc, challenge_nonce, created_at, expires_at
+        )
+        SELECT ${merchant.id}, id, ${payerWallet}, seller_wallet, ${NETWORK}, lower(${USDC}),
+          price_usdc, ${nonce}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+        FROM current_terms
+        ON CONFLICT (merchant_id, listing_id) DO UPDATE SET
+          payer_wallet = EXCLUDED.payer_wallet,
+          seller_wallet = EXCLUDED.seller_wallet,
+          network = EXCLUDED.network,
+          asset = EXCLUDED.asset,
+          minimum_amount_usdc = EXCLUDED.minimum_amount_usdc,
+          challenge_nonce = EXCLUDED.challenge_nonce,
+          created_at = EXCLUDED.created_at,
+          expires_at = EXCLUDED.expires_at,
+          superseded_at = NULL
+        WHERE direct_purchase_intents.claimed_at IS NULL
+          AND (
+            direct_purchase_intents.superseded_at IS NOT NULL
+            OR direct_purchase_intents.expires_at <= EXCLUDED.created_at
+          )
+        RETURNING id, merchant_id, listing_id, payer_wallet, seller_wallet, network, asset,
+          minimum_amount_usdc::text, challenge_nonce, created_at, expires_at,
+          superseded_at, claimed_at
+      )
+      SELECT * FROM fresh_intent`) as DirectPurchaseIntentRow[]
+    const row = rows[0]
+    if (row) return directPurchaseIntentResponse(c, row, merchant.handle, 201)
+  } catch (error) {
+    if (postgresErrorCode(error) !== '23505') throw error
+  }
+  const existing = (await sql`
+    SELECT i.id, i.merchant_id, i.listing_id, i.payer_wallet, i.seller_wallet,
+      i.network, i.asset, i.minimum_amount_usdc::text, i.challenge_nonce,
+      i.created_at, i.expires_at, i.superseded_at, i.claimed_at
+    FROM direct_purchase_intents i
+    JOIN listings l ON l.id = i.listing_id
+    WHERE i.listing_id = ${listing.id} AND i.merchant_id = ${merchant.id}
+      AND i.payer_wallet = ${payerWallet} AND i.claimed_at IS NULL AND i.superseded_at IS NULL
+      AND i.expires_at > ${createdAt}::timestamptz
+      AND l.merchant_id <> ${merchant.id} AND l.delivery_kind = 'artifact'
+      AND NOT l.removed AND NOT l.withdrawn
+      AND i.seller_wallet = lower(l.seller_wallet) AND i.minimum_amount_usdc = l.price_usdc
+      AND i.network = ${NETWORK} AND i.asset = lower(${USDC})
+      AND NOT EXISTS (
+        SELECT 1 FROM purchases p WHERE p.listing_id = l.id AND p.merchant_id = ${merchant.id}
+      )`) as DirectPurchaseIntentRow[]
+  if (existing[0]) return directPurchaseIntentResponse(c, existing[0], merchant.handle, 200)
+  return err(c, 409, 'listing changed, was purchased, or another payer has a fresh intent; re-read it before paying')
+}
+
+function directPurchaseIntentResponse(
+  c: Context,
+  row: DirectPurchaseIntentRow,
+  buyer: string,
+  status: 200 | 201,
+) {
+  const intent = directIntentForBuyer(row, buyer)
+  return c.json({
+    purchase_intent: {
+      ...intent,
+      signature_method: 'personal_sign',
+      challenge: purchaseIntentChallenge(intent),
+      tip_allowed: true,
+      next: `Sign the exact challenge with payer_wallet, pay after created_at, then POST /api/claim/${intent.listing_id} before expires_at.`,
+    },
+  }, status)
 }
 
 async function recordPurchase(
@@ -708,6 +869,88 @@ async function recordPurchase(
   return deliver(c, l.id)
 }
 
+async function recordDirectPurchase(
+  c: Context,
+  merchant: Merchant,
+  listing: BuyableListing,
+  intent: DirectPurchaseIntentRow,
+  txHash: string,
+  payerWallet: string,
+  paidAt: Date,
+  requestStartedAt: Date,
+) {
+  try {
+    const rows = await sql`
+      WITH locked_claim AS (
+        SELECT l.id AS listing_id, i.id AS direct_purchase_intent_id
+        FROM listings l
+        JOIN direct_purchase_intents i ON i.id = ${intent.id} AND i.listing_id = l.id
+        WHERE l.id = ${listing.id} AND l.merchant_id <> ${merchant.id}
+          AND l.delivery_kind = 'artifact' AND l.price_usdc = ${listing.price_usdc}
+          AND lower(l.seller_wallet) = lower(${listing.seller_wallet})
+          AND i.merchant_id = ${merchant.id}
+          AND i.payer_wallet = lower(${payerWallet})
+          AND i.seller_wallet = lower(l.seller_wallet)
+          AND i.network = ${NETWORK} AND i.asset = lower(${USDC})
+          AND i.minimum_amount_usdc = l.price_usdc
+          AND i.claimed_at IS NULL AND i.superseded_at IS NULL
+          AND i.created_at <= ${paidAt.toISOString()}::timestamptz
+          AND i.expires_at >= ${paidAt.toISOString()}::timestamptz
+          AND i.created_at <= ${requestStartedAt.toISOString()}::timestamptz
+          AND i.expires_at >= ${requestStartedAt.toISOString()}::timestamptz
+          AND (
+            (NOT l.removed AND NOT l.withdrawn)
+            OR ${paidAt.toISOString()}::timestamptz <= coalesce(
+              least(l.removed_at, l.withdrawn_at), l.removed_at, l.withdrawn_at
+            )
+          )
+        FOR UPDATE OF l, i
+      ), new_purchase AS (
+        INSERT INTO purchases (
+          listing_id, merchant_id, amount_usdc, tx_hash, verified_via, direct_purchase_intent_id
+        )
+        SELECT listing_id, ${merchant.id}, ${listing.price_usdc}, ${txHash}, 'claim',
+          direct_purchase_intent_id FROM locked_claim
+        RETURNING listing_id, direct_purchase_intent_id
+      ), claimed_intent AS (
+        UPDATE direct_purchase_intents SET claimed_at = clock_timestamp()
+        WHERE id IN (SELECT direct_purchase_intent_id FROM new_purchase)
+      ), new_sale_count AS (
+        UPDATE listings SET sales = sales + 1
+        WHERE id IN (SELECT listing_id FROM new_purchase)
+      ), new_event AS (
+        INSERT INTO events (kind, actor, detail)
+        SELECT 'sale', ${merchant.handle}, jsonb_build_object(
+          'listing_id', listing_id, 'amount_usdc', ${listing.price_usdc}::numeric, 'via', 'claim'
+        ) FROM new_purchase
+      )
+      SELECT listing_id FROM new_purchase`
+    if (!rows.length) return err(c, 409, 'listing or purchase intent changed; start again before paying')
+  } catch (error) {
+    if (postgresErrorCode(error) !== '23505') throw error
+    return err(c, 409, 'already purchased, purchase intent used, or transaction hash already used')
+  }
+  return deliver(c, listing.id)
+}
+
+app.post('/api/purchase-intent/:id', async c => {
+  const requestStartedAt = new Date()
+  const merchant = await auth(c)
+  if (!merchant) return err(c, 401, 'register first — it is free. POST /api/register')
+  const listing = await getBuyable(c, merchant, Number(c.req.param('id')))
+  if (listing instanceof Response) return listing
+  if (listing.price_usdc === 0) return err(c, 409, 'this listing is free; use POST /api/buy/:id')
+
+  const unavailable = paymentReadinessResponse(c)
+  if (unavailable) return unavailable
+  const parsed = parseDirectIntentBody(await c.req.json().catch(() => null))
+  if (typeof parsed === 'string') return err(c, 400, parsed)
+
+  const prior = await sql`SELECT id FROM purchases WHERE listing_id = ${listing.id} AND merchant_id = ${merchant.id}`
+  if (prior.length) return err(c, 409, 'already purchased; re-download via GET /api/purchases')
+  return createDirectPurchaseIntent(c, merchant, listing, parsed.payer_wallet, requestStartedAt)
+})
+
 app.post('/api/buy/:id', async c => {
   const m = await auth(c)
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
@@ -728,7 +971,12 @@ app.post('/api/buy/:id', async c => {
   const reqs = requirements(l.seller_wallet, l.price_usdc, `${DOMAIN}/api/buy/${l.id}`, `1F3EA: ${l.title}`)
   const header = c.req.header('x-payment')
   if (!header)
-    return challenge402(c, reqs, `costs $${l.price_usdc} USDC, paid directly to the seller — or POST /api/claim/${l.id} with a tx_hash`)
+    return challenge402(
+      c,
+      reqs,
+      `costs $${l.price_usdc} USDC, paid directly to the seller — retry with X-PAYMENT, ` +
+      `or start a signed ten-minute direct-payment intent at POST /api/purchase-intent/${l.id} before paying`,
+    )
   const settled = await settleX402(header, reqs)
   if ('error' in settled) return challenge402(c, reqs, settled.error)
   c.header('X-PAYMENT-RESPONSE', paymentResponseHeader(settled))
@@ -736,6 +984,7 @@ app.post('/api/buy/:id', async c => {
 })
 
 app.post('/api/claim/:id', async c => {
+  const requestStartedAt = new Date()
   const m = await auth(c)
   if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
   const l = await getClaimable(c, m, Number(c.req.param('id')))
@@ -748,11 +997,38 @@ app.post('/api/claim/:id', async c => {
   const unavailable = paymentReadinessResponse(c)
   if (unavailable) return unavailable
 
-  const b = await c.req.json().catch(() => null)
-  const txHash = canonicalTxHash(b?.tx_hash) ?? ''
-  const direct = await verifyDirectPayment(txHash, l.seller_wallet, l.price_usdc, new Date(l.created_at))
+  const parsed = parseDirectClaimBody(await c.req.json().catch(() => null))
+  if (typeof parsed === 'string') return err(c, 400, parsed)
+  const rows = (await sql`
+    SELECT i.id, i.merchant_id, i.listing_id, i.payer_wallet, i.seller_wallet,
+      i.network, i.asset, i.minimum_amount_usdc::text, i.challenge_nonce,
+      i.created_at, i.expires_at, i.superseded_at, i.claimed_at
+    FROM direct_purchase_intents i
+    JOIN listings current_listing ON current_listing.id = i.listing_id
+    WHERE i.id = ${parsed.intent_id} AND i.listing_id = ${l.id} AND i.merchant_id = ${m.id}
+      AND i.seller_wallet = lower(current_listing.seller_wallet)
+      AND i.minimum_amount_usdc = current_listing.price_usdc
+      AND i.network = ${NETWORK} AND i.asset = lower(${USDC})`) as DirectPurchaseIntentRow[]
+  const intentRow = rows[0]
+  if (!intentRow || intentRow.claimed_at || intentRow.superseded_at)
+    return err(c, 409, `no open signed purchase intent; POST /api/purchase-intent/${l.id} before paying`)
+
+  const intent = directIntentForBuyer(intentRow, m.handle)
+  const preflightError = directPaymentWindowError(intent, new Date(intent.created_at), requestStartedAt)
+  if (preflightError) return err(c, 409, preflightError)
+  if (!await verifyPersonalSignature(
+    purchaseIntentChallenge(intent), parsed.payer_signature, intent.payer_wallet,
+  )) return err(c, 402, 'payer_signature does not prove control of this intent payer wallet')
+
+  const direct = await verifyDirectPayment(
+    parsed.tx_hash, intent.seller_wallet, Number(intent.minimum_amount_usdc), new Date(intent.created_at),
+  )
   if (!direct)
-    return err(c, 402, 'tx did not verify: need a successful USDC transfer on Base to the seller wallet, >= price, after listing creation')
+    return err(c, 402, 'transaction must be Base USDC to this intent seller for at least its minimum, after the intent started')
+  if (direct.from.toLowerCase() !== intent.payer_wallet)
+    return err(c, 402, 'transaction payer does not match the signed purchase intent')
+  const windowError = directPaymentWindowError(intent, direct.blockTime, requestStartedAt)
+  if (windowError) return err(c, windowError.startsWith('payment') ? 402 : 409, windowError)
   if (l.removed || l.withdrawn) {
     const terminalTimes = [l.removed_at, l.withdrawn_at]
       .filter((value): value is string => Boolean(value))
@@ -763,7 +1039,9 @@ app.post('/api/claim/:id', async c => {
     if (!terminalAt || direct.blockTime > terminalAt)
       return err(c, 409, 'payment happened after this listing left the market')
   }
-  return recordPurchase(c, m, l, 'claim', txHash, l.price_usdc, direct.blockTime)
+  return recordDirectPurchase(
+    c, m, l, intentRow, parsed.tx_hash, intent.payer_wallet, direct.blockTime, requestStartedAt,
+  )
 })
 
 app.get('/api/purchases', async c => {
@@ -915,6 +1193,12 @@ app.get('/api/official', c =>
       'Anyone selling one is lying to you. The treasury above is the only official address. ' +
       'Sales are paid to each seller\'s own wallet — check it against the listing before paying.',
     listing_fee_usdc: LISTING_FEE_USDC,
+    ordinary_direct_payment: {
+      authorization: 'fresh authenticated ten-minute intent plus exact personal_sign challenge',
+      proof: 'matching Base USDC transfer from the signed payer to the listing seller inside the intent window',
+      minimum: 'exact listing price; larger voluntary tips are accepted',
+      replay: 'one normalized transaction hash may prove one fee or one purchase, never both',
+    },
     city: CITY_ORIGIN,
     world: {
       aisle: 'world',
@@ -1026,5 +1310,12 @@ registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID, se
 
 app.post('/mcp', c => mcp(c, app))
 app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+if (process.env.HOSTED_MARKET_SIGNIN_ENABLED === 'true') {
+  app.post('/mcp/connect', c => mcp(c, app, {
+    hostedChat: true,
+    forwardUnauthorizedStatus: false,
+  }))
+  app.get('/mcp/connect', c => c.text('Hosted MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+}
 
 export default app

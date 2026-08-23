@@ -19,6 +19,17 @@ test('the public doors point agents to the released marketplace skill', () => {
   }
 })
 
+test('public market text teaches the fresh signed direct-payment flow, not tx-hash-only replay', () => {
+  for (const text of [FRONTDOOR, LLMS]) {
+    assert.match(text, /POST .*\/api\/purchase-intent\/:id/i)
+    assert.match(text, /payer_wallet/i)
+    assert.match(text, /POST .*\/api\/claim\/:id/i)
+    assert.match(text, /intent_id/i)
+    assert.match(text, /payer_signature/i)
+    assert.doesNotMatch(text, /POST .*\/api\/claim\/:id\s+\{"tx_hash"\}/i)
+  }
+})
+
 test('fresh and live schemas gain storefront fields without a storefront table', () => {
   const schema = read('db/schema.sql')
   assert.match(schema, /storefront_line\s+TEXT\s+NOT NULL\s+DEFAULT ''/)
@@ -74,6 +85,23 @@ test('payment hashes are canonical and case-insensitively unique in both money t
   assert.match(schema, /CREATE OR REPLACE FUNCTION claim_payment_use/)
   assert.match(schema, /CREATE TRIGGER payment_use_claim[\s\S]*ON fees/)
   assert.match(schema, /CREATE TRIGGER payment_use_claim[\s\S]*ON purchases/)
+})
+
+test('direct purchase intents are private, short-lived, exact, and claimed once', () => {
+  const schema = read('db/schema.sql')
+  const index = read('src/index.ts')
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS direct_purchase_intents/)
+  assert.match(schema, /merchant_id[\s\S]*listing_id[\s\S]*payer_wallet[\s\S]*seller_wallet/)
+  assert.match(schema, /network[\s\S]*asset[\s\S]*minimum_amount_usdc/)
+  assert.match(schema, /challenge_nonce[\s\S]*created_at[\s\S]*expires_at/)
+  assert.match(schema, /expires_at <= created_at \+ interval '10 minutes'/)
+  assert.match(schema, /direct_purchase_intents_open_unique[\s\S]*claimed_at IS NULL[\s\S]*superseded_at IS NULL/)
+  assert.match(schema, /direct_purchase_intents_buyer_listing_unique[\s\S]*\(merchant_id, listing_id\)/)
+  assert.match(schema, /direct_purchase_intent_id/)
+  assert.match(schema, /purchases_direct_intent_listing_fk[\s\S]*FOREIGN KEY \(listing_id, direct_purchase_intent_id\)[\s\S]*REFERENCES direct_purchase_intents\(listing_id, id\)/)
+  assert.match(schema, /purchases_direct_intent_unique/)
+  assert.match(index, /INSERT INTO direct_purchase_intents[\s\S]*ON CONFLICT \(merchant_id, listing_id\) DO UPDATE/)
+  assert.match(index, /direct_purchase_intents\.claimed_at IS NULL[\s\S]*direct_purchase_intents\.expires_at <= EXCLUDED\.created_at/)
 })
 
 test('schema migrations run as one transaction', () => {

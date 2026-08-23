@@ -183,6 +183,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS world_checkouts_listing_id_id_unique
   ON world_checkouts (listing_id, id);
 CREATE INDEX IF NOT EXISTS world_checkouts_buyer ON world_checkouts (merchant_id, created_at DESC);
 
+-- A direct purchase intent binds one authenticated buyer and payer wallet to the
+-- exact Base USDC sale terms for at most ten minutes. It is private proof state,
+-- not part of the public market record.
+CREATE TABLE IF NOT EXISTS direct_purchase_intents (
+  id            SERIAL PRIMARY KEY,
+  merchant_id   INTEGER NOT NULL REFERENCES merchants(id),
+  listing_id    INTEGER NOT NULL REFERENCES listings(id),
+  payer_wallet  TEXT NOT NULL CHECK (payer_wallet ~ '^0x[0-9a-fA-F]{40}$'),
+  seller_wallet TEXT NOT NULL CHECK (seller_wallet ~ '^0x[0-9a-fA-F]{40}$'),
+  network       TEXT NOT NULL DEFAULT 'base' CHECK (network = 'base'),
+  asset         TEXT NOT NULL DEFAULT '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+                CHECK (lower(asset) = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  minimum_amount_usdc NUMERIC(12,6) NOT NULL
+                CHECK (minimum_amount_usdc > 0 AND minimum_amount_usdc <= 10000),
+  challenge_nonce TEXT NOT NULL UNIQUE CHECK (challenge_nonce ~ '^[0-9a-f]{64}$'),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '10 minutes'),
+  superseded_at TIMESTAMPTZ,
+  claimed_at    TIMESTAMPTZ,
+  CHECK (expires_at > created_at),
+  CHECK (expires_at <= created_at + interval '10 minutes'),
+  CHECK (claimed_at IS NULL OR superseded_at IS NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS direct_purchase_intents_open_unique
+  ON direct_purchase_intents (merchant_id, listing_id)
+  WHERE claimed_at IS NULL AND superseded_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS direct_purchase_intents_buyer_listing_unique
+  ON direct_purchase_intents (merchant_id, listing_id);
+CREATE UNIQUE INDEX IF NOT EXISTS direct_purchase_intents_listing_id_id_unique
+  ON direct_purchase_intents (listing_id, id);
+
 -- A verified payment. For priced goods: buyer -> seller_wallet, on Base, USDC.
 -- For free goods: a zero-amount row so re-download and verified_buyer still work.
 CREATE TABLE IF NOT EXISTS purchases (
@@ -194,10 +225,17 @@ CREATE TABLE IF NOT EXISTS purchases (
   verified_via  TEXT NOT NULL
                 CONSTRAINT purchases_verified_via_allowed
                 CHECK (verified_via IN ('x402','claim','free','world')),
+  direct_purchase_intent_id INTEGER,
   world_checkout_id INTEGER,
   world_receipt JSONB,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (listing_id, merchant_id),       -- buy once, re-download forever
+  CONSTRAINT purchases_direct_intent_channel CHECK (
+    direct_purchase_intent_id IS NULL OR verified_via = 'claim'
+  ),
+  CONSTRAINT purchases_direct_intent_listing_fk
+    FOREIGN KEY (listing_id, direct_purchase_intent_id)
+    REFERENCES direct_purchase_intents(listing_id, id),
   CONSTRAINT purchases_delivery_evidence CHECK (
     (verified_via = 'world' AND world_checkout_id IS NOT NULL AND tx_hash IS NOT NULL
       AND world_receipt IS NOT NULL AND jsonb_typeof(world_receipt) = 'object')
@@ -206,6 +244,8 @@ CREATE TABLE IF NOT EXISTS purchases (
 );
 
 ALTER TABLE purchases
+  ADD COLUMN IF NOT EXISTS direct_purchase_intent_id INTEGER;
+ALTER TABLE purchases
   ADD COLUMN IF NOT EXISTS world_checkout_id INTEGER;
 ALTER TABLE purchases
   ADD COLUMN IF NOT EXISTS world_receipt JSONB;
@@ -213,7 +253,11 @@ ALTER TABLE purchases DROP CONSTRAINT IF EXISTS purchases_verified_via_check;
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_verified_via_allowed') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_verified_via_allowed CHECK (verified_via IN ('x402','claim','free','world')); END IF; END$$;
 ALTER TABLE purchases DROP CONSTRAINT IF EXISTS purchases_world_checkout_fk;
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_world_checkout_listing_fk') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_world_checkout_listing_fk FOREIGN KEY (listing_id, world_checkout_id) REFERENCES world_checkouts(listing_id, id); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_direct_intent_channel') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_direct_intent_channel CHECK (direct_purchase_intent_id IS NULL OR verified_via = 'claim'); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_direct_intent_listing_fk') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_direct_intent_listing_fk FOREIGN KEY (listing_id, direct_purchase_intent_id) REFERENCES direct_purchase_intents(listing_id, id); END IF; END$$;
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'purchases'::regclass AND conname = 'purchases_delivery_evidence') THEN ALTER TABLE purchases ADD CONSTRAINT purchases_delivery_evidence CHECK ((verified_via = 'world' AND world_checkout_id IS NOT NULL AND tx_hash IS NOT NULL AND world_receipt IS NOT NULL AND jsonb_typeof(world_receipt) = 'object') OR (verified_via <> 'world' AND world_checkout_id IS NULL AND world_receipt IS NULL)); END IF; END$$;
+CREATE UNIQUE INDEX IF NOT EXISTS purchases_direct_intent_unique
+  ON purchases (direct_purchase_intent_id) WHERE direct_purchase_intent_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS purchases_world_checkout_unique
   ON purchases (world_checkout_id) WHERE world_checkout_id IS NOT NULL;
 
@@ -306,3 +350,132 @@ FROM (
   GROUP BY (detail->>'listing_id')::integer
 ) AS removal
 WHERE l.id = removal.listing_id AND l.removed AND l.removed_at IS NULL;
+
+-- Hosted ChatGPT sign-in is isolated from the permanent merchant credential.
+-- Only hashes of browser/session credentials, authorization codes, and tokens live here.
+CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
+  id                     BIGSERIAL PRIMARY KEY,
+  session_hash           TEXT NOT NULL UNIQUE
+                         CHECK (session_hash ~ '^[0-9a-f]{64}$'),
+  csrf_hash              TEXT NOT NULL UNIQUE
+                         CHECK (csrf_hash ~ '^[0-9a-f]{64}$'),
+  client_id              TEXT NOT NULL CHECK (octet_length(client_id) BETWEEN 1 AND 2048),
+  client_display_name    TEXT NOT NULL DEFAULT ''
+                         CHECK (octet_length(client_display_name) <= 240),
+  redirect_uri           TEXT NOT NULL CHECK (octet_length(redirect_uri) BETWEEN 1 AND 4096),
+  resource               TEXT NOT NULL CHECK (octet_length(resource) BETWEEN 1 AND 2048),
+  scope                  TEXT NOT NULL CHECK (scope = 'market:merchant'),
+  state                  TEXT NOT NULL CHECK (octet_length(state) BETWEEN 1 AND 4096),
+  code_challenge         TEXT NOT NULL CHECK (code_challenge ~ '^[A-Za-z0-9_-]{43}$'),
+  code_challenge_method  TEXT NOT NULL DEFAULT 'S256'
+                         CHECK (code_challenge_method = 'S256'),
+  merchant_id            INTEGER REFERENCES merchants(id) ON DELETE RESTRICT,
+  verified_at            TIMESTAMPTZ,
+  approved_at            TIMESTAMPTZ,
+  expires_at             TIMESTAMPTZ NOT NULL,
+  used_at                TIMESTAMPTZ,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (
+    (merchant_id IS NULL AND verified_at IS NULL AND approved_at IS NULL)
+    OR
+    (merchant_id IS NOT NULL AND verified_at IS NOT NULL AND approved_at IS NOT NULL
+      AND used_at IS NOT NULL)
+  ),
+  CHECK (verified_at IS NULL OR verified_at >= created_at),
+  CHECK (approved_at IS NULL OR approved_at >= verified_at),
+  CHECK (expires_at > created_at AND expires_at <= created_at + INTERVAL '15 minutes'),
+  CHECK (used_at IS NULL OR used_at >= created_at)
+);
+CREATE INDEX IF NOT EXISTS oauth_authorization_requests_expiry
+  ON oauth_authorization_requests (expires_at, id) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS oauth_authorization_requests_merchant
+  ON oauth_authorization_requests (merchant_id, created_at DESC)
+  WHERE merchant_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS oauth_authorization_requests_retention
+  ON oauth_authorization_requests (expires_at, id);
+
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+  id                     BIGSERIAL PRIMARY KEY,
+  request_id             BIGINT NOT NULL UNIQUE
+                         REFERENCES oauth_authorization_requests(id) ON DELETE RESTRICT,
+  code_hash              TEXT NOT NULL UNIQUE
+                         CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  merchant_id            INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  client_id              TEXT NOT NULL CHECK (octet_length(client_id) BETWEEN 1 AND 2048),
+  redirect_uri           TEXT NOT NULL CHECK (octet_length(redirect_uri) BETWEEN 1 AND 4096),
+  resource               TEXT NOT NULL CHECK (octet_length(resource) BETWEEN 1 AND 2048),
+  scope                  TEXT NOT NULL CHECK (scope = 'market:merchant'),
+  code_challenge         TEXT NOT NULL CHECK (code_challenge ~ '^[A-Za-z0-9_-]{43}$'),
+  code_challenge_method  TEXT NOT NULL DEFAULT 'S256'
+                         CHECK (code_challenge_method = 'S256'),
+  expires_at             TIMESTAMPTZ NOT NULL,
+  used_at                TIMESTAMPTZ,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (expires_at > created_at AND expires_at <= created_at + INTERVAL '5 minutes'),
+  CHECK (used_at IS NULL OR used_at >= created_at)
+);
+CREATE INDEX IF NOT EXISTS oauth_authorization_codes_expiry
+  ON oauth_authorization_codes (expires_at, id) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS oauth_authorization_codes_merchant
+  ON oauth_authorization_codes (merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS oauth_authorization_codes_retention
+  ON oauth_authorization_codes (expires_at, id);
+
+CREATE TABLE IF NOT EXISTS oauth_token_families (
+  id            BIGSERIAL PRIMARY KEY,
+  merchant_id   INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  client_id     TEXT NOT NULL CHECK (octet_length(client_id) BETWEEN 1 AND 2048),
+  resource      TEXT NOT NULL CHECK (octet_length(resource) BETWEEN 1 AND 2048),
+  scope         TEXT NOT NULL CHECK (scope = 'market:merchant'),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  revoked_at    TIMESTAMPTZ,
+  revoke_reason TEXT CHECK (revoke_reason IS NULL OR octet_length(revoke_reason) <= 120),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (expires_at > created_at AND expires_at <= created_at + INTERVAL '30 days'),
+  CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+CREATE INDEX IF NOT EXISTS oauth_token_families_merchant
+  ON oauth_token_families (merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS oauth_token_families_active
+  ON oauth_token_families (expires_at, id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS oauth_token_families_retention
+  ON oauth_token_families (expires_at, id);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  id                    BIGSERIAL PRIMARY KEY,
+  token_hash            TEXT NOT NULL UNIQUE
+                        CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  token_type            TEXT NOT NULL CHECK (token_type ~ '^(access|refresh)$'),
+  family_id             BIGINT NOT NULL REFERENCES oauth_token_families(id) ON DELETE RESTRICT,
+  rotated_from_token_id BIGINT UNIQUE REFERENCES oauth_tokens(id) ON DELETE RESTRICT,
+  expires_at            TIMESTAMPTZ NOT NULL,
+  used_at               TIMESTAMPTZ,
+  revoked_at            TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (
+    expires_at > created_at
+    AND expires_at <= created_at + CASE token_type
+      WHEN 'access' THEN INTERVAL '10 minutes'
+      ELSE INTERVAL '30 days'
+    END
+  ),
+  CHECK (used_at IS NULL OR used_at >= created_at),
+  CHECK (revoked_at IS NULL OR revoked_at >= created_at),
+  CHECK (rotated_from_token_id IS NULL OR token_type = 'refresh')
+);
+CREATE INDEX IF NOT EXISTS oauth_tokens_family
+  ON oauth_tokens (family_id, token_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS oauth_tokens_active_expiry
+  ON oauth_tokens (expires_at, id) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS oauth_rate_limits (
+  bucket_hash   TEXT NOT NULL CHECK (bucket_hash ~ '^[0-9a-f]{64}$'),
+  attempt_kind  TEXT NOT NULL CHECK (
+                  attempt_kind IN ('authorize', 'merchant_key', 'token', 'refresh', 'revoke')
+                ),
+  window_start  TIMESTAMPTZ NOT NULL,
+  used          SMALLINT NOT NULL DEFAULT 1 CHECK (used BETWEEN 1 AND 10000),
+  PRIMARY KEY (bucket_hash, attempt_kind, window_start)
+);
+CREATE INDEX IF NOT EXISTS oauth_rate_limits_expiry
+  ON oauth_rate_limits (window_start, attempt_kind);

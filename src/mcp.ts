@@ -1,5 +1,7 @@
 import type { Context, Hono } from 'hono'
 import { AISLES } from './market.ts'
+import { allowOAuthForHostedConnectorRequest, SECRET_PREFIX } from './core.ts'
+import { MARKET_OAUTH_SCOPE, marketPublicOrigin } from './market-oauth-config.ts'
 
 /**
  * MCP over plain JSON-RPC 2.0 — hand-rolled, stateless, no sessions, no SSE,
@@ -24,6 +26,35 @@ interface ToolDef {
     readonly openWorldHint: boolean
   }
   route: (args: Record<string, unknown>) => { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown }
+}
+
+export interface McpOptions {
+  hostedChat?: boolean
+  forwardUnauthorizedStatus?: boolean
+}
+
+const PUBLIC_TOOL_NAMES = new Set(['browse', 'visit_store', 'read_listing'])
+const OAUTH_SCHEME = Object.freeze({ type: 'oauth2', scopes: [MARKET_OAUTH_SCOPE] })
+const NOAUTH_SCHEME = Object.freeze({ type: 'noauth' })
+const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac)_[0-9a-f]{64})/i
+const CREDENTIAL_REDACTION = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac)_[0-9a-f]{64})/gi
+const CREDENTIAL_FIELD = /^(?:secret|merchant_key|access_token|refresh_token|authorization_code|code)$/i
+
+function containsCredential(value: unknown): boolean {
+  if (typeof value === 'string') return CREDENTIAL_VALUE.test(value)
+  if (Array.isArray(value)) return value.some(containsCredential)
+  if (!value || typeof value !== 'object') return false
+  return Object.entries(value).some(([key, nested]) => CREDENTIAL_FIELD.test(key) || containsCredential(nested))
+}
+
+function redactCredentials(value: string): string {
+  return value.replace(CREDENTIAL_REDACTION, '[redacted 1F3EA credential]')
+}
+
+function hostedChallenge(): string {
+  return `Bearer resource_metadata="${marketPublicOrigin()}/.well-known/oauth-protected-resource/mcp/connect", ` +
+    `scope="${MARKET_OAUTH_SCOPE}", error="invalid_token", ` +
+    'error_description="Sign in to 1F3EA to use merchant tools."'
 }
 
 const TOOLS: ToolDef[] = [
@@ -242,20 +273,47 @@ const TOOLS: ToolDef[] = [
     name: 'buy',
     description:
       'Buy a listing. Free goods deliver at once. Priced goods return x402 requirements that pay the SELLER ' +
-      'directly; or pay the seller wallet yourself and pass tx_hash to claim.',
+      'directly; or start a fresh ten-minute direct-payment intent for one payer wallet, then claim with ' +
+      'intent_id, tx_hash, and payer_signature.',
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         id: { type: 'number' },
-        tx_hash: { type: 'string', description: 'proof of a direct USDC payment to the seller (claim path)' },
+        payer_wallet: {
+          type: 'string',
+          description: '0x payer wallet for a fresh direct-payment intent; returns a challenge to sign',
+        },
+        intent_id: { type: 'number', description: 'fresh direct-payment intent id returned earlier by this tool' },
+        tx_hash: { type: 'string', description: 'proof of a direct Base USDC payment to the seller for that intent' },
+        payer_signature: {
+          type: 'string',
+          description: '65-byte personal_sign signature of the returned direct-payment challenge',
+        },
       },
       required: ['id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    route: a =>
-      typeof a.tx_hash === 'string' && a.tx_hash
-        ? { method: 'POST', path: `/api/claim/${Number(a.id)}`, body: { tx_hash: a.tx_hash } }
-        : { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} },
+    route: a => {
+      const directClaimKeys = ['intent_id', 'tx_hash', 'payer_signature']
+      const hasAnyDirectClaimKey = directClaimKeys.some(key => Object.prototype.hasOwnProperty.call(a, key))
+      if (hasAnyDirectClaimKey) {
+        const body = Object.fromEntries(
+          directClaimKeys
+            .filter(key => Object.prototype.hasOwnProperty.call(a, key))
+            .map(key => [key, a[key]]),
+        )
+        return { method: 'POST', path: `/api/claim/${Number(a.id)}`, body }
+      }
+      if (typeof a.payer_wallet === 'string' && a.payer_wallet) {
+        return {
+          method: 'POST',
+          path: `/api/purchase-intent/${Number(a.id)}`,
+          body: { payer_wallet: a.payer_wallet },
+        }
+      }
+      return { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} }
+    },
   },
   {
     name: 'comment',
@@ -282,7 +340,9 @@ const TOOLS: ToolDef[] = [
 const rpcError = (c: Context, id: unknown, code: number, message: string) =>
   c.json({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
 
-export async function mcp(c: Context, app: Hono) {
+export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
+  const hostedChat = options.hostedChat === true
+  const catalog = hostedChat ? TOOLS.filter(tool => tool.name !== 'register') : TOOLS
   const msg = await c.req.json().catch(() => null)
   if (Array.isArray(msg)) return rpcError(c, null, -32600, 'batches not supported')
   if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string')
@@ -297,11 +357,15 @@ export async function mcp(c: Context, app: Hono) {
         protocolVersion: typeof params?.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL_DEFAULT,
         capabilities: { tools: {} },
         serverInfo: { name: '1f3ea', version: '1.0.0' },
-        instructions:
-          'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
-          'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
-          'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
-          'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
+        instructions: hostedChat
+          ? 'This is the hosted 1F3EA market connector. Public browsing works without sign-in. Existing ' +
+            'merchants sign in through the private 1F3EA browser approval page; never put a permanent ' +
+            'merchant key in chat or tool arguments. Registration remains on the ordinary MCP/JSON door. ' +
+            'Read https://1f3ea.com/ for the constitution. There is no market token.'
+          : 'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
+            'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
+            'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
+            'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
       },
     })
   }
@@ -310,9 +374,16 @@ export async function mcp(c: Context, app: Hono) {
   if (method === 'tools/list') {
     return c.json({
       jsonrpc: '2.0', id: id ?? null,
-      result: { tools: TOOLS.map(({ name, description, inputSchema, annotations }) => ({
-        name, description, inputSchema, annotations,
-      })) },
+      result: { tools: catalog.map(({ name, description, inputSchema, annotations }) => {
+        if (!hostedChat) return { name, description, inputSchema, annotations }
+        const securitySchemes = PUBLIC_TOOL_NAMES.has(name)
+          ? [NOAUTH_SCHEME, OAUTH_SCHEME]
+          : [OAUTH_SCHEME]
+        return {
+          name, description, inputSchema, annotations, securitySchemes,
+          _meta: { securitySchemes },
+        }
+      }) },
     })
   }
   if (method === 'tools/call') {
@@ -321,29 +392,91 @@ export async function mcp(c: Context, app: Hono) {
     const args = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
       ? rawArguments as Record<string, unknown>
       : {}
-    const tool = TOOLS.find(t => t.name === name)
+    const tool = catalog.find(t => t.name === name)
     if (!tool) return rpcError(c, id, -32602, `no such tool: ${name}`)
 
-    if (Object.prototype.hasOwnProperty.call(args, 'secret')) {
+    if (containsCredential(args)) {
       return c.json({
         jsonrpc: '2.0', id: id ?? null,
         result: {
-          content: [{ type: 'text', text: 'Do not put secrets in tool arguments. Configure the Authorization header.' }],
+          content: [{
+            type: 'text',
+            text: hostedChat
+              ? 'Do not put secrets or credentials in tool arguments. Use the private 1F3EA sign-in page.'
+              : 'Do not put secrets or credentials in tool arguments. Configure the Authorization header.',
+          }],
           isError: true,
         },
       })
     }
 
+    const headerAuth = c.req.header('authorization')
+    const bearer = headerAuth?.match(/^Bearer\s+(\S+)$/i)?.[1]
+    if (hostedChat && bearer?.startsWith(SECRET_PREFIX)) {
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{
+            type: 'text',
+            text: 'A permanent merchant key is not accepted by the hosted connector. Enter it only on the private 1F3EA sign-in page opened by ChatGPT.',
+          }],
+          isError: true,
+        },
+      })
+    }
+    if (!hostedChat && bearer?.startsWith('1f3ea_at_')) {
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{
+            type: 'text',
+            text: 'Wrong 1F3EA connector address. Remove or delete this connection, then add or create it again with https://1f3ea.com/mcp/connect.',
+          }],
+          isError: true,
+        },
+      })
+    }
+    if (hostedChat && !PUBLIC_TOOL_NAMES.has(tool.name) && !bearer) {
+      const challenge = hostedChallenge()
+      c.header('WWW-Authenticate', challenge)
+      const response = {
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{ type: 'text', text: 'Sign in to 1F3EA to use merchant tools.' }],
+          isError: true,
+          _meta: { 'mcp/www_authenticate': [challenge] },
+        },
+      }
+      return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+    }
+
     const { method: m, path, body } = tool.route(args)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
-    const headerAuth = c.req.header('authorization')
     if (headerAuth) headers.authorization = headerAuth
-    const res = await app.request(path, {
+    const backingRequest = new Request(new URL(path, c.req.url), {
       method: m,
       headers,
       body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
     })
-    const text = await res.text()
+    if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
+      allowOAuthForHostedConnectorRequest(backingRequest)
+    }
+    const res = await app.request(backingRequest)
+    const rawText = await res.text()
+    const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
+    if (hostedChat && res.status === 401) {
+      const challenge = hostedChallenge()
+      c.header('WWW-Authenticate', challenge)
+      const response = {
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{ type: 'text', text }],
+          isError: true,
+          _meta: { 'mcp/www_authenticate': [challenge] },
+        },
+      }
+      return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+    }
     return c.json({
       jsonrpc: '2.0', id: id ?? null,
       result: { content: [{ type: 'text', text }], isError: res.status >= 400 },

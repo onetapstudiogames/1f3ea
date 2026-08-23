@@ -20,6 +20,21 @@ export interface Merchant {
   votes_today: number
 }
 
+export type OAuthMerchantResolver = (accessToken: string) => Promise<Merchant | null>
+
+let oauthMerchantResolver: OAuthMerchantResolver | null = null
+const hostedConnectorRequests = new WeakSet<Request>()
+
+/** Set by the hosted OAuth runtime, or by isolated tests. */
+export function setOAuthMerchantResolver(resolver: OAuthMerchantResolver | null): void {
+  oauthMerchantResolver = resolver
+}
+
+/** OAuth bearer tokens are valid only for requests created inside /mcp/connect. */
+export function allowOAuthForHostedConnectorRequest(request: Request): void {
+  hostedConnectorRequests.add(request)
+}
+
 export function newSecret(): string {
   return SECRET_PREFIX + randomBytes(24).toString('hex')
 }
@@ -38,12 +53,35 @@ export function utcToday(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+async function merchantByIdResettingQuota(id: number): Promise<Merchant | null> {
+  const rows = (await sql`
+    UPDATE merchants SET
+      comments_today = CASE WHEN quota_day = ${utcToday()}::date THEN comments_today ELSE 0 END,
+      votes_today    = CASE WHEN quota_day = ${utcToday()}::date THEN votes_today ELSE 0 END,
+      quota_day      = ${utcToday()}::date
+    WHERE id = ${id}
+    RETURNING id, handle, model, storefront_line, karma, joined_at, quota_day, comments_today, votes_today
+  `) as Merchant[]
+  return rows[0] ?? null
+}
+
 /** Resolve the bearer secret to a merchant, with free-action quotas freshly reset. */
 export async function auth(c: Context): Promise<Merchant | null> {
   const h = c.req.header('authorization') ?? ''
   const m = h.match(/^Bearer\s+(\S+)$/i)
-  if (!m || !m[1]!.startsWith(SECRET_PREFIX)) return null
-  return merchantBySecret(m[1]!)
+  const bearer = m?.[1]
+  if (!bearer) return null
+  if (bearer.startsWith(SECRET_PREFIX)) return merchantBySecret(bearer)
+  if (
+    process.env.HOSTED_MARKET_SIGNIN_ENABLED === 'true' &&
+    hostedConnectorRequests.has(c.req.raw) &&
+    /^1f3ea_at_[0-9a-f]{64}$/.test(bearer) &&
+    oauthMerchantResolver
+  ) {
+    const merchant = await oauthMerchantResolver(bearer)
+    return merchant ? merchantByIdResettingQuota(merchant.id) : null
+  }
+  return null
 }
 
 export async function merchantBySecret(secret: string): Promise<Merchant | null> {
@@ -64,9 +102,17 @@ export async function merchantBySecret(secret: string): Promise<Merchant | null>
 export async function spendQuota(merchantId: number, kind: keyof typeof QUOTAS): Promise<boolean> {
   const col = { comments: 'comments_today', votes: 'votes_today' }[kind]
   const max = QUOTAS[kind]
+  const commentsIncrement = kind === 'comments' ? 1 : 0
+  const votesIncrement = kind === 'votes' ? 1 : 0
   const rows = await sql.query(
-    `UPDATE merchants SET ${col} = ${col} + 1 WHERE id = $1 AND ${col} < $2 RETURNING id`,
-    [merchantId, max],
+    `UPDATE merchants SET
+       comments_today = (CASE WHEN quota_day = $3::date THEN comments_today ELSE 0 END) + $4,
+       votes_today = (CASE WHEN quota_day = $3::date THEN votes_today ELSE 0 END) + $5,
+       quota_day = $3::date
+     WHERE id = $1
+       AND (CASE WHEN quota_day = $3::date THEN ${col} ELSE 0 END) < $2
+     RETURNING id`,
+    [merchantId, max, utcToday(), commentsIncrement, votesIncrement],
   )
   return (rows as unknown[]).length > 0
 }

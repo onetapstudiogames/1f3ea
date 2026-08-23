@@ -2,6 +2,7 @@
 // No live service, wallet, secret, payment, deployment, or production database is touched.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { Hono } from 'hono'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
@@ -16,6 +17,23 @@ const TX1 = '0x' + '11'.repeat(32)
 const TX2 = '0x' + '22'.repeat(32)
 const TX_CASE_LOWER = '0x' + 'ab'.repeat(32)
 const TX_CASE_UPPER = '0x' + 'AB'.repeat(32)
+const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
+
+interface PurchaseIntentRow {
+  id: number
+  merchant_id: number
+  listing_id: number
+  payer_wallet: string
+  seller_wallet: string
+  network: 'base'
+  asset: string
+  minimum_amount_usdc: string
+  challenge_nonce: string
+  created_at: string
+  expires_at: string
+  superseded_at: string | null
+  claimed_at: string | null
+}
 
 interface DbCall { url: string; query?: string; params?: unknown[] }
 
@@ -50,6 +68,8 @@ const state = {
   failFeeInsert: false,
   feeInsertErrorCode: '23505',
   paymentHashes: new Set<string>(),
+  nextIntentId: 100,
+  purchaseIntents: [] as PurchaseIntentRow[],
   failPurchaseInsert: false,
   purchaseInsertErrorCode: '23505',
   facilitatorVerify: false,
@@ -58,6 +78,7 @@ const state = {
   mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
+  quotaDayStale: false,
   commentQuotaLeft: true,
   failActivity: false,
   calls: [] as DbCall[],
@@ -125,6 +146,8 @@ const editableListing = () => ({
   removed_at: state.listingRemovedAt,
   withdrawn: state.listingWithdrawn,
   withdrawn_at: state.listingWithdrawnAt,
+  checked_at: new Date().toISOString(),
+  delivery_kind: 'artifact',
   has_purchases: state.priorPurchase,
   created_at: '2026-08-06T00:00:00Z',
 })
@@ -137,7 +160,7 @@ function merchantRow(id: number) {
     storefront_line: state.storeLine,
     karma: 0,
     joined_at: '2026-08-06T00:00:00Z',
-    quota_day: '2026-08-08',
+    quota_day: state.quotaDayStale ? '2026-08-07' : '2026-08-08',
     listings_today: state.legacyListingsToday,
     comments_today: state.commentQuotaLeft ? 0 : 20,
     votes_today: 0,
@@ -169,7 +192,22 @@ function applyListingEdit(query: string, params: unknown[]) {
 }
 
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
-  if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow(state.merchantId)] : []
+  if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE secret_hash')) {
+    if (!state.authValid) return []
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
+    return [merchantRow(state.merchantId)]
+  }
+  if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE id =')) {
+    if (!state.authValid) return []
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
+    return [merchantRow(state.merchantId)]
+  }
   if (query.includes('SELECT id FROM listings WHERE dup_hash')) {
     if (state.duplicateId == null) return []
     if (state.duplicateWithdrawn && /NOT\s+(?:l\.)?withdrawn/i.test(query)) return []
@@ -252,6 +290,39 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.listingExists ? [editableListing()] : []
   }
   if (query.includes('SELECT id FROM purchases')) return state.priorPurchase ? [{ id: 55 }] : []
+  if (query.includes('INSERT INTO direct_purchase_intents')) {
+    const dates = params.filter(value => typeof value === 'string'
+      && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) as string[]
+    const wallets = params.filter(value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)) as string[]
+    const next: PurchaseIntentRow = {
+      id: state.nextIntentId++,
+      merchant_id: state.merchantId,
+      listing_id: 1,
+      payer_wallet: String(wallets.find(wallet => wallet.toLowerCase() !== state.listingWallet.toLowerCase()
+        && wallet.toLowerCase() !== USDC.toLowerCase()) ?? state.feeFrom).toLowerCase(),
+      seller_wallet: state.listingWallet.toLowerCase(),
+      network: 'base',
+      asset: USDC.toLowerCase(),
+      minimum_amount_usdc: state.listingPrice.toFixed(6),
+      challenge_nonce: String(params.find(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value))),
+      created_at: dates.at(-2)!,
+      expires_at: dates.at(-1)!,
+      superseded_at: null,
+      claimed_at: null,
+    }
+    state.purchaseIntents = state.purchaseIntents.map(intent => intent.claimed_at || intent.superseded_at
+      ? intent
+      : { ...intent, superseded_at: next.created_at })
+    state.purchaseIntents = [...state.purchaseIntents, next]
+    return [{ ...next }]
+  }
+  if (query.includes('FROM direct_purchase_intents')) {
+    const intentId = Number(params.find(value =>
+      (typeof value === 'number' && Number.isInteger(value) && value >= 100)
+      || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100)))
+    const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
+    return intent ? [{ ...intent }] : []
+  }
   if (query.includes('FROM listings WHERE merchant_id')) return [{
     id: 10, title: 'A useful thing', aisle: 'tools', price_usdc: 1, votes: 2,
     sales: 1, pinned: false, removed: false, created_at: '2026-08-08T00:12:58.879Z',
@@ -279,6 +350,16 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
         throw Object.assign(new Error('duplicate payment use'), { code: '23505' })
       state.paymentHashes.add(hash)
     }
+    const intentId = Number(params.find(value =>
+      (typeof value === 'number' && Number.isInteger(value) && value >= 100)
+      || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100)))
+    if (Number.isInteger(intentId)) {
+      const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
+      if (!intent || intent.claimed_at || intent.superseded_at) return []
+      state.purchaseIntents = state.purchaseIntents.map(candidate => candidate.id === intentId
+        ? { ...candidate, claimed_at: new Date().toISOString() }
+        : candidate)
+    }
     const terminalAt = [state.listingRemovedAt, state.listingWithdrawnAt]
       .filter((value): value is string => Boolean(value))
       .map(value => Date.parse(value))
@@ -296,8 +377,13 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('SELECT title, artifact'))
     return [{ title: state.listingTitle, artifact: state.listingArtifact }]
   if (query.includes('SELECT id FROM listings WHERE id')) return state.listingExists ? [{ id: 1 }] : []
-  if (query.includes('comments_today = comments_today + 1'))
+  if (query.includes('comments_today = (CASE WHEN quota_day')) {
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
+  }
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
   if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN'))
     return state.activity
@@ -305,6 +391,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
 }
 
 function chainRespond(method: string): unknown {
+  if (method === 'web3_sha3') return '0x' + 'aa'.repeat(32)
+  if (method === 'eth_call') return '0x' + '00'.repeat(12) + state.feeFrom.toLowerCase().slice(2)
   if (method === 'eth_getTransactionReceipt') {
     return {
       status: '0x1',
@@ -388,7 +476,13 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
 const { default: app } = await import('../src/index.ts')
 const { FRONTDOOR } = await import('../src/door.ts')
 const { AISLES } = await import('../src/market.ts')
-const { dupHash } = await import('../src/core.ts')
+const {
+  allowOAuthForHostedConnectorRequest,
+  auth,
+  dupHash,
+  setOAuthMerchantResolver,
+  spendQuota,
+} = await import('../src/core.ts')
 
 const authed = { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' }
 const listingBody = (feeTx?: string, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -432,6 +526,8 @@ function reset() {
   state.failFeeInsert = false
   state.feeInsertErrorCode = '23505'
   state.paymentHashes = new Set()
+  state.nextIntentId = 100
+  state.purchaseIntents = []
   state.failPurchaseInsert = false
   state.purchaseInsertErrorCode = '23505'
   state.facilitatorVerify = false
@@ -440,6 +536,7 @@ function reset() {
   state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
+  state.quotaDayStale = false
   state.commentQuotaLeft = true
   state.failActivity = false
   state.calls = []
@@ -448,6 +545,18 @@ function reset() {
 const sqlCalls = () => state.calls.filter(call => call.query)
 const hasSql = (pattern: RegExp) => sqlCalls().some(call => pattern.test(call.query ?? ''))
 const inserted = (table: string) => sqlCalls().filter(call => call.query?.includes(`INSERT INTO ${table}`)).length
+
+async function openDirectIntent() {
+  const response = await app.request('/api/purchase-intent/1', {
+    method: 'POST', headers: authed, body: JSON.stringify({ payer_wallet: state.feeFrom }),
+  })
+  assert.equal(response.status, 201)
+  return (await response.json() as { purchase_intent: PurchaseIntentRow }).purchase_intent
+}
+
+function directClaimBody(intentId: number, txHash: string) {
+  return JSON.stringify({ intent_id: intentId, tx_hash: txHash, payer_signature: SIGNATURE })
+}
 
 test('a seller cannot buy its own listing', async () => {
   reset()
@@ -707,7 +816,8 @@ test('a direct payment before terminal time remains claimable, while one after t
     state.listingOwner = 8
     state.listingPrice = 0.5
     state.listingWallet = TREASURY
-    const terminalAt = new Date(Date.now() - 30_000).toISOString()
+    const beforeIntent = await openDirectIntent()
+    const terminalAt = new Date(Date.now() + 3_000).toISOString()
     if (terminalState === 'withdrawn') {
       state.listingWithdrawn = true
       state.listingWithdrawnAt = terminalAt
@@ -715,9 +825,9 @@ test('a direct payment before terminal time remains claimable, while one after t
       state.listingRemoved = true
       state.listingRemovedAt = terminalAt
     }
-    state.feeAgeSeconds = 60
+    state.feeAgeSeconds = -1
     const before = await app.request('/api/claim/1', {
-      method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX1 }),
+      method: 'POST', headers: authed, body: directClaimBody(beforeIntent.id, TX1),
     })
     assert.equal(before.status, 200, `payment before ${terminalState}_at was not delivered`)
     assert.equal(((await before.json()) as { artifact: string }).artifact, 'the goods')
@@ -727,7 +837,8 @@ test('a direct payment before terminal time remains claimable, while one after t
     state.listingOwner = 8
     state.listingPrice = 0.5
     state.listingWallet = TREASURY
-    const nextTerminalAt = new Date(Date.now() - 30_000).toISOString()
+    const afterIntent = await openDirectIntent()
+    const nextTerminalAt = new Date(Date.now() + 1_000).toISOString()
     if (terminalState === 'withdrawn') {
       state.listingWithdrawn = true
       state.listingWithdrawnAt = nextTerminalAt
@@ -735,9 +846,9 @@ test('a direct payment before terminal time remains claimable, while one after t
       state.listingRemoved = true
       state.listingRemovedAt = nextTerminalAt
     }
-    state.feeAgeSeconds = 10
+    state.feeAgeSeconds = -3
     const after = await app.request('/api/claim/1', {
-      method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX2 }),
+      method: 'POST', headers: authed, body: directClaimBody(afterIntent.id, TX2),
     })
     assert.notEqual(after.status, 200, `payment after ${terminalState}_at was incorrectly delivered`)
     assert.equal(inserted('purchases'), 0)
@@ -1094,8 +1205,10 @@ test('one treasury tx cannot be a listing fee and then a keeper purchase', async
   state.listingOwner = 8
   state.listingPrice = 0.5
   state.listingWallet = TREASURY
+  const intent = await openDirectIntent()
+  state.feeAgeSeconds = -2
   const claimed = await app.request('/api/claim/1', {
-    method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX_CASE_LOWER }),
+    method: 'POST', headers: authed, body: directClaimBody(intent.id, TX_CASE_LOWER),
   })
   assert.equal(claimed.status, 409)
   assert.match(((await claimed.json()) as { error: string }).error, /already purchased|tx already used/)
@@ -1106,8 +1219,10 @@ test('one treasury tx cannot be a keeper purchase and then a listing fee', async
   state.listingOwner = 8
   state.listingPrice = 0.5
   state.listingWallet = TREASURY
+  const intent = await openDirectIntent()
+  state.feeAgeSeconds = -2
   const claimed = await app.request('/api/claim/1', {
-    method: 'POST', headers: authed, body: JSON.stringify({ tx_hash: TX_CASE_UPPER }),
+    method: 'POST', headers: authed, body: directClaimBody(intent.id, TX_CASE_UPPER),
   })
   assert.equal(claimed.status, 200)
 
@@ -1414,6 +1529,18 @@ test('comment limits remain after the listing limit is removed', async () => {
   assert.match(((await res.json()) as { error: string }).error, /20 comments/)
 })
 
+test('quota spending resets both stale daily counters before incrementing one', async () => {
+  reset()
+  assert.equal(await spendQuota(state.merchantId, 'comments'), true)
+  const call = sqlCalls().find(candidate => candidate.query?.includes('UPDATE merchants SET'))
+  assert.ok(call)
+  assert.match(call.query ?? '', /comments_today\s*=\s*\(CASE WHEN quota_day/)
+  assert.match(call.query ?? '', /votes_today\s*=\s*\(CASE WHEN quota_day/)
+  assert.match(call.query ?? '', /quota_day\s*=\s*\$3::date/)
+  assert.deepEqual(call.params?.slice(0, 2).map(Number), [state.merchantId, 20])
+  assert.deepEqual(call.params?.slice(3).map(Number), [1, 0])
+})
+
 test('/api/me keeps the listings quota key as an unlimited compatibility marker', async () => {
   reset()
   const res = await app.request('/api/me', { headers: authed })
@@ -1431,6 +1558,55 @@ test('/api/me keeps the listings quota key as an unlimited compatibility marker'
   assert.equal(body.quotas_left.votes, 50)
   assert.equal(body.listings[0]?.aisle, 'tools')
   assert.equal(hasSql(/listings_today/), false)
+})
+
+test('hosted OAuth auth resets a stale daily comment quota before spending it', async () => {
+  reset()
+  state.commentQuotaLeft = false
+  state.quotaDayStale = true
+  process.env.HOSTED_MARKET_SIGNIN_ENABLED = 'true'
+  const accessToken = `1f3ea_at_${'cd'.repeat(32)}`
+  const mini = new Hono()
+  const staleMerchant = {
+    id: state.merchantId,
+    handle: `agent-${state.merchantId}`,
+    model: 'test-model',
+    storefront_line: state.storeLine,
+    karma: 0,
+    joined_at: '2026-08-06T00:00:00Z',
+    quota_day: '2026-08-07',
+    comments_today: 20,
+    votes_today: 0,
+  }
+  setOAuthMerchantResolver(async token => token === accessToken ? staleMerchant : null)
+
+  mini.get('/hosted-comment', async c => {
+    allowOAuthForHostedConnectorRequest(c.req.raw)
+    const merchant = await auth(c)
+    if (!merchant) return c.json({ error: 'unauthorized' }, 401)
+    return c.json({
+      quota_day: merchant.quota_day,
+      comments_today: merchant.comments_today,
+      spent: await spendQuota(merchant.id, 'comments'),
+    })
+  })
+
+  try {
+    const response = await mini.request('/hosted-comment', {
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      quota_day: '2026-08-08',
+      comments_today: 0,
+      spent: true,
+    })
+    assert.equal(hasSql(/UPDATE merchants SET[\s\S]*WHERE id =/), true)
+    assert.equal(hasSql(/WHERE secret_hash/), false)
+  } finally {
+    setOAuthMerchantResolver(null)
+    delete process.env.HOSTED_MARKET_SIGNIN_ENABLED
+  }
 })
 
 test('MCP advertises storefronts, aisles, and unlimited paid listing stock', async () => {
@@ -1486,6 +1662,66 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
     return !properties || !('secret' in properties)
   }), true)
   assert.equal(body.result.tools.every(tool => Object.values(tool.annotations).every(value => typeof value === 'boolean')), true)
+})
+
+test('MCP direct buying requires a fresh payer-signed intent and rejects tx-hash-only claims', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  state.listingWallet = TREASURY
+
+  const listed = await app.request('/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 40, method: 'tools/list' }),
+  })
+  const buy = ((await listed.json() as {
+    result: { tools: Array<{ name: string; description: string; inputSchema: { properties: Record<string, unknown> } }> }
+  }).result.tools).find(tool => tool.name === 'buy')!
+  assert.match(buy.description, /fresh ten-minute.*payer wallet.*intent_id.*payer_signature/i)
+  assert.deepEqual(Object.keys(buy.inputSchema.properties).sort(), [
+    'id', 'intent_id', 'payer_signature', 'payer_wallet', 'tx_hash',
+  ])
+
+  const opened = await app.request('/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 41, method: 'tools/call',
+      params: { name: 'buy', arguments: { id: 1, payer_wallet: SELLER } },
+    }),
+  })
+  const openedBody = await opened.json() as { result: { isError: boolean; content: Array<{ text: string }> } }
+  assert.equal(openedBody.result.isError, false)
+  const intent = (JSON.parse(openedBody.result.content[0]!.text) as { purchase_intent: PurchaseIntentRow }).purchase_intent
+  state.feeAgeSeconds = -2
+
+  const claimed = await app.request('/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 42, method: 'tools/call',
+      params: {
+        name: 'buy',
+        arguments: { id: 1, intent_id: intent.id, tx_hash: TX1, payer_signature: SIGNATURE },
+      },
+    }),
+  })
+  const claimedBody = await claimed.json() as { result: { isError: boolean; content: Array<{ text: string }> } }
+  assert.equal(claimedBody.result.isError, false)
+  assert.equal((JSON.parse(claimedBody.result.content[0]!.text) as { artifact: string }).artifact, 'the goods')
+
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  state.listingWallet = TREASURY
+  const oldProof = await app.request('/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SECRET}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 43, method: 'tools/call',
+      params: { name: 'buy', arguments: { id: 1, tx_hash: TX2 } },
+    }),
+  })
+  const oldProofBody = await oldProof.json() as { result: { isError: boolean; content: Array<{ text: string }> } }
+  assert.equal(oldProofBody.result.isError, true)
+  assert.match(oldProofBody.result.content[0]!.text, /exactly: intent_id, tx_hash, payer_signature/i)
 })
 
 test('MCP routes aisle browsing and authenticated store updates through the API', async () => {

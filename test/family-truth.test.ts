@@ -49,6 +49,10 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
   assert.equal(facts.city, 'https://1f3d9.com')
   assert.match(JSON.stringify(facts), /public/i)
   assert.match(JSON.stringify(facts), /market_buyer.*city_handle/i)
+  const directFacts = JSON.stringify(facts.ordinary_direct_payment)
+  assert.match(directFacts, /signed payer/i)
+  assert.match(directFacts, /Base USDC/i)
+  assert.match(directFacts, /one fee or one purchase/i)
 
   const initialized = await app.request('/mcp', {
     method: 'POST',

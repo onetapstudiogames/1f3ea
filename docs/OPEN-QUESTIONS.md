@@ -20,3 +20,9 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
    project-specific DNS targets; the deploy script re-reads them instead of assuming
    old fallback values.
+10. **Wave 15 hosted-access release** — Wave 12 prepared a separate local canonical
+    `1f3ea-marketplace` skill commit with the signed purchase-intent flow and safe
+    `/mcp/connect` guidance. Publishing that commit, applying the OAuth migration,
+    enabling the deployment flag, and refreshing installed copies remain release work.
+    Until then, do not describe the hosted path as live or teach agents to pay before a
+    fresh intent exists.

@@ -1,0 +1,193 @@
+// Protocol edge tests use only in-memory Hono apps. They never contact the
+// database, a wallet, the facilitator, or a live deployment.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { Hono } from 'hono'
+import { mcp, type McpOptions } from '../src/mcp.ts'
+
+const ACCESS_TOKEN = `1f3ea_at_${'cd'.repeat(32)}`
+
+function gateway(backing: Hono, options: McpOptions = {}) {
+  const app = new Hono()
+  app.post('/mcp', c => mcp(c, backing, options))
+  return app
+}
+
+function jsonRequest(body: unknown, authorization?: string) {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (authorization) headers.authorization = authorization
+  return {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  }
+}
+
+test('MCP rejects malformed envelopes, batches, missing methods, and unknown methods', async () => {
+  const app = gateway(new Hono())
+
+  const malformedJson = await app.request('/mcp', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
+  })
+  assert.equal(malformedJson.status, 200)
+  assert.deepEqual(await malformedJson.json(), {
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message' },
+  })
+
+  const batch = await app.request('/mcp', jsonRequest([]))
+  assert.deepEqual(await batch.json(), {
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported' },
+  })
+
+  const wrongVersion = await app.request('/mcp', jsonRequest({ jsonrpc: '1.0', id: 9, method: 'ping' }))
+  assert.deepEqual(await wrongVersion.json(), {
+    jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message' },
+  })
+
+  const missingMethod = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 10 }))
+  assert.equal((await missingMethod.json() as { error: { code: number } }).error.code, -32600)
+
+  const unknown = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 11, method: 'not-real' }))
+  assert.deepEqual(await unknown.json(), {
+    jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real' },
+  })
+})
+
+test('MCP lifecycle replies preserve ids, negotiate protocol versions, and accept notifications', async () => {
+  const backing = new Hono()
+  const ordinary = gateway(backing)
+  const hosted = gateway(backing, { hostedChat: true })
+
+  const defaultInitialize = await ordinary.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', method: 'initialize',
+  }))
+  const defaultBody = await defaultInitialize.json() as {
+    id: unknown
+    result: { protocolVersion: string; instructions: string }
+  }
+  assert.equal(defaultBody.id, null)
+  assert.equal(defaultBody.result.protocolVersion, '2025-06-18')
+  assert.match(defaultBody.result.instructions, /register once/i)
+
+  const requestedInitialize = await hosted.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 'start', method: 'initialize', params: { protocolVersion: '2026-01-01' },
+  }))
+  const requestedBody = await requestedInitialize.json() as {
+    id: unknown
+    result: { protocolVersion: string; instructions: string }
+  }
+  assert.equal(requestedBody.id, 'start')
+  assert.equal(requestedBody.result.protocolVersion, '2026-01-01')
+  assert.match(requestedBody.result.instructions, /hosted 1F3EA market connector/i)
+
+  const initialized = await ordinary.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', method: 'notifications/initialized',
+  }))
+  assert.equal(initialized.status, 202)
+  assert.equal(await initialized.text(), '')
+
+  const ping = await ordinary.request('/mcp', jsonRequest({ jsonrpc: '2.0', method: 'ping' }))
+  assert.deepEqual(await ping.json(), { jsonrpc: '2.0', id: null, result: {} })
+})
+
+test('MCP tool routing handles empty arguments, filters, encoded stores, and each buy shape', async () => {
+  const seen: Array<{ method: string; path: string; body: unknown }> = []
+  const backing = new Hono()
+  backing.all('*', async c => {
+    seen.push({
+      method: c.req.method,
+      path: new URL(c.req.url).pathname + new URL(c.req.url).search,
+      body: c.req.method === 'GET' ? null : await c.req.json(),
+    })
+    return c.json({ ok: true })
+  })
+  const app = gateway(backing)
+
+  const calls = [
+    { name: 'browse', arguments: ['ignored'] },
+    { name: 'browse', arguments: { q: 'signed tools', tag: 'mcp', aisle: 'tools', sort: 'karma' } },
+    { name: 'visit_store', arguments: {} },
+    { name: 'visit_store', arguments: { handle: 'a/b' } },
+    { name: 'buy', arguments: { id: 3 } },
+    { name: 'buy', arguments: { id: 4, payer_wallet: '0x1111111111111111111111111111111111111111' } },
+    { name: 'buy', arguments: { id: 5, intent_id: 8, tx_hash: 'proof' } },
+  ]
+  for (const params of calls) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: params.name, method: 'tools/call', params,
+    }))
+    const body = await response.json() as { result: { isError: boolean } }
+    assert.equal(body.result.isError, false)
+  }
+
+  assert.deepEqual(seen, [
+    { method: 'GET', path: '/api/shelves', body: null },
+    { method: 'GET', path: '/api/shelves?q=signed+tools&tag=mcp&aisle=tools&sort=karma', body: null },
+    { method: 'GET', path: '/api/store/', body: null },
+    { method: 'GET', path: '/api/store/a%2Fb', body: null },
+    { method: 'POST', path: '/api/buy/3', body: {} },
+    {
+      method: 'POST', path: '/api/purchase-intent/4',
+      body: { payer_wallet: '0x1111111111111111111111111111111111111111' },
+    },
+    { method: 'POST', path: '/api/claim/5', body: { intent_id: 8, tx_hash: 'proof' } },
+  ])
+
+  const unknownTool = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
+  }))
+  assert.deepEqual(await unknownTool.json(), {
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
+  })
+})
+
+test('hosted MCP keeps OAuth challenges on both pre-route and backing-route failures', async () => {
+  const backing = new Hono()
+  backing.get('/api/shelves', c => c.json({ error: 'expired access' }, 401))
+
+  const forwarded = gateway(backing, { hostedChat: true, forwardUnauthorizedStatus: true })
+  const anonymous = await forwarded.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'me', arguments: {} },
+  }))
+  assert.equal(anonymous.status, 401)
+  assert.match(anonymous.headers.get('www-authenticate') ?? '', /resource_metadata=/)
+
+  const backingFailure = await forwarded.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'browse', arguments: {} },
+  }, `Bearer ${ACCESS_TOKEN}`))
+  assert.equal(backingFailure.status, 401)
+  assert.match(backingFailure.headers.get('www-authenticate') ?? '', /resource_metadata=/)
+  const failedBody = await backingFailure.json() as {
+    result: { isError: boolean; _meta: { 'mcp/www_authenticate': string[] } }
+  }
+  assert.equal(failedBody.result.isError, true)
+  assert.equal(failedBody.result._meta['mcp/www_authenticate'].length, 1)
+
+  const wrapped = gateway(backing, { hostedChat: true, forwardUnauthorizedStatus: false })
+  const wrappedFailure = await wrapped.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'browse', arguments: {} },
+  }, `Bearer ${ACCESS_TOKEN}`))
+  assert.equal(wrappedFailure.status, 200)
+  assert.equal((await wrappedFailure.json() as { result: { isError: boolean } }).result.isError, true)
+})
+
+test('ordinary MCP keeps backing errors inside the tool result and warns on nested credentials', async () => {
+  const backing = new Hono()
+  backing.get('/api/shelves', c => c.json({ error: 'bad filter' }, 400))
+  const app = gateway(backing)
+
+  const backingError = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browse', arguments: {} },
+  }))
+  assert.equal(backingError.status, 200)
+  const backingBody = await backingError.json() as { result: { isError: boolean } }
+  assert.equal(backingBody.result.isError, true)
+
+  const nestedCredential = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 2, method: 'tools/call',
+    params: { name: 'comment', arguments: { body: [`save ${ACCESS_TOKEN}`] } },
+  }))
+  const credentialBody = await nestedCredential.json() as { result: { content: Array<{ text: string }> } }
+  assert.match(credentialBody.result.content[0]!.text, /configure the Authorization header/i)
+  assert.doesNotMatch(JSON.stringify(credentialBody), new RegExp(ACCESS_TOKEN, 'i'))
+})
