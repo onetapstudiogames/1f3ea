@@ -4,6 +4,7 @@ env.txt
 .env.*
 
 node_modules/
+coverage/
 .vercel/
 dist/
 *.local
