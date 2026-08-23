@@ -75,12 +75,32 @@ const MIGRATIONS = Object.freeze({
   postconditions: readonly Postcondition[]
 }>>>)
 
-function namedArgument(args: readonly string[], name: string): string | undefined {
-  const prefix = `--${name}=`
-  const joined = args.find(argument => argument.startsWith(prefix))
-  if (joined) return joined.slice(prefix.length)
-  const index = args.indexOf(`--${name}`)
-  return index === -1 ? undefined : args[index + 1]
+const ARGUMENT_NAMES = new Set([
+  'target',
+  'migration',
+  'database',
+  'endpoint',
+  'production-endpoint',
+])
+
+function parseNamedArguments(args: readonly string[]): ReadonlyMap<string, string> {
+  const values = new Map<string, string>()
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!
+    if (!argument.startsWith('--')) throw new Error(`unknown argument ${JSON.stringify(argument)}`)
+    const equals = argument.indexOf('=')
+    const name = argument.slice(2, equals === -1 ? undefined : equals)
+    if (!ARGUMENT_NAMES.has(name)) throw new Error(`unknown argument --${name}`)
+    if (values.has(name)) throw new Error(`--${name} must appear exactly once`)
+
+    const value = equals === -1 ? args[index + 1] : argument.slice(equals + 1)
+    if (!value || (equals === -1 && value.startsWith('--'))) {
+      throw new Error(`--${name} requires a value`)
+    }
+    values.set(name, value)
+    if (equals === -1) index += 1
+  }
+  return values
 }
 
 function requireSafeDatabaseName(value: string | undefined): string {
@@ -139,16 +159,17 @@ export function resolveReleaseMigration(
   args: readonly string[],
   environment: MigrationEnvironment,
 ): ReleaseMigrationRun {
-  const target = namedArgument(args, 'target')
+  const argumentsByName = parseNamedArguments(args)
+  const target = argumentsByName.get('target')
   if (target !== 'preview' && target !== 'production') {
     throw new Error('release migration requires --target preview|production')
   }
-  const migration = namedArgument(args, 'migration')
+  const migration = argumentsByName.get('migration')
   if (migration !== 'direct-payments' && migration !== 'hosted-market-signin') {
     throw new Error('release migration requires --migration direct-payments|hosted-market-signin')
   }
-  const databaseName = requireSafeDatabaseName(namedArgument(args, 'database'))
-  const endpoint = requireEndpoint(namedArgument(args, 'endpoint'), 'endpoint')
+  const databaseName = requireSafeDatabaseName(argumentsByName.get('database'))
+  const endpoint = requireEndpoint(argumentsByName.get('endpoint'), 'endpoint')
 
   const isPreview = target === 'preview'
   const acknowledgementName = isPreview
@@ -163,12 +184,14 @@ export function resolveReleaseMigration(
 
   if (isPreview) {
     const productionEndpoint = requireEndpoint(
-      namedArgument(args, 'production-endpoint'),
+      argumentsByName.get('production-endpoint'),
       'production-endpoint',
     )
     if (endpoint === productionEndpoint) {
       throw new Error('preview endpoint must differ from production endpoint')
     }
+  } else if (argumentsByName.has('production-endpoint')) {
+    throw new Error('--production-endpoint is valid only for preview migrations')
   }
 
   const variableName = isPreview
