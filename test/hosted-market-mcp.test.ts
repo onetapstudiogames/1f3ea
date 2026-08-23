@@ -16,6 +16,26 @@ const NOAUTH_SCHEME = { type: 'noauth' } as const
 process.env.PUBLIC_ORIGIN = ORIGIN
 process.env.HOSTED_MARKET_SIGNIN_ENABLED = 'true'
 
+const jsonResponse = (obj: unknown, status = 200) => new Response(
+  JSON.stringify(obj),
+  { status, headers: { 'content-type': 'application/json' } },
+)
+
+function neonEncode(rows: Record<string, unknown>[]) {
+  const keys = Object.keys(rows[0] ?? {})
+  const typeOf = (value: unknown) => {
+    if (typeof value === 'boolean') return 16
+    if (typeof value === 'number') return Number.isInteger(value) ? 23 : 701
+    return 25
+  }
+  return {
+    command: 'SELECT',
+    rowCount: rows.length,
+    fields: keys.map(name => ({ name, dataTypeID: typeOf(rows[0]?.[name]) })),
+    rows: rows.map(row => keys.map(key => row[key] == null ? null : String(row[key]))),
+  }
+}
+
 interface ToolDefinition {
   name: string
   description: string
@@ -144,6 +164,16 @@ test('OAuth access is isolated to the hosted connector and the legacy door gives
     joined_at: '2026-08-22T00:00:00.000Z', storefront_line: '', quota_day: '2026-08-22',
     comments_today: 0, votes_today: 0,
   }
+  const previousDatabaseUrl = process.env.DATABASE_URL
+  const previousFetch = globalThis.fetch
+  process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
+  globalThis.fetch = (async (_input, init) => {
+    const body = init?.body && typeof init.body === 'string'
+      ? JSON.parse(init.body)
+      : { query: '' }
+    assert.match(String(body.query ?? ''), /UPDATE merchants SET[\s\S]*WHERE id =/i)
+    return jsonResponse(neonEncode([merchant]))
+  }) as typeof fetch
   setOAuthMerchantResolver(async token => token === ACCESS_TOKEN ? merchant : null)
   try {
     const raw = await harness.market.request('/api/me', {
@@ -168,6 +198,9 @@ test('OAuth access is isolated to the hosted connector and the legacy door gives
     assert.equal(harness.forwardedAuthorization(), `Bearer ${ACCESS_TOKEN}`)
   } finally {
     setOAuthMerchantResolver(null)
+    globalThis.fetch = previousFetch
+    if (previousDatabaseUrl == null) delete process.env.DATABASE_URL
+    else process.env.DATABASE_URL = previousDatabaseUrl
   }
 })
 

@@ -2,6 +2,7 @@
 // No live service, wallet, secret, payment, deployment, or production database is touched.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { Hono } from 'hono'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
@@ -77,6 +78,7 @@ const state = {
   mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
+  quotaDayStale: false,
   commentQuotaLeft: true,
   failActivity: false,
   calls: [] as DbCall[],
@@ -158,7 +160,7 @@ function merchantRow(id: number) {
     storefront_line: state.storeLine,
     karma: 0,
     joined_at: '2026-08-06T00:00:00Z',
-    quota_day: '2026-08-08',
+    quota_day: state.quotaDayStale ? '2026-08-07' : '2026-08-08',
     listings_today: state.legacyListingsToday,
     comments_today: state.commentQuotaLeft ? 0 : 20,
     votes_today: 0,
@@ -190,7 +192,22 @@ function applyListingEdit(query: string, params: unknown[]) {
 }
 
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
-  if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow(state.merchantId)] : []
+  if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE secret_hash')) {
+    if (!state.authValid) return []
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
+    return [merchantRow(state.merchantId)]
+  }
+  if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE id =')) {
+    if (!state.authValid) return []
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
+    return [merchantRow(state.merchantId)]
+  }
   if (query.includes('SELECT id FROM listings WHERE dup_hash')) {
     if (state.duplicateId == null) return []
     if (state.duplicateWithdrawn && /NOT\s+(?:l\.)?withdrawn/i.test(query)) return []
@@ -360,8 +377,13 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('SELECT title, artifact'))
     return [{ title: state.listingTitle, artifact: state.listingArtifact }]
   if (query.includes('SELECT id FROM listings WHERE id')) return state.listingExists ? [{ id: 1 }] : []
-  if (query.includes('comments_today = comments_today + 1'))
+  if (query.includes('comments_today = (CASE WHEN quota_day')) {
+    if (state.quotaDayStale) {
+      state.quotaDayStale = false
+      state.commentQuotaLeft = true
+    }
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
+  }
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
   if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN'))
     return state.activity
@@ -454,7 +476,13 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
 const { default: app } = await import('../src/index.ts')
 const { FRONTDOOR } = await import('../src/door.ts')
 const { AISLES } = await import('../src/market.ts')
-const { dupHash } = await import('../src/core.ts')
+const {
+  allowOAuthForHostedConnectorRequest,
+  auth,
+  dupHash,
+  setOAuthMerchantResolver,
+  spendQuota,
+} = await import('../src/core.ts')
 
 const authed = { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json' }
 const listingBody = (feeTx?: string, extra: Record<string, unknown> = {}) => JSON.stringify({
@@ -508,6 +536,7 @@ function reset() {
   state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
+  state.quotaDayStale = false
   state.commentQuotaLeft = true
   state.failActivity = false
   state.calls = []
@@ -1500,6 +1529,18 @@ test('comment limits remain after the listing limit is removed', async () => {
   assert.match(((await res.json()) as { error: string }).error, /20 comments/)
 })
 
+test('quota spending resets both stale daily counters before incrementing one', async () => {
+  reset()
+  assert.equal(await spendQuota(state.merchantId, 'comments'), true)
+  const call = sqlCalls().find(candidate => candidate.query?.includes('UPDATE merchants SET'))
+  assert.ok(call)
+  assert.match(call.query ?? '', /comments_today\s*=\s*\(CASE WHEN quota_day/)
+  assert.match(call.query ?? '', /votes_today\s*=\s*\(CASE WHEN quota_day/)
+  assert.match(call.query ?? '', /quota_day\s*=\s*\$3::date/)
+  assert.deepEqual(call.params?.slice(0, 2).map(Number), [state.merchantId, 20])
+  assert.deepEqual(call.params?.slice(3).map(Number), [1, 0])
+})
+
 test('/api/me keeps the listings quota key as an unlimited compatibility marker', async () => {
   reset()
   const res = await app.request('/api/me', { headers: authed })
@@ -1517,6 +1558,55 @@ test('/api/me keeps the listings quota key as an unlimited compatibility marker'
   assert.equal(body.quotas_left.votes, 50)
   assert.equal(body.listings[0]?.aisle, 'tools')
   assert.equal(hasSql(/listings_today/), false)
+})
+
+test('hosted OAuth auth resets a stale daily comment quota before spending it', async () => {
+  reset()
+  state.commentQuotaLeft = false
+  state.quotaDayStale = true
+  process.env.HOSTED_MARKET_SIGNIN_ENABLED = 'true'
+  const accessToken = `1f3ea_at_${'cd'.repeat(32)}`
+  const mini = new Hono()
+  const staleMerchant = {
+    id: state.merchantId,
+    handle: `agent-${state.merchantId}`,
+    model: 'test-model',
+    storefront_line: state.storeLine,
+    karma: 0,
+    joined_at: '2026-08-06T00:00:00Z',
+    quota_day: '2026-08-07',
+    comments_today: 20,
+    votes_today: 0,
+  }
+  setOAuthMerchantResolver(async token => token === accessToken ? staleMerchant : null)
+
+  mini.get('/hosted-comment', async c => {
+    allowOAuthForHostedConnectorRequest(c.req.raw)
+    const merchant = await auth(c)
+    if (!merchant) return c.json({ error: 'unauthorized' }, 401)
+    return c.json({
+      quota_day: merchant.quota_day,
+      comments_today: merchant.comments_today,
+      spent: await spendQuota(merchant.id, 'comments'),
+    })
+  })
+
+  try {
+    const response = await mini.request('/hosted-comment', {
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      quota_day: '2026-08-08',
+      comments_today: 0,
+      spent: true,
+    })
+    assert.equal(hasSql(/UPDATE merchants SET[\s\S]*WHERE id =/), true)
+    assert.equal(hasSql(/WHERE secret_hash/), false)
+  } finally {
+    setOAuthMerchantResolver(null)
+    delete process.env.HOSTED_MARKET_SIGNIN_ENABLED
+  }
 })
 
 test('MCP advertises storefronts, aisles, and unlimited paid listing stock', async () => {
