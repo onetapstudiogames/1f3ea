@@ -9,6 +9,10 @@ import {
   merchantByOAuthAccessToken,
   mountMarketOAuthRoutes,
 } from '../src/market-oauth.ts'
+import {
+  CHATGPT_OAUTH_CLIENT_ID,
+  CHATGPT_OAUTH_REDIRECT_URI,
+} from '../src/market-oauth-config.ts'
 import type {
   AuthorizationCodeRecord,
   AuthorizationRequestInput,
@@ -463,4 +467,78 @@ test('OAuth revocation disconnects the full token family and keeps its response 
   })
   assert.equal(refreshAfterRevoke.status, 400)
   assert.deepEqual(await refreshAfterRevoke.json(), { error: 'invalid_grant' })
+})
+
+test('authorization throttles before any remote ChatGPT metadata fetch', async () => {
+  const store = new MemoryOAuthStore()
+  let fetchCount = 0
+  const app = new Hono()
+  mountMarketOAuthRoutes(app, {
+    environment: {
+      ...environment,
+      HOSTED_MARKET_OAUTH_CLIENTS: '[]',
+      HOSTED_MARKET_CIMD_ORIGINS: JSON.stringify(['https://chatgpt.com']),
+    },
+    store: {
+      ...store.api,
+      consumeOAuthRateLimit: async () => false,
+    },
+    fetcher: (async () => {
+      fetchCount += 1
+      return new Response(JSON.stringify({
+        client_id: CHATGPT_OAUTH_CLIENT_ID,
+        client_name: 'ChatGPT',
+        redirect_uris: [CHATGPT_OAUTH_REDIRECT_URI],
+        token_endpoint_auth_method: 'private_key_jwt',
+        token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+      }), { headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch,
+  })
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: CHATGPT_OAUTH_CLIENT_ID,
+    redirect_uri: CHATGPT_OAUTH_REDIRECT_URI, resource: RESOURCE,
+    scope: 'market:merchant', state: STATE, code_challenge: CHALLENGE,
+    code_challenge_method: 'S256',
+  })
+
+  const response = await app.request(`/oauth/authorize?${query}`)
+  assert.equal(response.status, 429)
+  assert.equal(fetchCount, 0)
+})
+
+test('an invalid authorization request cannot spend the shared ChatGPT client bucket', async () => {
+  const store = new MemoryOAuthStore()
+  const rateBuckets: string[] = []
+  const app = new Hono()
+  mountMarketOAuthRoutes(app, {
+    environment: {
+      ...environment,
+      HOSTED_MARKET_OAUTH_CLIENTS: '[]',
+      HOSTED_MARKET_CIMD_ORIGINS: JSON.stringify(['https://chatgpt.com']),
+    },
+    store: {
+      ...store.api,
+      consumeOAuthRateLimit: async input => {
+        rateBuckets.push(input.bucketHash)
+        return true
+      },
+    },
+    fetcher: (async () => new Response(JSON.stringify({
+      client_id: CHATGPT_OAUTH_CLIENT_ID,
+      client_name: 'ChatGPT',
+      redirect_uris: [CHATGPT_OAUTH_REDIRECT_URI],
+      token_endpoint_auth_method: 'private_key_jwt',
+      token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+    }), { headers: { 'content-type': 'application/json' } })) as typeof fetch,
+  })
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: CHATGPT_OAUTH_CLIENT_ID,
+    redirect_uri: `${CHATGPT_OAUTH_REDIRECT_URI}/near-match`, resource: RESOURCE,
+    scope: 'market:merchant', state: STATE, code_challenge: CHALLENGE,
+    code_challenge_method: 'S256',
+  })
+
+  const response = await app.request(`/oauth/authorize?${query}`)
+  assert.equal(response.status, 400)
+  assert.deepEqual(rateBuckets, [sha256('market-oauth:metadata-ip:unknown')])
 })

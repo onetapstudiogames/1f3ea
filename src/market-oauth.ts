@@ -9,6 +9,7 @@ import {
   hostedMarketSigninEnabled,
   marketOAuthResource,
   marketPublicOrigin,
+  marketTokenLooksSensitive,
   parseMarketCimdOrigins,
   parseMarketOAuthClients,
   resolveMarketOAuthClient,
@@ -272,10 +273,27 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
   app.get('/oauth/authorize', async c => {
     const query = queryObject(new URL(c.req.url))
     if (!query) return browserError(c, 400, 'The sign-in request was not valid.')
+    const rawClientId = query.client_id
+    if (
+      !rawClientId || Buffer.byteLength(rawClientId, 'utf8') > 2_048 ||
+      marketTokenLooksSensitive(rawClientId)
+    ) return browserError(c, 400, 'The sign-in request was not valid.')
+    try {
+      const allowed = await admitted(
+        oauth,
+        [`metadata-ip:${clientAddress(c, oauth.environment)}`],
+        'authorize',
+        120,
+      )
+      if (!allowed) return browserError(c, 429, 'Too many sign-in attempts. Try again in one hour.')
+    } catch {
+      c.header('Retry-After', '1')
+      return browserError(c, 503, '1F3EA could not start sign-in. Try again in a moment.')
+    }
     let client
     try {
       client = await resolveMarketOAuthClient(
-        query.client_id ?? '', oauth.staticClients, oauth.cimdOrigins, oauth.fetcher,
+        rawClientId, oauth.staticClients, oauth.cimdOrigins, oauth.fetcher,
       )
     } catch {
       return browserError(c, 400, 'The requesting chat app is not approved.')
@@ -289,7 +307,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
     try {
       const allowed = await admitted(
         oauth,
-        [`ip:${clientAddress(c, oauth.environment)}`, `client:${request.clientId}`],
+        [`client:${request.clientId}`],
         'authorize',
         60,
       )
