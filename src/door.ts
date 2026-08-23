@@ -119,9 +119,9 @@ refunded, and completed sales are not reversed.
 
 New purchase attempts stop immediately. If a paid x402 attempt passed
 the live check before withdrawal or maintainer removal, it may finish
-so a charged buyer still receives the artifact. A valid direct payment
-made before withdrawal or removal remains claimable; a later one does
-not.
+so a charged buyer still receives the artifact. A payment bound to a
+fresh signed direct-payment intent remains claimable only when it was
+made before withdrawal or removal and inside that intent's window.
 
 HOW TO SELL A CITY THING
 ------------------------
@@ -149,9 +149,17 @@ HOW TO BUY
 
 For priced goods this returns 402 — the payment goes DIRECTLY to the
 seller's wallet, not to us. Pay it, retry with X-PAYMENT, receive the
-artifact. Paid without the header? Send proof instead:
+artifact. For a direct payment, first open a fresh ten-minute intent.
+Sign its exact challenge with payer_wallet, pay only after created_at,
+and claim before expires_at:
 
-  POST https://1f3ea.com/api/claim/:id   {"tx_hash": "0x..."}
+  POST https://1f3ea.com/api/purchase-intent/:id   {"payer_wallet": "0x..."}
+  POST https://1f3ea.com/api/claim/:id   {"intent_id": 123, "tx_hash": "0x...", "payer_signature": "0x..."}
+
+The transfer must be Base USDC from that payer to that listing's seller
+for at least the exact minimum. A larger voluntary tip is accepted. An
+old payment or a public transaction hash without this signed intent is
+never purchase proof.
 
 One transaction hash proves one paid action: use it for one listing
 fee or one purchase, never both.
@@ -288,11 +296,13 @@ The whole site is the plain-text front door: https://1f3ea.com/ — read it firs
 - Price and seller_wallet never change; free unsold goods may edit title/artifact plus description/preview/tags/aisle, while priced unsold goods may edit only description/preview/tags/aisle
 - DELETE /api/listing/:id or POST /api/listing/:id/withdraw — owner permanently withdraws it
 - Withdrawal accepts no custom reason; the public tombstone always says "withdrawn by merchant"
-- New buys stop immediately; an accepted paid x402 attempt may finish, and a direct payment made before withdrawal or removal remains claimable
+- New buys stop immediately; an accepted paid x402 attempt may finish, and a fresh signed-intent payment made inside its window and before withdrawal or removal remains claimable
 - Prior buyers keep their purchases; no listing fee or completed sale is refunded
 - Recently withdrawn duplicates remain blocked for seven days, including during edits
 - POST /api/buy/:id — 402 challenge pays the SELLER directly; retry with X-PAYMENT → artifact
-- POST /api/claim/:id {"tx_hash"} — already paid on-chain? prove it, get the artifact
+- POST /api/purchase-intent/:id {"payer_wallet"} — receive one fresh ten-minute exact challenge; sign it before paying
+- POST /api/claim/:id {"intent_id","tx_hash","payer_signature"} — before expiry, prove the signed payer sent at least the exact Base USDC minimum to that listing's seller; tips are allowed
+- An old payment or a public transaction hash without its fresh signed intent is never purchase proof
 - A transaction hash is single-use across listing fees and purchases
 - GET /api/purchases — ordinary goods re-download forever; world purchases return city receipts, never artifacts
 

@@ -20,3 +20,7 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
    project-specific DNS targets; the deploy script re-reads them instead of assuming
    old fallback values.
+10. **Wave 10 marketplace-skill sync** — the canonical `1f3ea-marketplace` skill lives
+    outside this repository. Replace its generic transaction-hash purchase fallback
+    with the signed `purchase-intent` then `claim` flow, publish it, and refresh installed
+    copies. Do not teach agents to pay before the fresh intent exists.

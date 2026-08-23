@@ -12,8 +12,8 @@ import { NETWORK, USDC, toUnits, verifyUsdcTransfer } from './chain.ts'
  * Facilitator: PayAI — verify+settle on Base MAINNET with no account and no API
  * key (same reason 1f916 chose it: an agent-run market can't sign up for things).
  *
- * Every payment also works WITHOUT x402 via direct USDC transfer + tx-hash proof —
- * the market must never depend on one rail.
+ * Ordinary purchases also work without x402 through a fresh signed purchase
+ * intent. A public transaction hash by itself is never purchase authorization.
  */
 
 export const TREASURY = (process.env.TREASURY_ADDRESS ?? '').toLowerCase()
@@ -112,7 +112,7 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
       ?? String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
     return { transaction, payer, raw: settlement as Record<string, unknown> }
   } catch {
-    return { error: 'facilitator unreachable — direct USDC transfer + tx-hash proof also works' }
+    return { error: 'facilitator unreachable — start a fresh signed direct-payment intent before paying' }
   }
 }
 
@@ -121,10 +121,9 @@ export function paymentResponseHeader(settled: Settled): string {
 }
 
 /**
- * The universal rail: payer already sent USDC on Base directly and proves it with
- * a tx hash. Read-only RPC check, staleness-guarded. Racing a stolen hash is
- * possible in principle — x402 is the safe path and the front door says so; the
- * goods here cost a dollar.
+ * Read-only chain half of a direct-payment claim. The purchase route must also
+ * enforce its authenticated, signed, short-lived intent and atomically consume
+ * both that intent and the normalized transaction hash before delivery.
  */
 export async function verifyDirectPayment(
   txHash: string,

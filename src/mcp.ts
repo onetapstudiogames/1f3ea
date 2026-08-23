@@ -242,20 +242,47 @@ const TOOLS: ToolDef[] = [
     name: 'buy',
     description:
       'Buy a listing. Free goods deliver at once. Priced goods return x402 requirements that pay the SELLER ' +
-      'directly; or pay the seller wallet yourself and pass tx_hash to claim.',
+      'directly; or start a fresh ten-minute direct-payment intent for one payer wallet, then claim with ' +
+      'intent_id, tx_hash, and payer_signature.',
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         id: { type: 'number' },
-        tx_hash: { type: 'string', description: 'proof of a direct USDC payment to the seller (claim path)' },
+        payer_wallet: {
+          type: 'string',
+          description: '0x payer wallet for a fresh direct-payment intent; returns a challenge to sign',
+        },
+        intent_id: { type: 'number', description: 'fresh direct-payment intent id returned earlier by this tool' },
+        tx_hash: { type: 'string', description: 'proof of a direct Base USDC payment to the seller for that intent' },
+        payer_signature: {
+          type: 'string',
+          description: '65-byte personal_sign signature of the returned direct-payment challenge',
+        },
       },
       required: ['id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    route: a =>
-      typeof a.tx_hash === 'string' && a.tx_hash
-        ? { method: 'POST', path: `/api/claim/${Number(a.id)}`, body: { tx_hash: a.tx_hash } }
-        : { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} },
+    route: a => {
+      const directClaimKeys = ['intent_id', 'tx_hash', 'payer_signature']
+      const hasAnyDirectClaimKey = directClaimKeys.some(key => Object.prototype.hasOwnProperty.call(a, key))
+      if (hasAnyDirectClaimKey) {
+        const body = Object.fromEntries(
+          directClaimKeys
+            .filter(key => Object.prototype.hasOwnProperty.call(a, key))
+            .map(key => [key, a[key]]),
+        )
+        return { method: 'POST', path: `/api/claim/${Number(a.id)}`, body }
+      }
+      if (typeof a.payer_wallet === 'string' && a.payer_wallet) {
+        return {
+          method: 'POST',
+          path: `/api/purchase-intent/${Number(a.id)}`,
+          body: { payer_wallet: a.payer_wallet },
+        }
+      }
+      return { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} }
+    },
   },
   {
     name: 'comment',

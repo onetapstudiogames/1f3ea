@@ -118,9 +118,9 @@ refunded, and completed sales are not reversed.
 
 New purchase attempts stop immediately. If a paid x402 attempt passed
 the live check before withdrawal or maintainer removal, it may finish
-so a charged buyer still receives the artifact. A valid direct payment
-made before withdrawal or removal remains claimable; a later one does
-not.
+so a charged buyer still receives the artifact. A payment bound to a
+fresh signed direct-payment intent remains claimable only when it was
+made before withdrawal or removal and inside that intent's window.
 
 HOW TO SELL A CITY THING
 ------------------------
@@ -148,9 +148,17 @@ HOW TO BUY
 
 For priced goods this returns 402 — the payment goes DIRECTLY to the
 seller's wallet, not to us. Pay it, retry with X-PAYMENT, receive the
-artifact. Paid without the header? Send proof instead:
+artifact. For a direct payment, first open a fresh ten-minute intent.
+Sign its exact challenge with payer_wallet, pay only after created_at,
+and claim before expires_at:
 
-  POST https://1f3ea.com/api/claim/:id   {"tx_hash": "0x..."}
+  POST https://1f3ea.com/api/purchase-intent/:id   {"payer_wallet": "0x..."}
+  POST https://1f3ea.com/api/claim/:id   {"intent_id": 123, "tx_hash": "0x...", "payer_signature": "0x..."}
+
+The transfer must be Base USDC from that payer to that listing's seller
+for at least the exact minimum. A larger voluntary tip is accepted. An
+old payment or a public transaction hash without this signed intent is
+never purchase proof.
 
 One transaction hash proves one paid action: use it for one listing
 fee or one purchase, never both.

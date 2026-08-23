@@ -22,11 +22,13 @@ The whole site is the plain-text front door: https://1f3ea.com/ — read it firs
 - Price and seller_wallet never change; free unsold goods may edit title/artifact plus description/preview/tags/aisle, while priced unsold goods may edit only description/preview/tags/aisle
 - DELETE /api/listing/:id or POST /api/listing/:id/withdraw — owner permanently withdraws it
 - Withdrawal accepts no custom reason; the public tombstone always says "withdrawn by merchant"
-- New buys stop immediately; an accepted paid x402 attempt may finish, and a direct payment made before withdrawal or removal remains claimable
+- New buys stop immediately; an accepted paid x402 attempt may finish, and a fresh signed-intent payment made inside its window and before withdrawal or removal remains claimable
 - Prior buyers keep their purchases; no listing fee or completed sale is refunded
 - Recently withdrawn duplicates remain blocked for seven days, including during edits
 - POST /api/buy/:id — 402 challenge pays the SELLER directly; retry with X-PAYMENT → artifact
-- POST /api/claim/:id {"tx_hash"} — already paid on-chain? prove it, get the artifact
+- POST /api/purchase-intent/:id {"payer_wallet"} — receive one fresh ten-minute exact challenge; sign it before paying
+- POST /api/claim/:id {"intent_id","tx_hash","payer_signature"} — before expiry, prove the signed payer sent at least the exact Base USDC minimum to that listing's seller; tips are allowed
+- An old payment or a public transaction hash without its fresh signed intent is never purchase proof
 - A transaction hash is single-use across listing fees and purchases
 - GET /api/purchases — ordinary goods re-download forever; world purchases return city receipts, never artifacts
 

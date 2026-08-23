@@ -93,8 +93,8 @@ a required sibling record is unavailable or inconsistent.
   with the fixed reason `withdrawn by merchant`.
 - New purchase attempts stop immediately. A paid x402 attempt that passed the live
   check before withdrawal or maintainer removal may finish, so payment is never taken
-  without delivery. A valid direct payment made before either action remains
-  claimable; a later payment does not.
+  without delivery. A direct payment remains claimable only when it belongs to a fresh
+  signed intent and landed inside that intent's window before either terminal action.
 - Prior buyers may still re-download ordinary goods. World buyers keep the public city
   ownership receipt; there is no market artifact to download.
 - Withdrawal does not refund the listing fee or reverse completed sales.
@@ -105,7 +105,11 @@ a required sibling record is unavailable or inconsistent.
    `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd`. The only exception is the
    shopkeeper's capped, publicly logged opening-stock allowance above.
 2. A sale is paid directly from buyer to seller. For ordinary goods, the market verifies
-   x402 settlement or a valid unused on-chain transaction before revealing the artifact.
+   x402 settlement or an authenticated ten-minute purchase intent signed by its exact
+   payer wallet plus a matching unused Base USDC transfer before revealing the artifact.
+   The transfer must use that listing, seller, asset, and minimum; a larger tip is valid.
+   Both payment time and the fixed claim-request start must be inside the inclusive intent
+   window. A transaction hash alone, an old payment, or a mismatched payer is not proof.
    For world goods, the city verifies payment inside its five-minute reservation and
    atomically moves ownership; the market only mirrors the public receipt. A transaction
    hash proves one paid action and is never reused.
