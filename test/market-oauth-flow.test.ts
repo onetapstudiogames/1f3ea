@@ -427,18 +427,89 @@ test('wrong PKCE and hostile browser forms fail without logging or echoing crede
   assert.equal(wrongPkce.response.status, 400)
   assert.deepEqual(wrongPkce.body, { error: 'invalid_grant' })
 
-  const hostile = await app.request('/oauth/authorize', {
+  const hostileFixture = fixture()
+  const hostileStart = await hostileFixture.app.request(authorizationUrl())
+  const hostileHtml = await hostileStart.text()
+  const hostile = await hostileFixture.app.request('/oauth/authorize', {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example',
-      cookie: approved.cookie,
+      cookie: cookiePair(hostileStart), referer: `${ORIGIN}/oauth/authorize`,
+      'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document',
     },
-    body: new URLSearchParams({ action: 'link', csrf: approved.csrf, merchant_key: MERCHANT_KEY }),
+    body: new URLSearchParams({
+      action: 'link', csrf: hiddenCsrf(hostileHtml), merchant_key: MERCHANT_KEY,
+    }),
   })
   assert.equal(hostile.status, 403)
   assert.doesNotMatch(await hostile.text(), /1f3ea_sk_/i)
 
   configureMarketOAuthMerchantResolver({ environment, store: fixture().store.api })
+})
+
+test('browser approval accepts a same-origin referrer when Origin is withheld', async () => {
+  const { app } = fixture()
+  const start = await app.request(authorizationUrl())
+  const html = await start.text()
+  const response = await app.request('/oauth/authorize', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      cookie: cookiePair(start),
+      origin: 'null',
+      referer: `${ORIGIN}/oauth/authorize`,
+    },
+    body: new URLSearchParams({
+      action: 'link', csrf: hiddenCsrf(html), merchant_key: MERCHANT_KEY,
+    }),
+  })
+
+  assert.equal(response.status, 302)
+  assert.match(new URL(response.headers.get('location')!).searchParams.get('code') ?? '', /^1f3ea_ac_/)
+})
+
+test('browser approval accepts same-origin navigation metadata when Origin and Referer are withheld', async () => {
+  const { app } = fixture()
+  const start = await app.request(authorizationUrl())
+  const html = await start.text()
+  const response = await app.request('/oauth/authorize', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      cookie: cookiePair(start),
+      'sec-fetch-site': 'same-origin',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+    },
+    body: new URLSearchParams({
+      action: 'link', csrf: hiddenCsrf(html), merchant_key: MERCHANT_KEY,
+    }),
+  })
+
+  assert.equal(response.status, 302)
+  assert.match(new URL(response.headers.get('location')!).searchParams.get('code') ?? '', /^1f3ea_ac_/)
+})
+
+test('browser approval rejects incomplete navigation metadata when Origin and Referer are withheld', async () => {
+  const { app } = fixture()
+  const start = await app.request(authorizationUrl())
+  const html = await start.text()
+  const response = await app.request('/oauth/authorize', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      cookie: cookiePair(start),
+      'sec-fetch-site': 'same-origin',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-dest': 'empty',
+    },
+    body: new URLSearchParams({
+      action: 'link', csrf: hiddenCsrf(html), merchant_key: MERCHANT_KEY,
+    }),
+  })
+
+  assert.equal(response.status, 403)
+  assert.doesNotMatch(await response.text(), /1f3ea_sk_/i)
 })
 
 test('OAuth revocation disconnects the full token family and keeps its response opaque', async () => {

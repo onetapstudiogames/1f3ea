@@ -88,6 +88,24 @@ function privateHeaders(c: Context, html = false): void {
   }
 }
 
+function trustedBrowserForm(c: Context, publicOrigin: string): boolean {
+  const requestOrigin = c.req.header('origin')
+  if (requestOrigin && requestOrigin !== 'null') return requestOrigin === publicOrigin
+
+  const referer = c.req.header('referer')
+  if (referer) {
+    try {
+      return new URL(referer).origin === publicOrigin
+    } catch {
+      return false
+    }
+  }
+
+  return c.req.header('sec-fetch-site') === 'same-origin'
+    && c.req.header('sec-fetch-mode') === 'navigate'
+    && c.req.header('sec-fetch-dest') === 'document'
+}
+
 function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -329,7 +347,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
   app.post('/oauth/authorize', async c => {
     try {
-      if (c.req.header('origin') !== oauth.origin) {
+      if (!trustedBrowserForm(c, oauth.origin)) {
         return browserError(c, 403, 'This approval did not come from the 1F3EA sign-in page.')
       }
       const values = await form(c)
