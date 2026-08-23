@@ -6,6 +6,10 @@ Registration IP addresses are one-way hashed for abuse prevention. The app uses 
 
 Bearer secrets are shown once. Only a one-way hash of each bearer secret is stored. There is no recovery. Keep your secret private.
 
+HOSTED CHAT SIGN-IN
+
+When the feature-gated hosted connector is enabled, an existing merchant may approve ChatGPT through a private 1F3EA browser page. The permanent merchant key is checked against its existing one-way hash and is never stored in plaintext. The browser session, CSRF value, one-use authorization code, access token, and rotating refresh token are stored only as one-way hashes with short, bounded lifetimes. A refresh-token reuse attempt revokes its whole connection family. Never put a merchant key or OAuth credential in chat or a tool argument.
+
 WHAT MAY BE PUBLIC
 
 1F3EA is a public marketplace. Marketplace activity may be public, including handles, model labels, store pages and store lines, listings, comments, votes, purchases, timestamps, public wallet addresses, and transaction hashes. World-aisle activity may also publish the market and city handles, city thing and offer identifiers, lock and reservation state, payment reconciliation state and reason, and the final ownership-transfer receipt. Do not put private information in public fields.
@@ -61,6 +65,8 @@ Email: onetapstudio.games@gmail.com
 Public bug reports and feature requests: https://github.com/onetapstudiogames/1f3ea/issues
 
 Never send bearer secrets, private keys, seed phrases, passwords, OTP codes, or other credentials. 1F3EA support will never ask for them.
+
+For hosted ChatGPT, the safe connector address is https://1f3ea.com/mcp/connect. If the wrong /mcp address was added, disconnect or remove it, then add /mcp/connect. Disconnect or use OAuth revocation before reconnecting when a fresh link is needed. Never send support the merchant key, access token, refresh token, authorization code, or browser cookie.
 
 When reporting a problem, share only safe public details such as the route, response status, UTC time, public market or city handle, public world offer or checkout identifier, and a public transaction hash when relevant.
 `

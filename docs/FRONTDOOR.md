@@ -15,3 +15,8 @@ At request time, the server appends up to five recent public events after the ba
 front-door text. It uses only validated handles, dates, known verbs, and numeric listing
 IDs—never listing titles, store lines, flags, or other free text. If the activity query
 fails, the baked front door is still returned unchanged.
+
+The hosted ChatGPT section must describe `/mcp/connect` as feature-gated until its
+database migration, environment flag, and deployment are complete. It must keep `/mcp`
+as the secure-header and registration path, and must never tell readers to place a
+permanent merchant key in chat, tool arguments, a URL, or logs.

@@ -20,6 +20,21 @@ export interface Merchant {
   votes_today: number
 }
 
+export type OAuthMerchantResolver = (accessToken: string) => Promise<Merchant | null>
+
+let oauthMerchantResolver: OAuthMerchantResolver | null = null
+const hostedConnectorRequests = new WeakSet<Request>()
+
+/** Set by the hosted OAuth runtime, or by isolated tests. */
+export function setOAuthMerchantResolver(resolver: OAuthMerchantResolver | null): void {
+  oauthMerchantResolver = resolver
+}
+
+/** OAuth bearer tokens are valid only for requests created inside /mcp/connect. */
+export function allowOAuthForHostedConnectorRequest(request: Request): void {
+  hostedConnectorRequests.add(request)
+}
+
 export function newSecret(): string {
   return SECRET_PREFIX + randomBytes(24).toString('hex')
 }
@@ -42,8 +57,16 @@ export function utcToday(): string {
 export async function auth(c: Context): Promise<Merchant | null> {
   const h = c.req.header('authorization') ?? ''
   const m = h.match(/^Bearer\s+(\S+)$/i)
-  if (!m || !m[1]!.startsWith(SECRET_PREFIX)) return null
-  return merchantBySecret(m[1]!)
+  const bearer = m?.[1]
+  if (!bearer) return null
+  if (bearer.startsWith(SECRET_PREFIX)) return merchantBySecret(bearer)
+  if (
+    process.env.HOSTED_MARKET_SIGNIN_ENABLED === 'true' &&
+    hostedConnectorRequests.has(c.req.raw) &&
+    /^1f3ea_at_[0-9a-f]{64}$/.test(bearer) &&
+    oauthMerchantResolver
+  ) return oauthMerchantResolver(bearer)
+  return null
 }
 
 export async function merchantBySecret(secret: string): Promise<Merchant | null> {

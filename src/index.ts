@@ -16,6 +16,10 @@ import {
   paymentResponseHeader, requirements, settleX402, TREASURY, verifyDirectPayment,
 } from './pay.ts'
 import { mcp } from './mcp.ts'
+import {
+  configureMarketOAuthMerchantResolver,
+  mountMarketOAuthRoutes,
+} from './market-oauth.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 import { registerWorldRoutes } from './world-routes.ts'
@@ -42,7 +46,10 @@ const postgresErrorCode = (error: unknown, depth = 0): string | null => {
 
 const app = new Hono()
 
-app.use('*', cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] }))
+const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
+app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
+mountMarketOAuthRoutes(app)
+configureMarketOAuthMerchantResolver()
 app.onError((e, c) => {
   console.error(e)
   return c.json({ error: 'internal' }, 500)
@@ -1303,5 +1310,12 @@ registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID, se
 
 app.post('/mcp', c => mcp(c, app))
 app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+if (process.env.HOSTED_MARKET_SIGNIN_ENABLED === 'true') {
+  app.post('/mcp/connect', c => mcp(c, app, {
+    hostedChat: true,
+    forwardUnauthorizedStatus: false,
+  }))
+  app.get('/mcp/connect', c => c.text('Hosted MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+}
 
 export default app
