@@ -1,7 +1,8 @@
 # Release migrations
 
 The direct-payment and hosted-sign-in changes have two small, additive database
-changes. Apply these files before deploying the code that uses them:
+changes. Apply these files before the pull request containing the code that uses them
+is merged into GitHub `main`:
 
 1. `db/migrations/20260823_direct_payments.sql`
 2. `db/migrations/20260822_hosted_market_signin.sql`
@@ -69,7 +70,9 @@ npm run migrate:production:direct-payments -- --database <expected-database> --e
 npm run migrate:production:hosted-market-signin -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
 ```
 
-Only deploy the application after both commands report all checks passed. If a check
-fails, do not deploy. These additions are safe for the old application to ignore, so
-the recovery path is to leave them in place, correct the migration, and rerun it; do
-not delete payment or sign-in history to roll back code.
+Only merge the application pull request into GitHub `main` after both commands report
+all checks passed. Vercel's GitHub integration then builds and deploys that exact merged
+commit; no local folder or provider command deploys the application. If a check fails,
+do not merge. These additions are safe for the old application to ignore, so the
+recovery path is to leave them in place, correct the migration, and rerun it; do not
+delete payment or sign-in history to roll back code.

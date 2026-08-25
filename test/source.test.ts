@@ -110,11 +110,21 @@ test('schema migrations run as one transaction', () => {
   assert.doesNotMatch(migrate, /for \(const st of statements\)[\s\S]*await sql\.query/)
 })
 
-test('deployment passes the pulled database environment to either Node runtime', () => {
+test('deployment helper only prepares an exact pushed GitHub commit for Vercel', () => {
   const deploy = read('scripts/deploy.sh')
-  assert.ok(deploy.includes('node --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
-  assert.ok(deploy.includes('node.exe --env-file="./$ENVFILE" --experimental-strip-types scripts/migrate.ts'))
-  assert.doesNotMatch(deploy, /curl[^\n]*\|\s*head\s+-c/)
+  assert.match(deploy, /Manual production deployment is disabled\./)
+  assert.match(deploy, /scripts\/deploy\.sh --prepare/)
+  assert.match(deploy, /git status --porcelain/)
+  assert.match(deploy, /git ls-remote/)
+  assert.match(deploy, /npm run typecheck/)
+  assert.match(deploy, /npm test/)
+  assert.match(deploy, /merg(?:e|ing).*GitHub.*main/is)
+  assert.match(deploy, /Vercel.*exact.*main commit/is)
+  assert.doesNotMatch(deploy, /api\.(?:vercel|porkbun)\.com/i)
+  assert.doesNotMatch(deploy, /\b(?:VERCEL_TOKEN|PORKBUN_API_KEY|PORKBUN_SECRET_KEY)\b/)
+  assert.doesNotMatch(deploy, /\b(?:vercel(?:@[\w.-]+)?|VC)\s+deploy\b/i)
+  assert.doesNotMatch(deploy, /\bnpx\b[^\n]*\bvercel(?:@[\w.-]+)?\b/i)
+  assert.doesNotMatch(deploy, /--prod\b|scripts\/(?:migrate|release-migrate)\.[a-z]+/i)
 })
 
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {

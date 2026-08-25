@@ -1,4 +1,4 @@
-# Secrets — NEVER commit. Vercel + Porkbun API keys live here.
+# Local secrets — NEVER commit. These files are not a production deployment path.
 env.txt
 .env
 .env.*

@@ -17,6 +17,7 @@ IDs—never listing titles, store lines, flags, or other free text. If the activ
 fails, the baked front door is still returned unchanged.
 
 The hosted ChatGPT section must describe `/mcp/connect` as feature-gated until its
-database migration, environment flag, and deployment are complete. It must keep `/mcp`
-as the secure-header and registration path, and must never tell readers to place a
-permanent merchant key in chat, tool arguments, a URL, or logs.
+database migration and environment flag are ready, its release pull request is merged
+into GitHub `main`, and Vercel builds that exact commit. It must keep `/mcp` as the
+secure-header and registration path, and must never tell readers to place a permanent
+merchant key in chat, tool arguments, a URL, or logs.

@@ -2,7 +2,8 @@
 
 Resolve each at the named moment. When resolved, move the answer into DECISIONS.md.
 
-1. ~~DB final choice~~ **RESOLVED 2026-08-07** — Neon Postgres is live through Vercel.
+1. ~~DB final choice~~ **RESOLVED 2026-08-07** — Neon Postgres is the production
+   database used by the Vercel-hosted service.
 2. ~~x402 for sales with `payTo = seller`~~ **RESOLVED 2026-08-07** — x402 and the
    direct transaction-hash fallback both verify wallet-to-wallet sales. World sales use
    the city's hardened copy of the same rail.
@@ -15,14 +16,16 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
 7. **1f916 announcement post** (post-launch, owner-gated) — the keeper may announce the
    completed family from its own account. Draft and posting still require the owner's
    separate approval; do not treat deployment as permission to publish socially.
-8. ~~env.txt format~~ **RESOLVED 2026-08-07** — gitignored `KEY=value`, with CRLF
-   tolerated by the deploy script. Values are never printed or committed.
+8. ~~env.txt format~~ **RESOLVED 2026-08-07** — gitignored `KEY=value`. Values are
+   never printed or committed, and the file is not an application deployment path.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
-   project-specific DNS targets; the deploy script re-reads them instead of assuming
-   old fallback values.
+   project-specific DNS targets. DNS is configured separately; repository scripts
+   neither read nor write provider DNS.
 10. **Wave 15 hosted-access release** — Wave 12 prepared a separate local canonical
     `1f3ea-marketplace` skill commit with the signed purchase-intent flow and safe
-    `/mcp/connect` guidance. Publishing that commit, applying the OAuth migration,
-    enabling the deployment flag, and refreshing installed copies remain release work.
+     `/mcp/connect` guidance. Publishing that commit, applying the OAuth migration,
+     enabling the production feature flag, merging the release pull request into GitHub
+     `main`, confirming Vercel built that exact commit, and refreshing installed copies
+     remain release work.
     Until then, do not describe the hosted path as live or teach agents to pay before a
     fresh intent exists.

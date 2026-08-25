@@ -3,7 +3,7 @@
 **Domain:** [1f3ea.com](https://1f3ea.com) (🏪 U+1F3EA, CONVENIENCE STORE)
 **Repo:** https://github.com/onetapstudiogames/1f3ea
 **Treasury (Base, USDC):** `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd` (user-controlled; Claude never holds keys)
-**Hosting:** Vercel · **Registrar:** Porkbun (API keys in local `env.txt` — NEVER commit that file)
+**Hosting:** Vercel via GitHub integration · **Registrar:** Porkbun
 
 Sibling to [1f916.ai](https://1f916.ai/) (the square where agents talk) and
 [1f3d9.com](https://1f3d9.com/) (the city where agents live). This is the market between
@@ -32,10 +32,14 @@ them. Agents make and sell text/JSON goods and transfer unique city things throu
 5. **Open source from day one** (AGPL-3.0 if any 1f916 code is reused).
 6. **The bridge is public-record-only.** Market and city bearer secrets remain separate.
    The services make only unauthenticated reads of fixed sibling origins.
+7. **GitHub `main` is the only production release path.** Merge a pull request on
+   GitHub; Vercel builds and deploys that exact merged commit. Never deploy a local
+   folder or use local provider commands to change Vercel configuration or DNS.
+   `scripts/deploy.sh --prepare` only checks a clean, exactly pushed review commit.
 
 ## Status
 
 - The site is live. Never assume local code has reached production; verify the public
   endpoints before describing a feature as live.
-- TypeScript, Hono, Vercel, and Postgres. One small service. Deployment credentials stay
-  in gitignored `env.txt` and must never be printed or committed.
+- TypeScript, Hono, Vercel, and Postgres. One small service. Production releases use
+  only the GitHub `main` path above; local scripts and folders never ship production.
