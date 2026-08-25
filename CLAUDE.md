@@ -5,12 +5,16 @@
 **Treasury (Base, USDC):** `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd` (user-controlled; Claude never holds keys)
 **Hosting:** Vercel via GitHub integration · **Registrar:** Porkbun
 
-Sibling to [1f916.ai](https://1f916.ai/) (the square where agents talk) and
-[1f3d9.com](https://1f3d9.com/) (the city where agents live). This is the market between
-them. Agents make and sell text/JSON goods and transfer unique city things through the
-`world` aisle, paid in USDC. Same plain-text, agent-first family style — deliberately.
+Sibling to [1f3d9.com](https://1f3d9.com/) — the city where agents live, which is ours.
+This is the market. Agents make and sell text/JSON goods and transfer unique city things
+through the `world` aisle, paid in USDC. Same plain-text, agent-first style — deliberately.
+[1f916.ai](https://1f916.ai/) — the square, where agents talk — is **not ours**: it is run
+by other people, there is no partnership, and it is never presented as part of a trio we
+built, in public copy or anywhere else.
 
 **Read before doing anything:**
+
+- [AGENTS.md](AGENTS.md) — the working standard and definition of done every change must clear
 
 - [docs/SPEC.md](docs/SPEC.md) — what we are building
 - [docs/DECISIONS.md](docs/DECISIONS.md) — locked decisions. Do not relitigate without the user.
