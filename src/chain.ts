@@ -102,14 +102,71 @@ export function toUnits(usdc: number): bigint {
 const pad32 = (addr: string) => '0x' + addr.toLowerCase().replace(/^0x/, '').padStart(64, '0')
 const addrFromTopic = (topic: string) => '0x' + topic.slice(-40)
 
+function parseHexBigInt(value: string): bigint | null {
+  if (!/^0x[0-9a-fA-F]+$/u.test(value)) return null
+  try {
+    return BigInt(value)
+  } catch {
+    return null
+  }
+}
+
 interface Log { address: string; topics: string[]; data: string }
-interface Receipt { status: string; blockHash: string; logs: Log[] }
+interface Receipt { status: string; blockHash: string; blockNumber: string; logs: Log[] }
 
 export interface VerifiedTransfer {
   from: string
   to: string
   amount: bigint
   blockTime: Date
+  blockNumber: bigint
+  blockHash: string
+  finalizedAt: Date
+}
+
+export type TransferCheck =
+  | ({ state: 'matched' } & VerifiedTransfer)
+  | { state: 'pending' }
+  | { state: 'invalid_final'; reason: 'failed_transaction' | 'confirmed_mismatch' }
+
+function completeReceipt(value: unknown): Receipt | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const receipt = value as Partial<Receipt>
+  if (
+    !['0x0', '0x1'].includes(String(receipt.status)) ||
+    typeof receipt.blockHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/u.test(receipt.blockHash) ||
+    typeof receipt.blockNumber !== 'string' || !/^0x[0-9a-fA-F]+$/u.test(receipt.blockNumber) ||
+    !Array.isArray(receipt.logs)
+  ) return null
+  for (const log of receipt.logs) {
+    if (
+      !log || typeof log !== 'object' || typeof log.address !== 'string' ||
+      !Array.isArray(log.topics) || log.topics.some(topic => typeof topic !== 'string') ||
+      typeof log.data !== 'string' || !/^0x[0-9a-fA-F]*$/u.test(log.data)
+    ) return null
+  }
+  return receipt as Receipt
+}
+
+async function finalizedReceipt(receipt: Receipt): Promise<'finalized' | 'pending'> {
+  const canonical = await rpc<{ hash?: unknown; number?: unknown }>(
+    'eth_getBlockByNumber',
+    [receipt.blockNumber, false],
+  )
+  if (
+    !canonical || typeof canonical.hash !== 'string' || typeof canonical.number !== 'string' ||
+    canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+    canonical.number.toLowerCase() !== receipt.blockNumber.toLowerCase()
+  ) return 'pending'
+  const finalized = await rpc<{ number?: unknown }>('eth_getBlockByNumber', ['finalized', false])
+  if (!finalized || typeof finalized.number !== 'string' || !/^0x[0-9a-fA-F]+$/u.test(finalized.number)) {
+    return 'pending'
+  }
+  try {
+    return BigInt(finalized.number) >= BigInt(receipt.blockNumber) ? 'finalized' : 'pending'
+  } catch {
+    return 'pending'
+  }
 }
 
 /**
@@ -117,32 +174,84 @@ export interface VerifiedTransfer {
  * to `to`, successfully, on Base? Uniqueness (one tx, one use) is the caller's
  * DB constraint.
  */
+export async function classifyUsdcTransfer(
+  txHash: string,
+  to: string,
+  minUnits: bigint,
+  options: { expectedFrom?: string; exactAmount?: boolean } = {},
+): Promise<TransferCheck> {
+  const rawReceipt = await rpc<unknown>('eth_getTransactionReceipt', [txHash])
+  if (!rawReceipt) return { state: 'pending' }
+  const receipt = completeReceipt(rawReceipt)
+  if (!receipt) return { state: 'pending' }
+  if (receipt.status === '0x0') {
+    return await finalizedReceipt(receipt) === 'finalized'
+      ? { state: 'invalid_final', reason: 'failed_transaction' }
+      : { state: 'pending' }
+  }
+
+  const toTopic = pad32(to)
+  let transfer: { log: Log; amount: bigint } | undefined
+  for (const log of receipt.logs) {
+    if (
+      log.address.toLowerCase() !== USDC.toLowerCase() ||
+      log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC ||
+      (log.topics[2] ?? '').toLowerCase() !== toTopic ||
+      (options.expectedFrom != null &&
+        addrFromTopic(log.topics[1] ?? '').toLowerCase() !== options.expectedFrom.toLowerCase())
+    ) continue
+
+    const amount = parseHexBigInt(log.data)
+    if (amount == null) continue
+    if (options.exactAmount === true ? amount === minUnits : amount >= minUnits) {
+      transfer = { log, amount }
+      break
+    }
+  }
+  if (!transfer) {
+    return await finalizedReceipt(receipt) === 'finalized'
+      ? { state: 'invalid_final', reason: 'confirmed_mismatch' }
+      : { state: 'pending' }
+  }
+  const fromTopic = transfer.log.topics[1]
+  if (!fromTopic || !/^0x[0-9a-fA-F]{64}$/u.test(fromTopic)) return { state: 'pending' }
+  if (await finalizedReceipt(receipt) !== 'finalized') return { state: 'pending' }
+
+  const block = await rpc<{ timestamp: string }>('eth_getBlockByHash', [receipt.blockHash, false])
+  if (!block || typeof block.timestamp !== 'string' || !/^0x[0-9a-fA-F]+$/u.test(block.timestamp)) {
+    return { state: 'pending' }
+  }
+  const blockTime = new Date(Number(BigInt(block.timestamp)) * 1000)
+  if (Number.isNaN(blockTime.getTime())) return { state: 'pending' }
+  return {
+    state: 'matched',
+    from: addrFromTopic(fromTopic),
+    to,
+    amount: transfer.amount,
+    blockTime,
+    blockNumber: BigInt(receipt.blockNumber),
+    blockHash: receipt.blockHash.toLowerCase(),
+    finalizedAt: new Date(),
+  }
+}
+
 export async function verifyUsdcTransfer(
   txHash: string,
   to: string,
   minUnits: bigint,
 ): Promise<VerifiedTransfer | null> {
-  const receipt = await rpc<Receipt>('eth_getTransactionReceipt', [txHash])
-  if (!receipt || receipt.status !== '0x1') return null
-
-  const toTopic = pad32(to)
-  const hit = receipt.logs.find(
-    l =>
-      l.address.toLowerCase() === USDC.toLowerCase() &&
-      l.topics[0] === TRANSFER_TOPIC &&
-      (l.topics[2] ?? '').toLowerCase() === toTopic &&
-      BigInt(l.data) >= minUnits,
-  )
-  if (!hit) return null
-
-  const block = await rpc<{ timestamp: string }>('eth_getBlockByHash', [receipt.blockHash, false])
-  if (!block) return null
-  return {
-    from: addrFromTopic(hit.topics[1] ?? ''),
-    to,
-    amount: BigInt(hit.data),
-    blockTime: new Date(Number(BigInt(block.timestamp)) * 1000),
-  }
+  const checked = await classifyUsdcTransfer(txHash, to, minUnits)
+  return checked.state === 'matched'
+    ? {
+      from: checked.from,
+      to: checked.to,
+      amount: checked.amount,
+      blockTime: checked.blockTime,
+      blockNumber: checked.blockNumber,
+      blockHash: checked.blockHash,
+      finalizedAt: checked.finalizedAt,
+    }
+    : null
 }
 
 /** Treasury balance for the public books. Returns a decimal string or null if the RPC is down. */

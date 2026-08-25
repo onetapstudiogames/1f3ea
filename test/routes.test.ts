@@ -390,19 +390,25 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   throw new Error(`unhandled query: ${query}`)
 }
 
-function chainRespond(method: string): unknown {
+function chainRespond(method: string, params: unknown[] = []): unknown {
   if (method === 'web3_sha3') return '0x' + 'aa'.repeat(32)
   if (method === 'eth_call') return '0x' + '00'.repeat(12) + state.feeFrom.toLowerCase().slice(2)
   if (method === 'eth_getTransactionReceipt') {
     return {
       status: '0x1',
       blockHash: '0x' + 'bb'.repeat(32),
+      blockNumber: '0x100',
       logs: [{
         address: USDC,
         topics: [TRANSFER_TOPIC, pad32(state.feeFrom), pad32(TREASURY)],
         data: '0x0f4240',
       }],
     }
+  }
+  if (method === 'eth_getBlockByNumber') {
+    return params[0] === 'finalized'
+      ? { number: '0x100' }
+      : { hash: '0x' + 'bb'.repeat(32), number: '0x100' }
   }
   if (method === 'eth_getBlockByHash') {
     return { timestamp: '0x' + Math.floor((Date.now() - state.feeAgeSeconds * 1000) / 1000).toString(16) }
@@ -451,7 +457,7 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
     return jsonRes(neonEncode(dbRespond(body.query, body.params ?? [])))
   }
   if (url.includes('mainnet.base.org'))
-    return jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method) })
+    return jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method, body.params) })
   if (url.includes('/verify')) return jsonRes(state.facilitatorVerify
     ? { isValid: true }
     : { isValid: false, invalidReason: 'facilitator says no (test)' })

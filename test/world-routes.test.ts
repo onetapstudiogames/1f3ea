@@ -363,9 +363,15 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     const body = JSON.parse(String(init?.body ?? '{}'))
     if (body.method === 'eth_getTransactionReceipt') return json({
       jsonrpc: '2.0', id: body.id, result: {
-        status: '0x1', blockHash: '0x' + 'bb'.repeat(32),
+        status: '0x1', blockHash: '0x' + 'bb'.repeat(32), blockNumber: '0x100',
         logs: [{ address: USDC, topics: [TRANSFER_TOPIC, pad32(SELLER), pad32(TREASURY)], data: '0x0f4240' }],
       },
+    })
+    if (body.method === 'eth_getBlockByNumber') return json({
+      jsonrpc: '2.0', id: body.id,
+      result: body.params?.[0] === 'finalized'
+        ? { number: '0x100' }
+        : { hash: '0x' + 'bb'.repeat(32), number: '0x100' },
     })
     if (body.method === 'eth_getBlockByHash') return json({
       jsonrpc: '2.0', id: body.id,

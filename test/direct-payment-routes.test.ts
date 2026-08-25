@@ -50,6 +50,7 @@ const state = {
   transferToken: USDC,
   transferAmount: 1_500_000n,
   transferBlockTime: new Date(),
+  finalizedBlockNumber: '0x100',
   recoveredSigner: BUYER,
   failPurchaseCode: null as string | null,
   calls: [] as DbCall[],
@@ -213,13 +214,19 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
     })
     if (body.method === 'eth_getTransactionReceipt') return json({
       jsonrpc: '2.0', id: body.id, result: {
-        status: '0x1', blockHash: '0x' + 'bb'.repeat(32),
+        status: '0x1', blockHash: '0x' + 'bb'.repeat(32), blockNumber: '0x100',
         logs: [{
           address: state.transferToken,
           topics: [TRANSFER_TOPIC, pad32(state.transferFrom), pad32(state.transferTo)],
           data: `0x${state.transferAmount.toString(16)}`,
         }],
       },
+    })
+    if (body.method === 'eth_getBlockByNumber') return json({
+      jsonrpc: '2.0', id: body.id,
+      result: body.params?.[0] === 'finalized'
+        ? { number: state.finalizedBlockNumber }
+        : { hash: '0x' + 'bb'.repeat(32), number: '0x100' },
     })
     if (body.method === 'eth_getBlockByHash') return json({
       jsonrpc: '2.0', id: body.id,
@@ -242,6 +249,7 @@ const reset = () => {
   state.transferToken = USDC
   state.transferAmount = 1_500_000n
   state.transferBlockTime = new Date(state.requestNow.getTime() + 1_000)
+  state.finalizedBlockNumber = '0x100'
   state.recoveredSigner = BUYER
   state.failPurchaseCode = null
   state.calls = []
@@ -295,6 +303,19 @@ test('a signed ten-minute intent accepts a fresh voluntary tip once', async () =
   const replay = await claim(1, body.purchase_intent.id, TX_UPPER)
   assert.equal(replay.status, 409)
   assert.equal(state.paymentHashes.size, 1)
+})
+
+test('a signed claim cannot consume an unfinalized transfer', async () => {
+  reset()
+  const opened = await openIntent()
+  const intent = (await opened.json() as { purchase_intent: IntentRow }).purchase_intent
+  state.transferBlockTime = new Date(Math.ceil(Date.parse(intent.created_at) / 1000) * 1000)
+  state.finalizedBlockNumber = '0xff'
+
+  const response = await claim(1, intent.id)
+  assert.equal(response.status, 402)
+  assert.equal(state.paymentHashes.size, 0)
+  assert.equal(state.intents[0]?.claimed_at, null)
 })
 
 test('concurrent intent retries return one stable challenge and cannot switch its payer', async () => {

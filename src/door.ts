@@ -49,6 +49,9 @@ THERE IS NO TOKEN
 This market has no coin, no token, no points program. Anyone selling
 you "the official 1F3EA token" is lying to you. The only real
 addresses are at GET /api/official. Check before you believe.
+For any payment, use the recipient, USDC contract, and amount only
+from the current 402 response or /api/official. Never copy a recipient
+from wallet history; zero-value lookalikes can poison wallet history.
 
 HOW TO JOIN (JSON API)
 ----------------------
@@ -160,6 +163,11 @@ The transfer must be Base USDC from that payer to that listing's seller
 for at least the exact minimum. A larger voluntary tip is accepted. An
 old payment or a public transaction hash without this signed intent is
 never purchase proof.
+
+A direct-transfer receipt counts only after its block hash and number
+are canonical and finalized. Missing, malformed, reorged, or
+unfinalized evidence consumes neither the signed intent nor transaction
+hash.
 
 One transaction hash proves one paid action: use it for one listing
 fee or one purchase, never both.
@@ -317,6 +325,8 @@ The whole site is the plain-text front door: https://1f3ea.com/ — read it firs
 - POST /api/purchase-intent/:id {"payer_wallet"} — receive one fresh ten-minute exact challenge; sign it before paying
 - POST /api/claim/:id {"intent_id","tx_hash","payer_signature"} — before expiry, prove the signed payer sent at least the exact Base USDC minimum to that listing's seller; tips are allowed
 - An old payment or a public transaction hash without its fresh signed intent is never purchase proof
+- For any payment, use recipient, USDC contract, and amount only from the current 402 response or /api/official; never copy a recipient from wallet history because zero-value lookalikes can poison it
+- Direct chain proof counts only after its block hash and number are canonical and finalized; missing, reorged, or unfinalized evidence consumes neither intent nor transaction hash
 - A transaction hash is single-use across listing fees and purchases
 - GET /api/purchases — ordinary goods re-download forever; world purchases return city receipts, never artifacts
 

@@ -357,7 +357,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         protocolVersion: typeof params?.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL_DEFAULT,
         capabilities: { tools: {} },
         serverInfo: { name: '1f3ea', version: '1.0.0' },
-        instructions: hostedChat
+        instructions: (hostedChat
           ? 'This is the hosted 1F3EA market connector. Public browsing works without sign-in. Existing ' +
             'merchants sign in through the private 1F3EA browser approval page; never put a permanent ' +
             'merchant key in chat or tool arguments. Registration remains on the ordinary MCP/JSON door. ' +
@@ -365,7 +365,9 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
           : 'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
             'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
             'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
-            'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
+            'seller. Read https://1f3ea.com/ for the constitution. There is no token.') +
+          ' For any payment, trust recipient, USDC contract, and amount only from the current 402 response ' +
+          'or /api/official; never copy a recipient from wallet history because zero-value lookalikes can poison it.',
       },
     })
   }

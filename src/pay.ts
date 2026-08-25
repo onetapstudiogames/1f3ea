@@ -16,10 +16,15 @@ import { NETWORK, USDC, toUnits, verifyUsdcTransfer } from './chain.ts'
  * intent. A public transaction hash by itself is never purchase authorization.
  */
 
-export const TREASURY = (process.env.TREASURY_ADDRESS ?? '').toLowerCase()
+export const TREASURY = (
+  process.env.TREASURY_ADDRESS ?? '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+).toLowerCase()
 export const LISTING_FEE_USDC = 1
 const FACILITATOR = process.env.FACILITATOR_URL ?? 'https://facilitator.payai.network'
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
+const MAX_PAYMENT_HEADER_BYTES = 32_768
+const MAX_FACILITATOR_RESPONSE_BYTES = 65_536
+const FACILITATOR_TIMEOUT_MS = 8_000
 const PAYMENT_CUSTODY_UNAVAILABLE =
   'payments are temporarily unavailable while durable payment custody is being upgraded; do not pay or retry yet'
 
@@ -69,8 +74,36 @@ export function requirements(payTo: string, usdc: number, resource: string, desc
   }
 }
 
+function formatUsdcAmount(amountUnits: string): string {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(amountUnits)) {
+    throw new TypeError('payment requirement amount must use integer USDC units')
+  }
+  const units = BigInt(amountUnits)
+  const whole = units / 1_000_000n
+  const fraction = (units % 1_000_000n).toString().padStart(6, '0')
+  return `${whole}.${fraction}`
+}
+
 export function challenge402(c: Context, reqs: PaymentRequirements, note: string) {
-  return c.json({ x402Version: 1, error: note, accepts: [reqs] }, 402)
+  const amountUsdc = formatUsdcAmount(reqs.maxAmountRequired)
+  const warning =
+    'Never copy a recipient from wallet history; zero-value lookalike transfers can poison wallet history.'
+  return c.json({
+    x402Version: 1,
+    error:
+      `${note} Pay exactly ${amountUsdc} USDC on Base using contract ${reqs.asset} ` +
+      `to ${reqs.payTo}. Verify with this current 402 response or /api/official. ${warning}`,
+    payment_safety: {
+      network: 'Base',
+      usdc_contract: reqs.asset,
+      recipient: reqs.payTo,
+      amount_usdc: amountUsdc,
+      amount_units: reqs.maxAmountRequired,
+      verify_with: 'this current 402 response or /api/official',
+      warning,
+    },
+    accepts: [reqs],
+  }, 402)
 }
 
 export interface Settled {
@@ -79,12 +112,70 @@ export interface Settled {
   raw: Record<string, unknown>
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+async function boundedJson(
+  response: Response,
+  label: string,
+): Promise<{ value: Record<string, unknown> | null; error?: string }> {
+  if (!response.body) return { value: null }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      size += next.value.byteLength
+      if (size > MAX_FACILITATOR_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        return { value: null, error: `${label} response was too large` }
+      }
+      chunks.push(next.value)
+    }
+  } catch {
+    return { value: null, error: `${label} response could not be read` }
+  }
+
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  try {
+    return { value: record(JSON.parse(new TextDecoder().decode(bytes))) }
+  } catch {
+    return { value: null }
+  }
+}
+
+function facilitatorRequest(body: string): RequestInit {
+  return {
+    method: 'POST',
+    redirect: 'error',
+    headers: { 'content-type': 'application/json' },
+    body,
+    signal: AbortSignal.timeout(FACILITATOR_TIMEOUT_MS),
+  }
+}
+
 /**
  * Verify then settle an X-PAYMENT header against the facilitator. Settle happens
  * BEFORE anything is delivered — verify alone is raceable (the buyer could move
  * the balance away). Returns { error } on failure with the facilitator's reason.
  */
 export async function settleX402(paymentHeader: string, reqs: PaymentRequirements): Promise<Settled | { error: string }> {
+  if (paymentHeader.length === 0 || paymentHeader.length > MAX_PAYMENT_HEADER_BYTES) {
+    return { error: 'X-PAYMENT header is too large' }
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(paymentHeader) || paymentHeader.length % 4 !== 0) {
+    return { error: 'X-PAYMENT header is not base64 JSON' }
+  }
   let paymentPayload: unknown
   try {
     paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString('utf8'))
@@ -92,25 +183,33 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
     return { error: 'X-PAYMENT header is not base64 JSON' }
   }
   const body = JSON.stringify({ x402Version: 1, paymentPayload, paymentRequirements: reqs })
-  const opts = { method: 'POST', headers: { 'content-type': 'application/json' }, body }
 
   try {
-    const vr = await fetch(`${FACILITATOR}/verify`, opts)
-    const verdict = (await vr.json().catch(() => null)) as { isValid?: boolean; invalidReason?: string } | null
-    if (!vr.ok || !verdict?.isValid) return { error: verdict?.invalidReason ?? 'facilitator rejected the payment' }
+    const vr = await fetch(`${FACILITATOR}/verify`, facilitatorRequest(body))
+    const verification = await boundedJson(vr, 'facilitator verification')
+    if (verification.error) return { error: verification.error }
+    const invalidReason = typeof verification.value?.invalidReason === 'string'
+      ? verification.value.invalidReason
+      : 'facilitator rejected the payment'
+    if (!vr.ok || verification.value?.isValid !== true) return { error: invalidReason }
 
-    const sr = await fetch(`${FACILITATOR}/settle`, opts)
-    const settlement = (await sr.json().catch(() => null)) as
-      | { success?: boolean; transaction?: string; payer?: string; errorReason?: string }
-      | null
-    if (!sr.ok || !settlement?.success || !settlement.transaction)
-      return { error: settlement?.errorReason ?? 'settlement failed' }
+    const sr = await fetch(`${FACILITATOR}/settle`, facilitatorRequest(body))
+    const decoded = await boundedJson(sr, 'facilitator settlement')
+    if (decoded.error) return { error: decoded.error }
+    const settlement = decoded.value
+    const errorReason = typeof settlement?.errorReason === 'string'
+      ? settlement.errorReason
+      : 'settlement failed'
+    if (!sr.ok || settlement?.success !== true || typeof settlement.transaction !== 'string') {
+      return { error: errorReason }
+    }
     const transaction = canonicalTxHash(settlement.transaction)
     if (!transaction) return { error: 'settlement returned an invalid transaction hash' }
 
-    const payer = settlement.payer
-      ?? String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
-    return { transaction, payer, raw: settlement as Record<string, unknown> }
+    const payer = typeof settlement.payer === 'string'
+      ? settlement.payer
+      : String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
+    return { transaction, payer, raw: settlement }
   } catch {
     return { error: 'facilitator unreachable — start a fresh signed direct-payment intent before paying' }
   }

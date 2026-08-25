@@ -5,13 +5,15 @@ import assert from 'node:assert/strict'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 
-type FetchStep = () => Response | Promise<Response>
+type FetchStep = (init?: RequestInit) => Response | Promise<Response>
 const steps: FetchStep[] = []
+const facilitatorSignals: Array<AbortSignal | null> = []
 
-globalThis.fetch = (async () => {
+globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
   const step = steps.shift()
   assert.ok(step, 'unexpected facilitator call')
-  return step()
+  facilitatorSignals.push(init?.signal instanceof AbortSignal ? init.signal : null)
+  return step(init)
 }) as typeof fetch
 
 const {
@@ -29,6 +31,24 @@ const json = (value: unknown, status = 200) => () => new Response(JSON.stringify
   status, headers: { 'content-type': 'application/json' },
 })
 const invalidJson = (status = 200) => () => new Response('not json', { status })
+const oversizedJson = (onCancel: () => void) => () => {
+  const encoder = new TextEncoder()
+  let canceled = false
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('{"padding":"'))
+      controller.enqueue(encoder.encode('x'.repeat(70_000)))
+      controller.enqueue(encoder.encode('"}'))
+      setTimeout(() => {
+        if (!canceled) controller.close()
+      }, 0)
+    },
+    cancel() {
+      canceled = true
+      onCancel()
+    },
+  }), { headers: { 'content-type': 'application/json' } })
+}
 
 function queue(...next: FetchStep[]) {
   assert.equal(steps.length, 0)
@@ -38,6 +58,9 @@ function queue(...next: FetchStep[]) {
 test('x402 rejects malformed headers and verification failures with safe public reasons', async () => {
   assert.deepEqual(await settleX402('%%%', reqs), {
     error: 'X-PAYMENT header is not base64 JSON',
+  })
+  assert.deepEqual(await settleX402('A'.repeat(32_769), reqs), {
+    error: 'X-PAYMENT header is too large',
   })
 
   queue(invalidJson(503))
@@ -95,4 +118,50 @@ test('x402 reports a facilitator outage without leaking the thrown error', async
   })
   assert.equal(canonicalTxHash(7), null)
   assert.equal(steps.length, 0)
+})
+
+test('x402 bounds both facilitator responses and stops reading after the cap', async () => {
+  let verificationCanceled = false
+  queue(oversizedJson(() => { verificationCanceled = true }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    error: 'facilitator verification response was too large',
+  })
+  assert.equal(verificationCanceled, true)
+  assert.equal(steps.length, 0, 'settlement must not run after an oversized verification response')
+
+  let settlementCanceled = false
+  queue(
+    json({ isValid: true }),
+    oversizedJson(() => { settlementCanceled = true }),
+  )
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    error: 'facilitator settlement response was too large',
+  })
+  assert.equal(settlementCanceled, true)
+  assert.equal(steps.length, 0)
+})
+
+test('x402 gives verify and settle separate eight-second deadlines', async () => {
+  const originalTimeout = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout')
+  const timeoutCalls: number[] = []
+  Object.defineProperty(AbortSignal, 'timeout', {
+    configurable: true,
+    value: (milliseconds: number) => {
+      timeoutCalls.push(milliseconds)
+      return new AbortController().signal
+    },
+  })
+  facilitatorSignals.length = 0
+  try {
+    queue(json({ isValid: true }), json({ success: true, transaction: TX, payer: PAYER }))
+    const settled = await settleX402(payload(), reqs)
+    assert.equal('error' in settled, false)
+  } finally {
+    if (originalTimeout) Object.defineProperty(AbortSignal, 'timeout', originalTimeout)
+  }
+
+  assert.deepEqual(timeoutCalls, [8_000, 8_000])
+  assert.equal(facilitatorSignals.length, 2)
+  assert.ok(facilitatorSignals.every(signal => signal instanceof AbortSignal))
+  assert.notEqual(facilitatorSignals[0], facilitatorSignals[1])
 })

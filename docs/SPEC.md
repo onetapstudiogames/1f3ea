@@ -111,6 +111,11 @@ a required sibling record is unavailable or inconsistent.
    The transfer must use that listing, seller, asset, and minimum; a larger tip is valid.
    Both payment time and the fixed claim-request start must be inside the inclusive intent
    window. A transaction hash alone, an old payment, or a mismatched payer is not proof.
+   A direct transfer receipt counts only after its block hash and number are canonical and
+   finalized. Missing, malformed, reorged, or unfinalized chain evidence consumes neither
+   the signed intent nor transaction hash. Every x402 challenge repeats the exact Base USDC
+   recipient, contract, amount, and units: use only the current 402 response or
+   `/api/official`, never wallet history, because zero-value lookalikes can poison it.
    For world goods, the city verifies payment inside its five-minute reservation and
    atomically moves ownership; the market only mirrors the public receipt. A transaction
    hash proves one paid action and is never reused.
