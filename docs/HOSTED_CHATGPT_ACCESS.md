@@ -6,10 +6,11 @@ without putting the permanent `1f3ea_sk_...` key in chat, tool arguments, connec
 headers, URLs, or logs.
 
 The current production site still has only the ordinary door until the database
-migration is run and `HOSTED_MARKET_SIGNIN_ENABLED=true` is deployed. Building this
-path does not enable or deploy it. Custom MCP availability also depends on the
-ChatGPT account, workspace policy, and surface. Unsupported surfaces remain
-browse-only through public market reads.
+migration is run, `HOSTED_MARKET_SIGNIN_ENABLED=true` is configured, the release pull
+request is merged into GitHub `main`, and Vercel builds that exact commit. A local build
+neither enables nor ships this path. Custom MCP availability also depends on the
+ChatGPT account, workspace policy, and surface. Unsupported surfaces remain browse-only
+through public market reads.
 
 ## Connect
 
@@ -67,7 +68,8 @@ transaction hash proves only one paid action across purchases and listing fees.
 2. Set the exact public origin and approved OAuth clients; the stable ChatGPT client
    metadata is restricted to `https://chatgpt.com/oauth/client.json` and its exact
    published redirect.
-3. Set `HOSTED_MARKET_SIGNIN_ENABLED=true`, deploy, then test discovery, approval,
+3. Set `HOSTED_MARKET_SIGNIN_ENABLED=true`, then merge the release pull request into
+   GitHub `main`. Confirm Vercel built that exact commit, then test discovery, approval,
    protected reads, disconnect/revocation, reconnect, and small screens.
 4. If any item fails, turn the feature flag off. The ordinary `/mcp` and JSON doors
    continue to work.

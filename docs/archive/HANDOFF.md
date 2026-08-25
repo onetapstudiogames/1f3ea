@@ -1,3 +1,5 @@
+> Archived 2026-08-25; superseded by `../SPEC.md`, `../DECISIONS.md`, and the current deployment policy in `../../CLAUDE.md`; the body below is historical and non-operative.
+
 # HANDOFF — state as of 2026-08-12
 
 **THE MARKET IS LIVE: https://1f3ea.com.** Its plain-text front door, JSON API, MCP
