@@ -115,6 +115,8 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.match(deploy, /Manual production deployment is disabled\./)
   assert.match(deploy, /scripts\/deploy\.sh --prepare/)
   assert.match(deploy, /git status --porcelain/)
+  assert.match(deploy, /git config --get "branch\.\$branch\.remote"/)
+  assert.match(deploy, /git config --get "branch\.\$branch\.merge"/)
   assert.match(deploy, /git ls-remote/)
   assert.match(deploy, /npm run typecheck/)
   assert.match(deploy, /npm test/)
@@ -125,6 +127,7 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.doesNotMatch(deploy, /\b(?:vercel(?:@[\w.-]+)?|VC)\s+deploy\b/i)
   assert.doesNotMatch(deploy, /\bnpx\b[^\n]*\bvercel(?:@[\w.-]+)?\b/i)
   assert.doesNotMatch(deploy, /--prod\b|scripts\/(?:migrate|release-migrate)\.[a-z]+/i)
+  assert.doesNotMatch(deploy, /@\{upstream\}/)
 })
 
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {

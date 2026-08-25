@@ -23,7 +23,7 @@ if [ "$#" -ne 1 ] || [ "$1" != "--prepare" ]; then
 fi
 
 verify_pushed_candidate() {
-  local branch commit upstream remote_commit worktree_state
+  local branch commit tracking_remote merge_ref remote_commit worktree_state
 
   branch=$(git symbolic-ref --quiet --short HEAD) || {
     echo "!! preparation requires a branch, not a detached checkout"
@@ -43,11 +43,15 @@ verify_pushed_candidate() {
     return 1
   }
 
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || {
+  tracking_remote=$(git config --get "branch.$branch.remote" 2>/dev/null) || {
     echo "!! branch must be pushed to origin before preparation"
     return 1
   }
-  [ "$upstream" = "origin/$branch" ] || {
+  merge_ref=$(git config --get "branch.$branch.merge" 2>/dev/null) || {
+    echo "!! branch must be pushed to origin before preparation"
+    return 1
+  }
+  [ "$tracking_remote" = "origin" ] && [ "$merge_ref" = "refs/heads/$branch" ] || {
     echo "!! branch must track its matching origin branch"
     return 1
   }
