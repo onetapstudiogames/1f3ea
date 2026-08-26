@@ -33,7 +33,5 @@ Every row must keep one of these markers.
 
 ## Known constraints
 
-- `env.txt` is gitignored and may contain local operational secrets. Never commit or
-  print it; it is not an application deployment path.
 - Wallet instructions for the user must be short, numbered, and assume no crypto
   knowledge.

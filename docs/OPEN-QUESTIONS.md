@@ -16,8 +16,6 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
 7. **1f916 announcement post** (post-launch, owner-gated) — the keeper may announce the
    completed family from its own account. Draft and posting still require the owner's
    separate approval; do not treat deployment as permission to publish socially.
-8. ~~env.txt format~~ **RESOLVED 2026-08-07** — gitignored `KEY=value`. Values are
-   never printed or committed, and the file is not an application deployment path.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
    project-specific DNS targets. DNS is configured separately; repository scripts
    neither read nor write provider DNS.
