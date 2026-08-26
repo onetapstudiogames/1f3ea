@@ -19,10 +19,12 @@ class FakeNode {
   readonly childNodes: FakeNode[] = []
   parentNode: FakeNode | null = null
   private ownText = ''
+  textWrites = 0
   get textContent(): string {
     return this.ownText + this.childNodes.map(node => node.textContent).join('')
   }
   set textContent(value: string) {
+    this.textWrites += 1
     this.ownText = String(value ?? '')
     this.replaceChildren()
   }
@@ -56,6 +58,7 @@ class FakeElement extends FakeNode {
   open = false
   type = ''
   value = ''
+  href = ''
   constructor(tagName: string) {
     super()
     this.tagName = tagName.toUpperCase()
@@ -152,17 +155,58 @@ function listingFixture(id: number, aisle = 'tools') {
 }
 
 function merchantFixture(id: number) {
-  return { handle: `store-${id}`, line: `Store ${id}`, model: 'test-model', listings: 0 }
+  return { id, handle: `store-${id}`, line: `Store ${id}`, model: 'test-model', listings: 0 }
+}
+
+function eventFixture(id: number) {
+  return {
+    id, kind: 'listing', actor: 'store-1', at: '2026-08-10T10:00:00Z',
+    detail: { listing_id: id },
+  }
+}
+
+function commentFixture(id: number, body = `Comment ${id}`) {
+  return {
+    id, parent_id: null, handle: 'store-1', body, verified_buyer: false,
+    created_at: '2026-08-10T10:01:00Z',
+  }
 }
 
 function boundedSnapshot(goodsTotal: number, goodsRows: number, merchantTotal: number, merchantRows: number) {
+  const listingsHaveMore = goodsTotal > goodsRows
+  const merchantsHaveMore = merchantTotal > merchantRows
   return {
-    events: [], events_has_more: false,
+    events: [],
+    events_total: 0, events_returned: 0, events_page_size: 100,
+    events_has_more: false, events_more_url: null,
     merchants: Array.from({ length: merchantRows }, (_, index) => merchantFixture(index + 1)),
     merchant_total: merchantTotal,
+    merchants_returned: merchantRows, merchants_page_size: 500,
+    merchants_has_more: merchantsHaveMore,
+    merchants_more_url: merchantsHaveMore ? '/api/merchants?after_id=' + String(merchantRows) : null,
     listings: Array.from({ length: goodsRows }, (_, index) => listingFixture(index + 1)),
+    listings_total: goodsTotal, listings_returned: goodsRows, listings_page_size: 50,
+    listings_has_more: listingsHaveMore,
+    listings_more_url: listingsHaveMore ? '/api/shelves' : null,
     aisles: aisleVector({ tools: goodsTotal }),
     refreshed_at: '2026-08-10T10:00:00Z',
+  }
+}
+
+function focusedShelfPayload(
+  aisles: ReturnType<typeof aisleVector>,
+  listings: ReturnType<typeof listingFixture>[],
+  total: number,
+) {
+  const hasMore = total > listings.length
+  return {
+    aisles,
+    listings,
+    total,
+    returned: listings.length,
+    page_size: 50,
+    has_more: hasMore,
+    next_cursor: hasMore ? 'shelf_cursor-safe' : null,
   }
 }
 
@@ -232,32 +276,38 @@ test('the shop window fetches only public data and renders hostile listing detai
     '/api/window': {
       events: [
         {
+          id: 8,
           kind: 'listing_edit', actor: 'safe-store', at: '2026-08-10T10:00:04Z',
           detail: { listing_id: 15, changed_fields: ['description', 'preview'] },
         },
-        { kind: 'world_canceled', actor: 'other-store', at: '2026-08-10T10:00:03.500Z', detail: { listing_id: 14 } },
+        { id: 7, kind: 'world_canceled', actor: 'other-store', at: '2026-08-10T10:00:03.500Z', detail: { listing_id: 14 } },
         {
+          id: 6,
           kind: 'listing_edit', actor: 'safe-store', at: '2026-08-10T10:00:03Z',
           detail: { listing_id: 15, changed_fields: ['description', 'preview'] },
         },
-        { kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:00Z', detail: { listing_id: 10 } },
-        { kind: 'world_sale', actor: 'safe-store', at: '2026-08-10T10:00:02Z', detail: { listing_id: 12, amount_usdc: 2 } },
-        { kind: 'world_canceled', actor: 'safe-store', at: '2026-08-10T10:00:03Z', detail: { listing_id: 13 } },
-        { kind: 'flag', actor: 'anonymous', at: '2026-08-10T10:00:01Z', detail: { target_id: 10, target_type: 'listing' } },
-        { kind: 'listing', actor: '<img>', at: '2026-08-10T10:00:00Z', detail: { listing_id: 'javascript:1' } },
+        { id: 5, kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:00Z', detail: { listing_id: 10 } },
+        { id: 4, kind: 'world_sale', actor: 'safe-store', at: '2026-08-10T10:00:02Z', detail: { listing_id: 12, amount_usdc: 2 } },
+        { id: 3, kind: 'world_canceled', actor: 'safe-store', at: '2026-08-10T10:00:03Z', detail: { listing_id: 13 } },
+        { id: 2, kind: 'flag', actor: 'anonymous', at: '2026-08-10T10:00:01Z', detail: { target_id: 10, target_type: 'listing' } },
+        { id: 1, kind: 'listing', actor: '<img>', at: '2026-08-10T10:00:00Z', detail: { listing_id: 'javascript:1' } },
       ],
       merchants: [
-        { handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 2, store_url: 'https://evil.example/pwn' },
+        { id: 1, handle: 'safe-store', line: longStoreLine, model: 'test-model', listings: 2, store_url: 'https://evil.example/pwn' },
       ],
       merchant_total: 1,
+      merchants_returned: 1, merchants_page_size: 500,
+      merchants_has_more: false, merchants_more_url: null,
+      events_total: 8, events_returned: 8, events_page_size: 100,
       events_has_more: false,
+      events_more_url: null,
       aisles: aisleVector({ tools: 2, world: 1 }),
       listings: [
         {
           id: 10,
           merchant: 'safe-store',
           title: 'A safe shelf label',
-          description: 'Open to read reviews',
+          description: hostileDescription,
           preview: 'public',
           price_usdc: 0,
           sales: 1,
@@ -290,6 +340,8 @@ test('the shop window fetches only public data and renders hostile listing detai
           delivery_kind: 'city_ownership',
         },
       ],
+      listings_total: 3, listings_returned: 3, listings_page_size: 50,
+      listings_has_more: false, listings_more_url: null,
       refreshed_at: '2026-08-10T10:00:00Z',
     },
     '/api/listing/10': {
@@ -311,8 +363,10 @@ test('the shop window fetches only public data and renders hostile listing detai
       comments: [
         { id: 1, parent_id: 2, handle: 'buyer-one', body: hostileComment, verified_buyer: true, created_at: '2026-08-10T10:01:00Z' },
         { id: 2, parent_id: 1, handle: 'buyer-two', body: '\u202Ejavascript:alert(1)', verified_buyer: 'true', created_at: '2026-08-10T10:02:00Z' },
-        { id: -4, parent_id: 'javascript:1', handle: '<img>', body: 'INVALID_HANDLE_MARKER', verified_buyer: 1, created_at: 'bad date' },
+        { id: 3, parent_id: 'javascript:1', handle: '<img>', body: 'INVALID_HANDLE_MARKER', verified_buyer: 1, created_at: 'bad date' },
       ],
+      comments_total: 3, comments_returned: 3, comments_page_size: 200,
+      comments_has_more: false, comments_next_after_id: null,
     },
     '/api/listing/12': {
       listing: {
@@ -331,8 +385,10 @@ test('the shop window fetches only public data and renders hostile listing detai
         created_at: '2026-08-10T10:00:00Z',
       },
       comments: [],
+      comments_total: 0, comments_returned: 0, comments_page_size: 200,
+      comments_has_more: false, comments_next_after_id: null,
     },
-    '/api/store/safe-store?limit=50': {
+    '/api/store/safe-store': {
       store: {
         handle: 'safe-store', line: longStoreLine, model: 'test-model',
         joined_at: '2026-08-01T10:00:00Z', listings: 2,
@@ -341,6 +397,7 @@ test('the shop window fetches only public data and renders hostile listing detai
         { id: 10, title: 'A safe shelf label', price_usdc: 0 },
         { id: 9, title: 'An older useful thing', price_usdc: 1 },
       ],
+      total: 2, returned: 2, page_size: 2, has_more: false, next_before_id: null,
     },
     '/api/shelves?aisle=tools': {
       aisles: aisleVector({ tools: 1, services: 3 }),
@@ -350,6 +407,7 @@ test('the shop window fetches only public data and renders hostile listing detai
           price_usdc: 0, sales: 0, votes: 0, tags: ['older'], aisle: 'tools',
         },
       ],
+      total: 1, returned: 1, page_size: 50, has_more: false, next_cursor: null,
     },
   }
   const fetch = async (input: unknown, init: Record<string, unknown> = {}) => {
@@ -405,6 +463,11 @@ test('the shop window fetches only public data and renders hostile listing detai
   assert.doesNotMatch(allElements(document).map(element => element.textContent).join('\n'), /INVALID_(?:MERCHANT|LISTING)_MARKER/)
   const listingControl = byAttribute(document, 'aria-label', 'A safe shelf label, item #10')
   assert.ok(listingControl, 'valid listing control was rendered')
+  const listingExcerpt = descendants(listingControl).find(element =>
+    element.className === 'listing-row__description')
+  assert.ok(listingExcerpt, 'the shelf row carries its description excerpt')
+  assert.match(listingExcerpt.textContent, /^EXCERPT · /)
+  assert.match(listingExcerpt.textContent, /END-OF-DESCRIPTION/)
   const worldListingControl = byAttribute(document, 'aria-label', 'A city lantern, item #12')
   assert.ok(worldListingControl, 'world listing control was rendered')
   assert.match(document.getElementById('listing-list')!.textContent, /CITY OWNERSHIP/)
@@ -444,6 +507,7 @@ test('the shop window fetches only public data and renders hostile listing detai
   assert.match(detail.textContent, /<svg onload=/)
   assert.match(detail.textContent, /<img src=x onerror=/)
   assert.match(detail.textContent, /END-OF-DESCRIPTION/)
+  assert.doesNotMatch(detail.textContent, /\bEXCERPT\b/)
   const createdTags = allElements(document).map(element => element.tagName)
   assert.equal(createdTags.some(tag => ['SCRIPT', 'IMG', 'SVG'].includes(tag)), false)
   assert.equal(vm.runInContext('pwned', context), false)
@@ -464,13 +528,19 @@ test('the shop window fetches only public data and renders hostile listing detai
 
   const merchantControl = byAttribute(document, 'aria-label', 'Look into safe-store store')
   assert.ok(merchantControl, 'valid merchant control was rendered')
+  const storefrontExcerpt = descendants(merchantControl).find(element =>
+    element.className === 'merchant-row__line')
+  assert.ok(storefrontExcerpt, 'the merchant row carries its storefront excerpt')
+  assert.match(storefrontExcerpt.textContent, /^EXCERPT · /)
+  assert.match(storefrontExcerpt.textContent, /END-OF-STOREFRONT/)
   detail.focused = false
   await merchantControl.click()
   await settle()
   assert.equal(calls.filter(call => call.url.pathname === '/api/store/safe-store').length, 1)
   assert.match(detail.textContent, /An older useful thing/)
-  assert.match(detail.textContent, /recent goods/i)
+  assert.match(detail.textContent, /showing all 2 goods/i)
   assert.match(detail.textContent, /END-OF-STOREFRONT/)
+  assert.doesNotMatch(detail.textContent, /\bEXCERPT\b/)
   assert.equal(detail.focused, true)
 
   const slowListingControl = byAttribute(document, 'aria-label', 'A slow shelf label, item #11')
@@ -537,8 +607,7 @@ test('the shop window fetches only public data and renders hostile listing detai
   refreshTimer.callback()
   await settle()
   assert.match(document.getElementById('listing-list')!.textContent, /reading|loading|looking/i)
-  assert.match(document.getElementById('window-status')!.textContent, /reading|loading|looking/i)
-  assert.doesNotMatch(document.getElementById('window-status')!.textContent, /lights on|watching live/i)
+  assert.match(document.getElementById('window-status')!.textContent, /lights on|watching live/i)
   assert.equal(calls.filter(call => call.url.pathname === '/api/shelves').length, 4)
   heldRefreshAisleRead.resolve(jsonResponse(payloads['/api/shelves?aisle=tools']))
   await settle()
@@ -632,7 +701,7 @@ test('network and unreadable successful responses name their fixed public failur
 
 test('focused aisle reads reject partial counts and wrong-aisle rows as one failed bundle', async () => {
   const snapshotPayload = {
-    events: [], events_has_more: false, merchants: [], merchant_total: 0,
+    ...boundedSnapshot(1, 1, 0, 0),
     listings: [
       {
         id: 10, merchant: 'safe-store', title: 'Snapshot tool', description: 'Snapshot row',
@@ -640,47 +709,47 @@ test('focused aisle reads reject partial counts and wrong-aisle rows as one fail
       },
     ],
     aisles: aisleVector({ tools: 1 }),
-    refreshed_at: '2026-08-10T10:00:00Z',
   }
   const badPayloads = [
-    {
-      aisles: aisleVector({ tools: 1 }).slice(0, -1),
-      listings: [
+    focusedShelfPayload(
+      aisleVector({ tools: 1 }).slice(0, -1) as ReturnType<typeof aisleVector>,
+      [
         {
           id: 8, merchant: 'safe-store', title: 'Partial vector row', description: '',
           price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
         },
       ],
-    },
-    {
-      aisles: aisleVector({ tools: 1, services: 3 }),
-      listings: [
+      1,
+    ),
+    focusedShelfPayload(
+      aisleVector({ tools: 1, services: 3 }),
+      [
         {
           id: 7, merchant: 'safe-store', title: 'Wrong aisle row', description: '',
           price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'services',
         },
       ],
-    },
-    {
-      aisles: aisleVector({ tools: 0 }),
-      listings: [
+      1,
+    ),
+    focusedShelfPayload(
+      aisleVector({ tools: 0 }),
+      [
         {
           id: 6, merchant: 'safe-store', title: 'Count contradiction row', description: '',
           price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
         },
       ],
-    },
+      0,
+    ),
+    focusedShelfPayload(aisleVector({ tools: 1 }), [], 1),
+    focusedShelfPayload(
+      aisleVector({ tools: 51 }),
+      Array.from({ length: 49 }, (_, index) => listingFixture(index + 20)),
+      51,
+    ),
     {
-      aisles: aisleVector({ tools: 1 }),
-      listings: [],
-    },
-    {
-      aisles: aisleVector({ tools: 51 }),
-      listings: Array.from({ length: 49 }, (_, index) => listingFixture(index + 20)),
-    },
-    {
+      ...focusedShelfPayload(aisleVector(), [], 0),
       aisles: AISLE_NAMES.map(name => ({ name, count: name === 'tools' ? null : 0 })),
-      listings: [],
     },
   ]
 
@@ -742,7 +811,7 @@ test('snapshot and focused aisle rows accept the exact 50-row boundary and a lar
       const url = new URL(String(input), 'https://window.example')
       return jsonResponse(url.pathname === '/api/window'
         ? snapshot
-        : { aisles: aisleVector({ tools: total }), listings: snapshot.listings })
+        : focusedShelfPayload(aisleVector({ tools: total }), snapshot.listings, total))
     })
     await settle()
     assert.match(document.getElementById('window-status')!.textContent, /lights on|watching live/i)
@@ -760,6 +829,125 @@ test('snapshot and focused aisle rows accept the exact 50-row boundary and a lar
   }
 })
 
+test('bounded snapshot panels state shown-of totals and link to the exact remainder reads', async () => {
+  const payload = {
+    ...boundedSnapshot(51, 50, 501, 500),
+    events: Array.from({ length: 100 }, (_, index) => eventFixture(101 - index)),
+    events_total: 101,
+    events_returned: 100,
+    events_page_size: 100,
+    events_has_more: true,
+    events_more_url: '/api/events?scope=window&before_id=2',
+  }
+  const { document } = startWindowClient(async () => jsonResponse(payload))
+  await settle()
+
+  const expectations = [
+    {
+      id: 'activity-list', copy: /showing 8 of 100 loaded movements.*101 ledger events/i,
+      href: '/api/events?scope=window&before_id=2',
+    },
+    {
+      id: 'listing-list', copy: /showing 50 of 51 goods/i,
+      href: '/api/shelves',
+    },
+    {
+      id: 'merchant-list', copy: /showing 100 of 500 loaded shopkeepers.*501 total/i,
+      href: '/api/merchants?after_id=500',
+    },
+  ] as const
+  for (const expectation of expectations) {
+    const panel = document.getElementById(expectation.id)!
+    assert.match(panel.textContent, expectation.copy)
+    const link = descendants(panel).find(element =>
+      element.tagName === 'A' && element.href === expectation.href)
+    assert.ok(link, `${expectation.id} exposes ${expectation.href}`)
+  }
+})
+
+test('snapshot rejects contradictory exact page metadata instead of guessing or dropping rows', async () => {
+  const valid = boundedSnapshot(51, 50, 501, 500)
+  const invalidSnapshots = [
+    { ...valid, events_returned: 1 },
+    { ...valid, listings_returned: 49 },
+    { ...valid, listings_has_more: false, listings_more_url: null },
+    { ...valid, merchants_returned: 499 },
+    { ...valid, merchants_more_url: 'https://elsewhere.example/api/merchants' },
+    {
+      ...valid,
+      events: Array.from({ length: 101 }, (_, index) => eventFixture(index + 1)),
+      events_total: 101, events_returned: 101, events_has_more: false, events_more_url: null,
+    },
+  ]
+
+  for (const payload of invalidSnapshots) {
+    const { document } = startWindowClient(async () => jsonResponse(payload))
+    await settle()
+    assertPanelsMatch(document, /Cause: the market returned incomplete or inconsistent public data/i)
+  }
+})
+
+test('window event continuations keep exactly the fixed window scope and expected id', async () => {
+  const eventPage = {
+    ...boundedSnapshot(0, 0, 0, 0),
+    events: Array.from({ length: 100 }, (_, index) => eventFixture(101 - index)),
+    events_total: 101,
+    events_returned: 100,
+    events_page_size: 100,
+    events_has_more: true,
+  }
+  for (const url of [
+    '/api/events?scope=window&before_id=2',
+    '/api/events?before_id=2&scope=window',
+  ]) {
+    const { document } = startWindowClient(async () => jsonResponse({ ...eventPage, events_more_url: url }))
+    await settle()
+    assert.match(document.getElementById('window-status')!.textContent, /lights on|watching live/i)
+    assert.ok(descendants(document.getElementById('activity-list')!).some(element =>
+      element.tagName === 'A' && element.href === url))
+  }
+
+  for (const url of [
+    '/api/events?before_id=2',
+    '/api/events?scope=all&before_id=2',
+    '/api/events?scope=window&before_id=2&kind=listing',
+    '/api/events?scope=window&scope=window&before_id=2',
+    '/api/events?scope=window&before_id=2&before_id=2',
+  ]) {
+    const { document } = startWindowClient(async () => jsonResponse({ ...eventPage, events_more_url: url }))
+    await settle()
+    assertPanelsMatch(document, /Cause: the market returned incomplete or inconsistent public data/i)
+  }
+})
+
+test('focused shelves render their exact count and cursor continuation', async () => {
+  const snapshot = boundedSnapshot(51, 50, 0, 0)
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+      aisles: aisleVector({ tools: 51 }),
+      listings: snapshot.listings,
+      total: 51,
+      returned: 50,
+      page_size: 50,
+      has_more: true,
+      next_cursor: 'shelf_cursor-safe',
+    })
+  })
+  await settle()
+  const tools = allElements(document).find(element =>
+    element.tagName === 'BUTTON' && element.textContent === 'tools 51')
+  assert.ok(tools)
+  await tools.click()
+  await settle()
+
+  const panel = document.getElementById('listing-list')!
+  assert.match(panel.textContent, /showing 50 of 51 goods/i)
+  assert.ok(descendants(panel).some(element =>
+    element.tagName === 'A' &&
+    element.href === '/api/shelves?aisle=tools&cursor=shelf_cursor-safe'))
+})
+
 test('merchant census accepts exactly 500 rows at and above its public bound', async () => {
   for (const total of [500, 501]) {
     const { document } = startWindowClient(async () => jsonResponse(boundedSnapshot(0, 0, total, 500)))
@@ -770,18 +958,26 @@ test('merchant census accepts exactly 500 rows at and above its public bound', a
   }
 })
 
-test('focused store goods reject underfill and accept the exact 50-row boundary', async () => {
+test('focused stores reject incomplete catalogs and accept complete catalogs at and past 50', async () => {
   const snapshot = boundedSnapshot(0, 0, 1, 1)
   for (const storePayload of [
-    { store: { ...merchantFixture(1), listings: 1 }, listings: [] },
-    { store: { ...merchantFixture(1), listings: null }, listings: [] },
+    {
+      store: { ...merchantFixture(1), listings: 1 }, listings: [],
+      total: 1, returned: 0, page_size: 0, has_more: false, next_before_id: null,
+    },
+    {
+      store: { ...merchantFixture(1), listings: null }, listings: [],
+      total: 0, returned: 0, page_size: 0, has_more: false, next_before_id: null,
+    },
     {
       store: { ...merchantFixture(1), listings: 51 },
       listings: Array.from({ length: 49 }, (_, index) => listingFixture(index + 1)),
+      total: 51, returned: 49, page_size: 49, has_more: false, next_before_id: null,
     },
     {
       store: { ...merchantFixture(1), listings: 51 },
       listings: Array.from({ length: 51 }, (_, index) => listingFixture(index + 1)),
+      total: 51, returned: 51, page_size: 50, has_more: false, next_before_id: null,
     },
   ]) {
     const { document } = startWindowClient(async input => {
@@ -800,11 +996,12 @@ test('focused store goods reject underfill and accept the exact 50-row boundary'
   }
 
   for (const total of [50, 51]) {
-    const listings = Array.from({ length: 50 }, (_, index) => listingFixture(index + 1))
+    const listings = Array.from({ length: total }, (_, index) => listingFixture(index + 1))
     const { document } = startWindowClient(async input => {
       const url = new URL(String(input), 'https://window.example')
       return jsonResponse(url.pathname === '/api/window' ? snapshot : {
         store: { ...merchantFixture(1), listings: total }, listings,
+        total, returned: total, page_size: total, has_more: false, next_before_id: null,
       })
     })
     await settle()
@@ -814,6 +1011,145 @@ test('focused store goods reject underfill and accept the exact 50-row boundary'
     await settle()
     assert.equal(document.getElementById('dialog-title')!.textContent, 'STORE-1')
     assert.doesNotMatch(document.getElementById('listing-detail')!.textContent, /failed|dark/i)
+    assert.equal(descendants(document.getElementById('listing-detail')!)
+      .filter(element => element.className === 'store-good').length, total)
+  }
+})
+
+test('focused stores use the complete unbounded read and render every catalog row', async () => {
+  const snapshot = boundedSnapshot(0, 0, 1, 1)
+  const listings = Array.from({ length: 51 }, (_, index) => listingFixture(index + 1))
+  const requests: string[] = []
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    requests.push(url.pathname + url.search)
+    return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+      store: { ...merchantFixture(1), listings: listings.length },
+      listings,
+      total: listings.length,
+      returned: listings.length,
+      page_size: listings.length,
+      has_more: false,
+      next_before_id: null,
+    })
+  })
+  await settle()
+  const merchant = byAttribute(document, 'aria-label', 'Look into store-1 store')
+  assert.ok(merchant)
+  await merchant.click()
+  await settle()
+
+  assert.deepEqual(requests, ['/api/window', '/api/store/store-1'])
+  assert.equal(document.getElementById('dialog-title')!.textContent, 'STORE-1')
+  assert.equal(descendants(document.getElementById('listing-detail')!)
+    .filter(element => element.className === 'store-good').length, 51)
+  assert.match(document.getElementById('listing-detail')!.textContent, /showing all 51 goods/i)
+})
+
+test('listing comments page past 200 and a stale page cannot overwrite another dialog', async () => {
+  const snapshot = {
+    ...boundedSnapshot(2, 2, 1, 1),
+    listings: [listingFixture(1), listingFixture(2)],
+  }
+  const listing = (id: number) => ({
+    ...listingFixture(id), state: 'live', preview: 'public',
+    created_at: '2026-08-10T10:00:00Z',
+  })
+  const heldPage = deferred<ReturnType<typeof jsonResponse>>()
+  let commentPageReads = 0
+  const requests: string[] = []
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    requests.push(url.pathname + url.search)
+    if (url.pathname === '/api/window') return jsonResponse(snapshot)
+    if (url.pathname === '/api/listing/1' && !url.search) return jsonResponse({
+      listing: listing(1),
+      comments: Array.from({ length: 200 }, (_, index) => commentFixture(index + 1)),
+      comments_total: 201,
+      comments_returned: 200,
+      comments_page_size: 200,
+      comments_has_more: true,
+      comments_next_after_id: 200,
+    })
+    if (url.pathname === '/api/listing/1' && url.search === '?comments_after_id=200') {
+      commentPageReads += 1
+      if (commentPageReads === 1) return heldPage.promise
+      return jsonResponse({
+        listing: listing(1), comments: [commentFixture(201, 'Fresh final comment')],
+        comments_total: 201, comments_returned: 1, comments_page_size: 200,
+        comments_has_more: false, comments_next_after_id: null,
+      })
+    }
+    if (url.pathname === '/api/listing/2') return jsonResponse({
+      listing: listing(2), comments: [], comments_total: 0, comments_returned: 0,
+      comments_page_size: 200, comments_has_more: false, comments_next_after_id: null,
+    })
+    return jsonResponse({ error: 'unexpected' }, 500)
+  })
+  await settle()
+
+  const firstListing = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
+  assert.ok(firstListing)
+  await firstListing.click()
+  await settle()
+  const loadMore = descendants(document.getElementById('listing-detail')!).find(element =>
+    element.tagName === 'BUTTON' && /load.*review/i.test(element.textContent))
+  assert.ok(loadMore)
+  void loadMore.click()
+  await settle()
+  assert.ok(requests.includes('/api/listing/1?comments_after_id=200'))
+
+  const secondListing = byAttribute(document, 'aria-label', 'Shelf item 2, item #2')
+  assert.ok(secondListing)
+  await secondListing.click()
+  await settle()
+  assert.equal(document.getElementById('dialog-title')!.textContent, 'ITEM #2')
+
+  heldPage.resolve(jsonResponse({
+    listing: listing(1), comments: [commentFixture(201, 'STALE COMMENT')],
+    comments_total: 201, comments_returned: 1, comments_page_size: 200,
+    comments_has_more: false, comments_next_after_id: null,
+  }))
+  await settle()
+  assert.equal(document.getElementById('dialog-title')!.textContent, 'ITEM #2')
+  assert.doesNotMatch(document.getElementById('listing-detail')!.textContent, /STALE COMMENT/)
+
+  await firstListing.click()
+  await settle()
+  const loadAgain = descendants(document.getElementById('listing-detail')!).find(element =>
+    element.tagName === 'BUTTON' && /load.*review/i.test(element.textContent))
+  assert.ok(loadAgain)
+  await loadAgain.click()
+  await settle()
+  assert.equal(descendants(document.getElementById('listing-detail')!)
+    .filter(element => element.className === 'comment').length, 201)
+  assert.match(document.getElementById('listing-detail')!.textContent, /showing all 201 reviews/i)
+})
+
+test('listing detail accepts exactly 8 tags and rejects 9 instead of silently slicing', async () => {
+  for (const [tagCount, fails] of [[8, false], [9, true]] as const) {
+    const snapshot = boundedSnapshot(1, 1, 0, 0)
+    const { document } = startWindowClient(async input => {
+      const url = new URL(String(input), 'https://window.example')
+      return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+        listing: {
+          ...listingFixture(1), state: 'live', preview: 'public',
+          created_at: '2026-08-10T10:00:00Z',
+          tags: Array.from({ length: tagCount }, (_, index) => `tag-${index + 1}`),
+        },
+        comments: [], comments_total: 0, comments_returned: 0,
+        comments_page_size: 200, comments_has_more: false, comments_next_after_id: null,
+      })
+    })
+    await settle()
+    const listing = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
+    assert.ok(listing)
+    await listing.click()
+    await settle()
+    assert.equal(document.getElementById('dialog-title')!.textContent,
+      fails ? 'ITEM READ FAILED' : 'ITEM #1')
+    if (fails) assert.match(document.getElementById('listing-detail')!.textContent,
+      /Cause: the market returned incomplete or inconsistent public data/i)
   }
 })
 
@@ -821,11 +1157,10 @@ test('detail reads distinguish completed 404s from malformed successful payloads
   let listingAttempts = 0
   let storeAttempts = 0
   const ready = {
-    events: [], events_has_more: false,
+    ...boundedSnapshot(1, 1, 1, 1),
     merchants: [
-      { handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 },
+      { id: 1, handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 },
     ],
-    merchant_total: 1,
     listings: [
       {
         id: 10, merchant: 'safe-store', title: 'Known shelf label', description: 'Public row',
@@ -833,7 +1168,6 @@ test('detail reads distinguish completed 404s from malformed successful payloads
       },
     ],
     aisles: aisleVector({ tools: 1 }),
-    refreshed_at: '2026-08-10T10:00:00Z',
   }
   const { document } = startWindowClient(async input => {
     const url = new URL(String(input), 'https://window.example')
@@ -893,15 +1227,13 @@ test('detail reads distinguish completed 404s from malformed successful payloads
 
 test('snapshot and focused counts cannot be lower than their neighboring renderable rows', async () => {
   const contradictorySnapshot = {
-    events: [], events_has_more: false,
-    merchants: [{ handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 }],
-    merchant_total: 1,
+    ...boundedSnapshot(1, 1, 1, 1),
+    merchants: [{ id: 1, handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 }],
     listings: [{
       id: 10, merchant: 'safe-store', title: 'Impossible snapshot row', description: '',
       price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
     }],
     aisles: aisleVector({ tools: 0 }),
-    refreshed_at: '2026-08-10T10:00:00Z',
   }
   const snapshotWindow = startWindowClient(async () => jsonResponse(contradictorySnapshot))
   await settle()
@@ -909,29 +1241,30 @@ test('snapshot and focused counts cannot be lower than their neighboring rendera
   assert.doesNotMatch(snapshotWindow.document.getElementById('listing-list')!.textContent, /Impossible snapshot row/)
 
   const merchantWindow = startWindowClient(async () => jsonResponse({
-    ...contradictorySnapshot,
+    ...boundedSnapshot(0, 0, 0, 0),
+    merchants: [{ id: 1, handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 }],
     merchant_total: 0,
-    listings: [],
-    aisles: aisleVector(),
+    merchants_returned: 1,
   }))
   await settle()
   assertPanelsMatch(merchantWindow.document, /failed|unavailable|could not/i)
 
   const ready = {
-    ...contradictorySnapshot,
-    merchant_total: 1,
+    ...boundedSnapshot(1, 1, 1, 1),
+    merchants: [{ id: 1, handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 }],
     listings: [listingFixture(10)],
     aisles: aisleVector({ tools: 1 }),
   }
   const focusedWindow = startWindowClient(async input => {
     const url = new URL(String(input), 'https://window.example')
-    return jsonResponse(url.pathname === '/api/window' ? ready : {
-      aisles: aisleVector({ tools: 0 }),
-      listings: [{
+    return jsonResponse(url.pathname === '/api/window' ? ready : focusedShelfPayload(
+      aisleVector({ tools: 0 }),
+      [{
         id: 8, merchant: 'safe-store', title: 'Impossible focused row', description: '',
         price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
       }],
-    })
+      0,
+    ))
   })
   await settle()
   const tools = allElements(focusedWindow.document).find(element =>
@@ -948,9 +1281,8 @@ test('a background snapshot failure stays visible after a concurrent focused ais
   const focused = deferred<ReturnType<typeof jsonResponse>>()
   let snapshotReads = 0
   const ready = {
-    events: [], events_has_more: false,
-    merchants: [], merchant_total: 0, listings: [listingFixture(10)],
-    aisles: aisleVector({ tools: 1 }), refreshed_at: '2026-08-10T10:00:00Z',
+    ...boundedSnapshot(1, 1, 0, 0),
+    listings: [listingFixture(10)],
   }
   const { document, timers } = startWindowClient(async input => {
     const url = new URL(String(input), 'https://window.example')
@@ -975,13 +1307,14 @@ test('a background snapshot failure stays visible after a concurrent focused ais
   assert.match(status.textContent, /latest market read failed|background.*failed/i)
   assert.match(status.textContent, /try again/i)
 
-  focused.resolve(jsonResponse({
-    aisles: aisleVector({ tools: 1 }),
-    listings: [{
+  focused.resolve(jsonResponse(focusedShelfPayload(
+    aisleVector({ tools: 1 }),
+    [{
       id: 8, merchant: 'safe-store', title: 'Focused row', description: '',
       price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
     }],
-  }))
+    1,
+  )))
   await settle()
   assert.match(document.getElementById('listing-list')!.textContent, /Focused row/)
   assert.match(status.textContent, /latest market read failed|background.*failed/i)
@@ -1020,15 +1353,7 @@ test('every panel stays loading, names a failed snapshot with retry, then render
   await settle()
   assertPanelsMatch(document, /reading|loading|counting|turning on/i)
 
-  second.resolve(jsonResponse({
-    events: [],
-    events_has_more: false,
-    merchants: [],
-    merchant_total: 0,
-    listings: [],
-    aisles: aisleVector(),
-    refreshed_at: '2026-08-10T10:00:00Z',
-  }))
+  second.resolve(jsonResponse(boundedSnapshot(0, 0, 0, 0)))
   await settle()
 
   for (const id of ['activity-list', 'listing-list', 'merchant-list']) {
@@ -1048,15 +1373,13 @@ test('every panel stays loading, names a failed snapshot with retry, then render
 
 test('filter empties name only the bounds that actually hide more records', async () => {
   const { document } = startWindowClient(async () => jsonResponse({
-    events: [
-      { kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:00Z', detail: { listing_id: 10 } },
-    ],
+    ...boundedSnapshot(51, 50, 501, 500),
+    events: Array.from({ length: 100 }, (_, index) => eventFixture(101 - index)),
+    events_total: 101,
+    events_returned: 100,
+    events_page_size: 100,
     events_has_more: true,
-    merchants: Array.from({ length: 500 }, (_, index) => merchantFixture(index + 1)),
-    merchant_total: 501,
-    listings: Array.from({ length: 50 }, (_, index) => listingFixture(index + 1)),
-    aisles: aisleVector({ tools: 51 }),
-    refreshed_at: '2026-08-10T10:00:00Z',
+    events_more_url: '/api/events?scope=window&before_id=2',
   }))
   await settle()
   await enterFilter(document, 'not-in-the-loaded-slice')
@@ -1064,6 +1387,9 @@ test('filter empties name only the bounds that actually hide more records', asyn
   assert.match(document.getElementById('activity-list')!.textContent, /bounded|newest 100/i)
   assert.match(document.getElementById('listing-list')!.textContent, /bounded|newest 50/i)
   assert.match(document.getElementById('merchant-list')!.textContent, /bounded|first 500/i)
+  assert.ok(descendants(document.getElementById('merchant-list')!).some(element =>
+    element.tagName === 'A' && element.href === '/api/merchants'),
+  'a filtered bounded census always retains the complete non-skipping census path')
   for (const id of ['activity-list', 'listing-list', 'merchant-list']) {
     const panel = document.getElementById(id)
     assert.ok(panel)
@@ -1079,10 +1405,7 @@ test('filter empties name only the bounds that actually hide more records', asyn
 
 test('a failed background refresh names failure and offers an immediate status retry', async () => {
   let attempts = 0
-  const ready = {
-    events: [], events_has_more: false, merchants: [], merchant_total: 0,
-    listings: [], aisles: aisleVector(), refreshed_at: '2026-08-10T10:00:00Z',
-  }
+  const ready = boundedSnapshot(0, 0, 0, 0)
   const { document, timers } = startWindowClient(async () => {
     attempts += 1
     return attempts === 2 ? jsonResponse({ error: 'refresh failed' }, 503) : jsonResponse(ready)
@@ -1103,4 +1426,62 @@ test('a failed background refresh names failure and offers an immediate status r
   await settle()
   assert.equal(attempts, 3)
   assert.match(status.textContent, /lights on|watching live/i)
+})
+
+test('routine polls stay silent while failure and recovery each change the live status once', async () => {
+  let fail = false
+  const ready = boundedSnapshot(0, 0, 0, 0)
+  const { document, timers } = startWindowClient(async () => fail
+    ? jsonResponse({ error: 'same background failure' }, 503)
+    : jsonResponse(ready))
+  await settle()
+  const status = document.getElementById('window-status')!
+  const filterNote = document.getElementById('filter-note')!
+  const initialWrites = status.textWrites
+  const initialFilterWrites = filterNote.textWrites
+
+  let refresh = [...timers.values()].find(timer => timer.delay === 60_000)
+  assert.ok(refresh)
+  refresh.callback()
+  await settle()
+  assert.equal(status.textWrites, initialWrites, 'an unchanged successful poll is not announced')
+  assert.equal(filterNote.textWrites, initialFilterWrites,
+    'an unchanged successful poll does not rewrite the other live region')
+
+  fail = true
+  refresh = [...timers.values()].find(timer => timer.delay === 60_000)
+  assert.ok(refresh)
+  refresh.callback()
+  await settle()
+  assert.match(status.textContent, /failed/i)
+  const failedWrites = status.textWrites
+  const firstRetry = descendants(status).find(element =>
+    element.tagName === 'BUTTON' && /try again/i.test(element.textContent))
+  assert.ok(firstRetry)
+
+  const repeatedFailure = [...timers.values()].find(timer => timer.delay === 120_000)
+  assert.ok(repeatedFailure)
+  repeatedFailure.callback()
+  await settle()
+  assert.equal(status.textWrites, failedWrites, 'the same continuing failure is not re-announced')
+  assert.equal(descendants(status).find(element =>
+    element.tagName === 'BUTTON' && /try again/i.test(element.textContent)), firstRetry,
+  'the same failure preserves the existing live-region children')
+
+  fail = false
+  const recovery = [...timers.values()].find(timer => timer.delay === 240_000)
+  assert.ok(recovery)
+  recovery.callback()
+  await settle()
+  assert.equal(status.textWrites, failedWrites + 1, 'recovery is announced once')
+  assert.match(status.textContent, /lights on|watching live/i)
+})
+
+test('the client-side search limit matches the visible 100-character input contract', async () => {
+  const { document } = startWindowClient(async () => jsonResponse(boundedSnapshot(0, 0, 0, 0)))
+  await settle()
+  await enterFilter(document, 'x'.repeat(120))
+  const filterCopy = document.getElementById('filter-note')!.textContent
+  const visibleQuery = filterCopy.match(/“([^”]*)”/u)?.[1]
+  assert.equal(visibleQuery?.length, 100)
 })

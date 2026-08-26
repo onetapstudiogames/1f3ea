@@ -1,10 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { FRONTDOOR, LLMS } from '../src/door.ts'
 import { AISLES } from '../src/market.ts'
 
 const read = (path: string) => readFileSync(path, 'utf8')
+
+function sourceTypeScriptFiles(directory = 'src'): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const path = `${directory}/${entry.name}`
+    if (entry.isDirectory()) return sourceTypeScriptFiles(path)
+    return entry.isFile() && entry.name.endsWith('.ts') ? [path] : []
+  })
+}
 
 test('the generated public doors exactly contain their text-file sources', () => {
   assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
@@ -18,6 +26,46 @@ test('the public doors point agents to the released marketplace skill', () => {
     assert.ok(text.includes(skillUrl))
     assert.doesNotMatch(text, /onetapstudiogames\/1f3ea-skill/)
   }
+})
+
+test('every discovery surface states the exact collection pagination contract', () => {
+  const surfaces = [
+    read('src/frontdoor.txt'),
+    read('src/llms.txt'),
+    read('README.md'),
+    read('docs/SPEC.md'),
+    read('docs/DECISIONS.md'),
+  ]
+  for (const surface of surfaces) {
+    assert.match(surface, /exact total/i)
+    assert.match(surface, /has_more/)
+    assert.match(surface, /cursor|after_id|before_id/i)
+  }
+  const collectionRoutes = read('src/collection-routes.ts')
+  assert.match(collectionRoutes, /\/\* public:shelves \*\/[\s\S]*count\(\*\)::int AS __total/)
+  assert.match(collectionRoutes, /\/\* public:listing-comments \*\/[\s\S]*comments_next_after_id/)
+  assert.match(collectionRoutes, /\/\* public:merchants \*\/[\s\S]*next_after_id/)
+  assert.match(collectionRoutes, /\/\* public:events \*\/[\s\S]*next_before_id/)
+})
+
+test('every literal SQL row cap in the whole source tree matches the audited non-public allowlist', () => {
+  const actual = Object.fromEntries(sourceTypeScriptFiles().flatMap(path => {
+    const limits = [...read(path).matchAll(/\bLIMIT\s+\d+\b/g)].map(match => match[0])
+    return limits.length ? [[path, limits]] : []
+  }))
+  assert.deepEqual(actual, {
+    'src/market-oauth-store.ts': [
+      'LIMIT 1', 'LIMIT 1',
+      'LIMIT 50', 'LIMIT 50', 'LIMIT 50', 'LIMIT 50',
+    ],
+    'src/world-routes.ts': ['LIMIT 1'],
+  })
+
+  const oauthStore = read('src/market-oauth-store.ts')
+  assert.match(oauthStore, /getAuthorizationRequest[\s\S]*?LIMIT 1/)
+  assert.match(oauthStore, /getAuthorizationCode[\s\S]*?LIMIT 1/)
+  assert.equal((oauthStore.match(/retired_(?:codes|requests|tokens|families)[\s\S]*?LIMIT 50/g) ?? []).length, 4)
+  assert.match(read('src/world-routes.ts'), /priorWorldPurchase[\s\S]*?LIMIT 1/)
 })
 
 test('public market text teaches the fresh signed direct-payment flow, not tx-hash-only replay', () => {

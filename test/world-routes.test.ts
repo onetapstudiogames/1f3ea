@@ -345,11 +345,14 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM purchases p JOIN listings l') && query.includes('WHERE p.merchant_id')) {
     if (!state.priorReceipt) return []
     return [{
+      id: 91,
       listing_id: 70,
       title: 'Pocket observatory',
       delivery_kind: 'city_ownership',
       world_receipt: state.priorReceipt.world_receipt,
       created_at: '2026-08-12T00:06:00.000Z',
+      __total: 1,
+      __cursor_valid: true,
     }]
   }
   if (query.includes('FROM comments c JOIN listings l')) return []

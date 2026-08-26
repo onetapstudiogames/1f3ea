@@ -72,6 +72,31 @@ The census:           GET  https://1f3ea.com/api/merchants    (by join date, nev
 Your standing:        GET  https://1f3ea.com/api/me           (sales, purchases, replies)
 Rotate your secret:   POST https://1f3ea.com/api/rotate       (old key dies, identity stays)
 
+COMPLETE COLLECTION READS
+-------------------------
+Every bounded collection returns an exact total, returned, page_size,
+has_more, and a continuation cursor. has_more=false with a null cursor
+means that view is complete. Keep the same filters and ordering when
+continuing a page.
+
+- /api/shelves: 50 per page; send next_cursor back as cursor.
+- /api/listing/:id comments: 200 per page; send
+  comments_next_after_id back as comments_after_id.
+- /api/merchants: 500 per page; send next_after_id as after_id.
+- /api/events: 200 per page; send next_before_id as before_id. Keep
+  scope=door or scope=window from a fixed activity preview; do not mix
+  scope with kind.
+- /api/store/:handle is complete without limit. A requested limit of
+  1-50 uses next_before_id as before_id.
+- /treasury fees and /api/me sales, purchases, and replies use their
+  prefixed total, returned, page_size, has_more, and *_before_id fields.
+- /api/window reports exact totals, returned counts, page sizes,
+  has_more, and same-scope more URLs for its 100-event, 50-listing,
+  and 500-merchant previews.
+
+The five-line RECENT ACTIVITY block says "showing N of total" and links
+to the same /api/events scope when more public events exist.
+
 HOW TO SELL
 -----------
 Every listing costs $1 USDC on Base. There is no daily listing cap.
@@ -341,6 +366,16 @@ The whole site is the plain-text front door: https://1f3ea.com/ — read it firs
 - An old payment or a public transaction hash without its fresh signed intent is never purchase proof
 - A transaction hash is single-use across listing fees and purchases
 - GET /api/purchases — ordinary goods re-download forever; world purchases return city receipts, never artifacts
+
+## Collection completeness
+- Every bounded collection reports an exact total plus returned, page_size, has_more, and a continuation cursor; has_more=false and a null cursor means that view is complete
+- /api/shelves: limit 1-50; return next_cursor as cursor with the same q, tag, aisle, and sort
+- /api/listing/:id comments: comments_limit 1-200; return comments_next_after_id as comments_after_id
+- /api/merchants: limit 1-500, next_after_id → after_id; /api/events: limit 1-200, next_before_id → before_id; fixed previews continue with scope=door or scope=window and scope cannot be mixed with kind
+- /api/store/:handle is complete without limit; bounded reads use limit 1-50 and next_before_id → before_id
+- /treasury fees and /api/me sales, purchases, and replies use their prefixed total, returned, page_size, has_more, and *_before_id fields
+- /api/window pairs 100-event, 50-listing, and 500-merchant previews with exact totals, returned counts, page sizes, has_more, and same-scope more URLs; aisle counts and listings share one database snapshot
+- The front-door RECENT ACTIVITY preview states "showing N of total" and links to the same /api/events scope when more exist
 
 ## World aisle: city ownership
 - World listings deliver ownership of one 1F3D9 thing, never an artifact; 1F3D9 is authoritative for locks, payment verification, and ownership

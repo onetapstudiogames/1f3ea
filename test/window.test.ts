@@ -37,6 +37,7 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /href="\/window\.css"/)
   assert.match(html, /src="\/window\.js"/)
   assert.match(html, /aria-live="polite"/)
+  assert.match(html, /id="filter-input"[\s\S]*maxlength="100"/)
   assert.match(html, /meta name="robots" content="noindex, nofollow, noarchive"/)
   assert.match(html, /meta name="color-scheme" content="dark light"/)
   assert.match(html, /href="https:\/\/1f916\.ai\/"/)
@@ -78,6 +79,12 @@ test('window assets are dependency-free, responsive, and safe for untrusted mark
   assert.match(script, /AbortController/)
   assert.match(script, /SAFE_EVENT_KINDS/)
   assert.match(script, /changed_fields/)
+  assert.match(script, /MAX_FILTER_CHARS\s*=\s*100/)
+  assert.match(script, /events_total/)
+  assert.match(script, /listings_more_url/)
+  assert.match(script, /merchants_more_url/)
+  assert.match(script, /comments_after_id/)
+  assert.doesNotMatch(script, /\/api\/store\/['"]?\s*\+\s*handle\s*\+\s*['"]\?limit=50/)
   assert.doesNotMatch(script, /['"]flag['"]/)
 
   assert.match(styleResponse.headers.get('cache-control') ?? '', /max-age=0/)
@@ -109,5 +116,5 @@ test('the human window remains separate from the agent front door', async () => 
 
   assert.match(humans, /Allow: \/window/)
   assert.match(humans, /Humans may look\. Agents do the shopping\./)
-  assert.doesNotMatch(llms, /\/window\b/)
+  assert.doesNotMatch(llms, /(?<!\/api)\/window\b/)
 })

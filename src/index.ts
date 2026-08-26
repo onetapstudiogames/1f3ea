@@ -8,10 +8,11 @@ import {
   type Merchant,
 } from './core.ts'
 import {
-  AISLES, EDITABLE_LISTING_FIELDS, formatActivity, isAisle, parseStoreLine, suggestAisle,
+  AISLES, EDITABLE_LISTING_FIELDS, formatActivity, isAisle, parseStoreLine,
+  PUBLIC_EVENT_SCOPES, suggestAisle,
   type ActivityEvent, type Aisle,
 } from './market.ts'
-import { usdcBalance, NETWORK, USDC, verifyPersonalSignatureProof } from './chain.ts'
+import { NETWORK, USDC, verifyPersonalSignatureProof } from './chain.ts'
 import {
   canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentReadinessResponse,
   paymentResponseHeader, requirements, settleX402, TREASURY, verifyDirectPayment,
@@ -30,6 +31,8 @@ import {
   type DirectPurchaseIntent,
 } from './direct-payments.ts'
 import { postgresUniqueConstraint } from './postgres-error.ts'
+import { countedPage, type CountedRow } from './public-pagination.ts'
+import { registerCollectionRoutes } from './collection-routes.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -70,11 +73,23 @@ app.notFound(c => c.json({ error: 'no such shelf. GET / for the front door.' }, 
 app.get('/', async c => {
   c.header('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
   try {
-    const activity = (await sql`
-      SELECT at, kind, actor, detail FROM events
-      WHERE kind IN ('register','listing','maintainer_seed','sale','world_sale','world_canceled')
-      ORDER BY id DESC LIMIT 5`) as ActivityEvent[]
-    return c.text(`${FRONTDOOR.trimEnd()}\n\n${formatActivity(activity)}\n`)
+    const rawActivity = (await sql`
+      /* public:door-activity */
+      WITH eligible AS (
+        SELECT id, at, kind, actor, detail FROM events
+        WHERE kind = ANY(${[...PUBLIC_EVENT_SCOPES.door]}::text[])
+      ), page AS (
+        SELECT * FROM eligible ORDER BY id DESC LIMIT ${6}
+      )
+      SELECT page.*, (SELECT count(*)::int FROM eligible) AS __total
+      FROM page ORDER BY id DESC`) as (ActivityEvent & CountedRow)[]
+    const activityPage = countedPage(rawActivity, 5)
+    return c.text(`${FRONTDOOR.trimEnd()}\n\n${formatActivity(activityPage.items as unknown as ActivityEvent[], {
+      total: activityPage.total,
+      hasMore: activityPage.hasMore,
+      nextBeforeId: activityPage.nextCursor,
+      scope: 'door',
+    })}\n`)
   } catch {
     return c.text(FRONTDOOR)
   }
@@ -89,6 +104,7 @@ app.get('/window', windowPage)
 app.get('/window.css', windowStyle)
 app.get('/window.js', windowScript)
 app.get('/api/window', windowSnapshot)
+registerCollectionRoutes(app)
 
 // ---------- Identity ----------
 
@@ -150,128 +166,6 @@ app.post('/api/store', async c => {
   if (!parsed.ok) return err(c, 400, parsed.error)
   await sql`UPDATE merchants SET storefront_line = ${parsed.line} WHERE id = ${m.id}`
   return c.json({ handle: m.handle, line: parsed.line, store_url: `/api/store/${m.handle}` })
-})
-
-app.get('/api/store/:handle', async c => {
-  const handle = c.req.param('handle').toLowerCase()
-  if (!HANDLE_RE.test(handle)) return err(c, 404, 'no such store')
-  const limitParam = c.req.query('limit')
-  const limit = limitParam === undefined ? null : Number(limitParam)
-  if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > 50))
-    return err(c, 400, 'limit must be an integer from 1 to 50')
-  const stores = (await sql`
-    SELECT m.id, m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
-      (SELECT count(*)::int FROM listings l
-       WHERE l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
-         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')) AS listings
-    FROM merchants m WHERE m.handle = ${handle}`) as {
-      id: number; handle: string; model: string; line: string; karma: number
-      joined_at: string; listings: number
-    }[]
-  const store = stores[0]
-  if (!store) return err(c, 404, 'no such store')
-  const listings = limit === null
-    ? await sql.query(
-      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-       WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
-         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
-       ORDER BY l.pinned DESC, l.created_at DESC`, [store.id],
-    )
-    : await sql.query(
-      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-       WHERE l.merchant_id = $1 AND NOT l.removed AND NOT l.withdrawn
-         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
-       ORDER BY l.pinned DESC, l.created_at DESC LIMIT $2`, [store.id, limit],
-    )
-  const { id: _id, ...publicStore } = store
-  c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
-  return c.json({ store: publicStore, listings })
-})
-
-// ---------- Shelves ----------
-
-const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
-  '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
-  l.seller_wallet, l.tags, l.aisle, l.votes, l.sales, l.pinned, l.created_at,
-  l.delivery_kind, l.world_origin AS city_url, l.world_offer_id, l.world_asset_id,
-  l.world_seller_handle, l.world_draft_id, l.world_state,
-  CASE WHEN l.delivery_kind = 'city_ownership'
-    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_offer_url,
-  CASE WHEN l.delivery_kind = 'city_ownership'
-    THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS world_asset_url,
-  (l.delivery_kind = 'city_ownership') AS requires_city_resident,
-  'live'::text AS state`
-
-app.get('/api/shelves', async c => {
-  const q = c.req.query('q')?.slice(0, 100)
-  const tag = c.req.query('tag')?.toLowerCase().slice(0, 40)
-  const aisleParam = c.req.query('aisle')?.toLowerCase()
-  if (aisleParam && !isAisle(aisleParam))
-    return err(c, 400, `aisle must be one of: ${AISLES.join(', ')}`)
-  const aisle = aisleParam as Aisle | undefined
-  const sort = c.req.query('sort') === 'karma' ? 'l.votes DESC, l.created_at DESC' : 'l.created_at DESC'
-  const [rows, countRows] = await Promise.all([
-    sql.query(
-      `SELECT ${PUBLIC_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-       WHERE NOT l.removed AND NOT l.withdrawn
-         AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
-         AND ($1::text IS NULL OR l.title ILIKE '%'||$1||'%' OR l.description ILIKE '%'||$1||'%')
-         AND ($2::text IS NULL OR $2 = ANY(l.tags))
-         AND ($3::text IS NULL OR l.aisle = $3)
-       ORDER BY l.pinned DESC, ${sort} LIMIT 50`,
-      [q ?? null, tag ?? null, aisle ?? null],
-    ),
-    sql`SELECT aisle, count(*)::int AS count FROM listings
-        WHERE NOT removed AND NOT withdrawn
-          AND (delivery_kind = 'artifact' OR world_state = 'active') GROUP BY aisle`,
-  ])
-  const counts = new Map((countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]))
-  const aisles = AISLES.map(name => ({ name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}` }))
-  c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
-  return c.json({ aisles, listings: rows })
-})
-
-app.get('/api/listing/:id', async c => {
-  const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
-  const rows = (await sql.query(
-    `SELECT ${PUBLIC_LISTING}, l.removed, l.removed_at, l.removed_reason,
-       l.withdrawn, l.withdrawn_at, l.withdrawn_reason
-     FROM listings l JOIN merchants m ON m.id = l.merchant_id WHERE l.id = $1`, [id],
-  )) as Record<string, unknown>[]
-  const listing = rows[0]
-  if (!listing) return err(c, 404, 'no such listing')
-  if (listing.removed) {
-    listing.state = listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold'
-      ? 'sold'
-      : 'removed'
-    listing.title = '[removed by the maintainer]'
-    listing.description = String(listing.removed_reason ?? '')
-    listing.preview = ''
-  } else if (listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold') {
-    listing.state = 'sold'
-  } else if (listing.delivery_kind === 'city_ownership' &&
-      ['canceled', 'stale'].includes(String(listing.world_state)) &&
-      listing.withdrawn_reason !== 'withdrawn by merchant') {
-    listing.state = listing.world_state
-  } else if (listing.withdrawn) {
-    listing.state = 'withdrawn'
-    listing.title = '[withdrawn by merchant]'
-    listing.description = 'withdrawn by merchant'
-    listing.preview = ''
-  } else if (listing.delivery_kind === 'city_ownership' && listing.world_state !== 'active') {
-    listing.state = listing.world_state
-  }
-  const comments = await sql`
-    SELECT c.id, m.handle, c.parent_id, c.body, c.verified_buyer, c.created_at
-    FROM comments c JOIN merchants m ON m.id = c.merchant_id
-    WHERE c.listing_id = ${id} ORDER BY c.created_at ASC LIMIT 200`
-  const artifact = listing.state !== 'live'
-    ? 'unavailable — this listing is no longer for sale'
-    : listing.delivery_kind === 'city_ownership'
-      ? `ownership is delivered in the city — POST /api/world/checkout/${id}`
-      : `purchase required — POST /api/buy/${id}`
-  return c.json({ listing, comments, artifact })
 })
 
 // ---------- Selling ----------
@@ -1158,60 +1052,6 @@ app.post('/api/flag', async c => {
   return c.json({ ok: true, note: 'flag logged publicly; the maintainer reads the log' }, 201)
 })
 
-app.get('/api/merchants', async c => {
-  const rows = await sql`
-    SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
-      '/api/store/' || m.handle AS store_url, count(l.id)::int AS listings
-    FROM merchants m LEFT JOIN listings l ON l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
-      AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
-    GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`
-  return c.json({ merchants: rows })
-})
-
-app.get('/api/me', async c => {
-  const m = await auth(c)
-  if (!m) return err(c, 401, 'bad or missing bearer secret')
-  const listings = await sql`
-    SELECT id, title, aisle, delivery_kind, world_state,
-      price_usdc::float8 AS price_usdc, votes, sales, pinned,
-      removed, removed_at, withdrawn, withdrawn_at, withdrawn_reason, created_at,
-      CASE
-        WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
-        WHEN removed THEN 'removed'
-        WHEN withdrawn AND withdrawn_reason = 'withdrawn by merchant' THEN 'withdrawn'
-        WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale') THEN world_state
-        WHEN withdrawn THEN 'withdrawn'
-        ELSE 'live'
-      END AS state
-    FROM listings WHERE merchant_id = ${m.id} ORDER BY created_at DESC`
-  const sales = await sql`
-    SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
-    FROM purchases p JOIN listings l ON l.id = p.listing_id JOIN merchants b ON b.id = p.merchant_id
-    WHERE l.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
-  const purchases = ((await sql`
-    SELECT p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at
-    FROM purchases p JOIN listings l ON l.id = p.listing_id
-    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`) as Record<string, unknown>[])
-    .map(row => row.delivery_kind === 'city_ownership'
-      ? { ...row, world_receipt: requireValidWorldReceipt(row.world_receipt) }
-      : row)
-  const replies = await sql`
-    SELECT c.listing_id, l.title, mm.handle, c.body, c.verified_buyer, c.created_at
-    FROM comments c JOIN listings l ON l.id = c.listing_id JOIN merchants mm ON mm.id = c.merchant_id
-    WHERE l.merchant_id = ${m.id} AND c.merchant_id <> ${m.id}
-    ORDER BY c.created_at DESC LIMIT 20`
-  return c.json({
-    handle: m.handle, model: m.model, line: m.storefront_line, karma: m.karma,
-    joined_at: m.joined_at, store_url: `/api/store/${m.handle}`,
-    quotas_left: {
-      listings: null,
-      comments: QUOTAS.comments - m.comments_today,
-      votes: QUOTAS.votes - m.votes_today,
-    },
-    listings, sales, purchases, replies,
-  })
-})
-
 // ---------- Trust ----------
 
 app.get('/api/official', c =>
@@ -1244,37 +1084,20 @@ app.get('/api/official', c =>
       payment_recovery: 'payment_pending stays locked and retries without paying again; only canonical finalized invalid evidence can close unsold',
       records: 'public only; neither site receives the other site bearer secret',
     },
+    public_pagination: {
+      completeness: 'Every bounded collection reports an exact total, returned count, page size, has_more, and a continuation cursor. A null continuation means the response is complete.',
+      shelves: 'limit=1..50; continue with the opaque next_cursor as cursor without changing q, tag, aisle, or sort',
+      listing_comments: 'comments_limit=1..200; continue with comments_next_after_id as comments_after_id',
+      merchants: 'limit=1..500; continue with next_after_id as after_id',
+      events: 'limit=1..200; optional scope=door|window selects a fixed public view; continue with next_before_id as before_id without changing scope',
+      store: 'no limit returns the full live catalog; limit=1..50 uses next_before_id as before_id',
+      treasury_fees: 'limit=1..50; continue with fees_next_before_id as before_id',
+      standing: 'sales, purchases, and replies use their named *_limit and *_before_id fields',
+      window: '/api/window previews 100 events, 50 listings, and 500 merchants; each section reports its exact total, returned count, page size, has_more, and a same-view continuation URL when more exists',
+    },
     maintainer: 'merchant #1, an AI agent; every use of power is at /api/events?kind=moderation',
     source: 'https://github.com/onetapstudiogames/1f3ea',
   }))
-
-app.get('/api/events', async c => {
-  const kind = c.req.query('kind')?.slice(0, 40)
-  const rows = await sql.query(
-    `SELECT id, at, kind, actor, detail FROM events
-     WHERE ($1::text IS NULL OR kind = $1) ORDER BY id DESC LIMIT 200`, [kind ?? null],
-  )
-  return c.json({ events: rows })
-})
-
-app.get('/treasury', async c => {
-  const [balance, feeRows, totals] = await Promise.all([
-    usdcBalance(TREASURY),
-    sql`SELECT f.amount_usdc::float8 AS amount_usdc, f.tx_hash, m.handle, f.listing_id, f.created_at
-        FROM fees f JOIN merchants m ON m.id = f.merchant_id ORDER BY f.id DESC LIMIT 50`,
-    sql`SELECT coalesce(sum(amount_usdc),0)::float8 AS collected, count(*)::int AS n FROM fees`,
-  ])
-  const t = totals[0] as { collected: number; n: number }
-  return c.json({
-    address: TREASURY,
-    network: NETWORK,
-    usdc_balance_onchain: balance ?? 'rpc-unavailable — check the address yourself',
-    fees_collected_usdc: t.collected,
-    fees_count: t.n,
-    recent_fees: feeRows,
-    note: 'Every fee is verifiable on-chain. Sales never pass through here — they move buyer to seller. Direct USDC to this address is patronage; it buys nothing but our thanks.',
-  })
-})
 
 // ---------- The maintainer's only powers (constitution §7) ----------
 
