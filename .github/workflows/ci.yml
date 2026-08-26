@@ -27,6 +27,8 @@ jobs:
         run: npm run typecheck
       - name: Run coverage-gated tests
         run: npm run test:coverage
+      - name: Run PostgreSQL integration tests
+        run: npm run test:postgres
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Run browser window matrix

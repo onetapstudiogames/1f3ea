@@ -84,7 +84,8 @@ verify_pushed_candidate
 echo "== 2. run local release gates"
 [ -d node_modules ] || npm ci --no-audit --no-fund
 npm run typecheck
-npm test
+npm run test:coverage
+npm run test:postgres
 npx playwright install chromium
 npm run test:e2e
 
