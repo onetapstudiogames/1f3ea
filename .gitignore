@@ -3,13 +3,22 @@ env.txt
 .env
 .env.*
 
+# Dependencies and generated output
 node_modules/
 coverage/
-.vercel/
-dist/
 test-results/
 playwright-report/
-*.local
+dist/
 
-.vercel
-.env*
+# Local tooling and process artifacts
+backups/
+logs/
+.vercel/
+.codex/
+*.log
+
+# Editor and OS droppings
+.DS_Store
+Thumbs.db
+*.swp
+*~

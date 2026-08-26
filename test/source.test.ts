@@ -1,6 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import {
+  chmodSync,
+  copyFileSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { FRONTDOOR, LLMS } from '../src/door.ts'
 import { AISLES } from '../src/market.ts'
 
@@ -13,6 +25,74 @@ function sourceTypeScriptFiles(directory = 'src'): string[] {
     return entry.isFile() && entry.name.endsWith('.ts') ? [path] : []
   })
 }
+
+const FAKE_COMMIT = '0123456789abcdef0123456789abcdef01234567'
+
+function runPreparedDeploy(dirty: boolean) {
+  const temporaryRoot = tmpdir()
+  const projectRoot = mkdtempSync(join(temporaryRoot, '1f3ea-deploy-gate-'))
+
+  try {
+    const scriptDirectory = join(projectRoot, 'scripts')
+    const fakeBin = join(projectRoot, 'fake-bin')
+    mkdirSync(scriptDirectory)
+    mkdirSync(fakeBin)
+    const deployScript = join(scriptDirectory, 'deploy.sh')
+    copyFileSync('scripts/deploy.sh', deployScript)
+
+    const fakeGit = join(fakeBin, 'git')
+    writeFileSync(fakeGit, `#!/usr/bin/env bash
+case "$1" in
+  symbolic-ref) printf '%s\\n' hygiene ;;
+  status)
+    if [ "\${FAKE_DIRTY:-0}" = "1" ]; then printf '%s\\n' '?? leftover'; fi
+    ;;
+  config)
+    case "$3" in
+      *.remote) printf '%s\\n' origin ;;
+      *.merge) printf '%s\\n' refs/heads/hygiene ;;
+      *) exit 97 ;;
+    esac
+    ;;
+  rev-parse) printf '%s\\n' '${FAKE_COMMIT}' ;;
+  ls-remote) printf '%s\\t%s\\n' '${FAKE_COMMIT}' refs/heads/hygiene ;;
+  *) exit 98 ;;
+esac
+`)
+    for (const name of ['npm', 'npx']) {
+      writeFileSync(join(fakeBin, name), '#!/usr/bin/env bash\nexit 0\n')
+    }
+    for (const name of ['git', 'npm', 'npx']) chmodSync(join(fakeBin, name), 0o755)
+
+    const launcher = `
+fake_bin="$1"
+deploy_script="$2"
+if command -v cygpath >/dev/null 2>&1; then
+  fake_bin=$(cygpath -u "$fake_bin")
+  deploy_script=$(cygpath -u "$deploy_script")
+fi
+PATH="$fake_bin:$PATH"
+exec bash "$deploy_script" --prepare
+`
+    const run = spawnSync('bash', ['-c', launcher, 'deploy-test', fakeBin, deployScript], {
+      encoding: 'utf8',
+      env: { ...process.env, FAKE_DIRTY: dirty ? '1' : '0' },
+    })
+    if (run.error) throw run.error
+    return { status: run.status, stdout: run.stdout, stderr: run.stderr }
+  } finally {
+    const relativeProject = relative(temporaryRoot, projectRoot)
+    if (
+      relativeProject === '' ||
+      relativeProject === '..' ||
+      relativeProject.startsWith(`..${sep}`) ||
+      isAbsolute(relativeProject)
+    ) throw new Error(`refusing to remove unexpected test path: ${projectRoot}`)
+    rmSync(projectRoot, { recursive: true, force: true })
+  }
+}
+
+const finalOutputLine = (output: string) => output.trimEnd().split(/\r?\n/).at(-1) ?? ''
 
 test('the generated public doors exactly contain their text-file sources', () => {
   assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
@@ -177,6 +257,21 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.doesNotMatch(deploy, /\bnpx\b[^\n]*\bvercel(?:@[\w.-]+)?\b/i)
   assert.doesNotMatch(deploy, /--prod\b|scripts\/(?:migrate|release-migrate)\.[a-z]+/i)
   assert.doesNotMatch(deploy, /@\{upstream\}/)
+})
+
+test('deployment helper ends a successful prepare with GATE_EXIT=0', () => {
+  const run = runPreparedDeploy(false)
+
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(finalOutputLine(run.stdout), 'GATE_EXIT=0')
+})
+
+test('deployment helper ends a rejected dirty prepare with its nonzero gate status', () => {
+  const run = runPreparedDeploy(true)
+
+  assert.equal(run.status, 1, run.stderr)
+  assert.match(run.stdout, /preparation worktree must be clean/)
+  assert.equal(finalOutputLine(run.stdout), 'GATE_EXIT=1')
 })
 
 test('the human window browser matrix is installed and part of the release gate', () => {
