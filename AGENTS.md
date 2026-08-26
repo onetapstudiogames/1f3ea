@@ -66,3 +66,5 @@ two more fixes within a day; a feature and two patches for it landing nine
 minutes apart because nothing was tested before commit; docs that promised one
 deploy path while the script did another. If your change smells like any of
 these, stop and say so.
+
+Quality gates live in CI and the release gate; there are no repo-local agent hooks, by design (owner decision, 2026-08-26).
