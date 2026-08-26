@@ -589,6 +589,90 @@ test('OAuth revocation names retryable operational failures without revealing to
   assert.deepEqual(await merchantByOAuthAccessToken(access, environment, store.api), merchant())
 })
 
+test('OAuth token throttling names the hourly rule without revealing grant state', async () => {
+  const store = new MemoryOAuthStore()
+  const app = new Hono()
+  mountMarketOAuthRoutes(app, {
+    environment,
+    store: { ...store.api, consumeOAuthRateLimit: async () => false },
+  })
+
+  const response = await app.request('/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', client_id: CLIENT_ID, redirect_uri: CALLBACK,
+      resource: RESOURCE, code: `1f3ea_ac_${'ab'.repeat(32)}`, code_verifier: VERIFIER,
+      scope: 'market:merchant',
+    }),
+  })
+
+  assert.equal(response.status, 429)
+  assert.equal(response.headers.get('retry-after'), '3600')
+  assert.match(response.headers.get('cache-control') ?? '', /no-store/i)
+  assert.deepEqual(await response.json(), {
+    error: 'temporarily_unavailable',
+    error_description: 'token requests allow 120 attempts per UTC hour for each IP and each client; ' +
+      'retry after the next UTC hour begins',
+  })
+})
+
+test('OAuth token operational failures name a retryable cause without revealing grant state', async () => {
+  const store = new MemoryOAuthStore()
+  const app = new Hono()
+  mountMarketOAuthRoutes(app, {
+    environment,
+    store: {
+      ...store.api,
+      consumeOAuthRateLimit: async () => { throw new Error('private rate-store detail') },
+    },
+  })
+
+  const response = await app.request('/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token', client_id: CLIENT_ID, resource: RESOURCE,
+      refresh_token: `1f3ea_rt_${'ab'.repeat(32)}`, scope: 'market:merchant',
+    }),
+  })
+
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get('retry-after'), '1')
+  assert.deepEqual(await response.json(), {
+    error: 'temporarily_unavailable',
+    error_description: 'token request could not be completed; retry later',
+  })
+})
+
+test('OAuth revoke distinguishes an unreadable request from an opaque malformed no-op', async () => {
+  const { app } = fixture()
+  const malformed = await app.request('/oauth/revoke', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: 'not-a-token', client_id: CLIENT_ID }),
+  })
+  assert.equal(malformed.status, 200)
+  assert.equal(await malformed.text(), '')
+
+  const failedBody = new ReadableStream<Uint8Array>({
+    start(controller) { controller.error(new Error('private body-stream detail')) },
+  })
+  const request = new Request(`${ORIGIN}/oauth/revoke`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: failedBody,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' })
+  const unreadable = await app.request(request)
+  assert.equal(unreadable.status, 503)
+  assert.equal(unreadable.headers.get('retry-after'), '1')
+  assert.deepEqual(await unreadable.json(), {
+    error: 'temporarily_unavailable',
+    error_description: 'revocation request could not be read; retry later',
+  })
+})
+
 test('authorization throttles before any remote ChatGPT metadata fetch', async () => {
   const store = new MemoryOAuthStore()
   let fetchCount = 0

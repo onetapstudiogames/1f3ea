@@ -106,7 +106,9 @@ test('payment MCP tools separate invalid proofs, unclassified rejections, and un
     assert.match(description, /502 means the facilitator rejected a request without identifying/i)
     assert.match(description, /proof, the market's requirements, or facilitator handling/i)
     assert.match(description, /do not replace or replay the proof blindly/i)
+    assert.match(description, /terminal.*unrecognized.*do not retry or replay/i)
     assert.match(description, /503 means payment or chain verification is\s+unavailable/i)
+    assert.match(description, /pending or duplicate settlement.*same proof/i)
     assert.match(description, /retry the same proof/i)
     assert.match(description, /do not pay again/i)
   }
@@ -119,12 +121,21 @@ test('public action contracts explain how failure causes cross each door', () =>
     assert.match(text, /A 502 means the facilitator rejected a\s+request without identifying/i)
     assert.match(text, /proof, the market's\s+requirements, or\s+facilitator handling/i)
     assert.match(text, /do not replace or replay the proof blindly/i)
+    assert.match(text, /terminal.*unrecognized.*do not retry or replay/i)
     assert.match(text, /503 means payment or chain verification is unavailable/i)
     assert.match(text, /explicit\s+facilitator failure that did not match a known caller mistake/i)
     assert.match(text, /retry the same proof/i)
     assert.match(text, /do not pay again/i)
+    assert.match(text, /pending or duplicate settlement.*same proof/i)
     assert.match(text, /MCP tool result preserves the same cause/i)
+    assert.match(text, /shop window preserves each bounded API failure cause as inert text/i)
+    assert.match(text, /OAuth token exchange allows 120 attempts per UTC hour for each IP and\s+each\s+client/i)
+    assert.match(text, /token exchange.*429 means retry after the next UTC hour begins/i)
+    assert.match(text, /token exchange.*503 means the exchange could not be completed/i)
+    assert.match(text, /Token exchange 429 and 503 responses are \{"error":"temporarily_unavailable","error_description":"\.\.\."\}/i)
     assert.match(text, /OAuth revocation keeps invalid (?:and|or) unknown tokens opaque/i)
+    assert.match(text, /readable malformed\s+token is opaque/i)
+    assert.match(text, /unreadable request body.*503/i)
     assert.match(text, /temporarily_unavailable/i)
     assert.match(text, /revocation allows 120 attempts per UTC hour for each IP and\s+each client/i)
     assert.match(text, /429 means retry after the next UTC hour begins/i)
@@ -175,6 +186,19 @@ test('MCP tool routing handles empty arguments, filters, encoded stores, and eac
     { method: 'POST', path: '/api/claim/5', body: { intent_id: 8, tx_hash: 'proof' } },
   ])
 
+  const internal = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 'bad-route', method: 'tools/call',
+    params: { name: 'visit_store', arguments: { handle: '\ud800' } },
+  }))
+  assert.equal(internal.status, 200)
+  const internalBody = await internal.json() as {
+    result: { isError: boolean; content: Array<{ text: string }> }
+  }
+  assert.equal(internalBody.result.isError, true)
+  assert.deepEqual(JSON.parse(internalBody.result.content[0]!.text), {
+    error: 'internal connector failure; retry later',
+  })
+
   const unknownTool = await app.request('/mcp', jsonRequest({
     jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
   }))
@@ -189,13 +213,13 @@ test('ordinary MCP preserves registration failure causes in the tool result', as
     const { handle } = await c.req.json() as { handle: string }
     return handle === 'taken-handle'
       ? c.json({ error: 'handle taken' }, 409)
-      : c.json({ error: 'internal' }, 500)
+      : c.json({ error: 'internal market failure; retry later' }, 500)
   })
   const app = gateway(backing)
 
   for (const expected of [
     { handle: 'taken-handle', error: 'handle taken' },
-    { handle: 'new-handle', error: 'internal' },
+    { handle: 'new-handle', error: 'internal market failure; retry later' },
   ]) {
     const response = await app.request('/mcp', jsonRequest({
       jsonrpc: '2.0', id: expected.handle, method: 'tools/call',
@@ -255,9 +279,14 @@ test('hosted MCP keeps OAuth challenges on both pre-route and backing-route fail
   assert.equal(backingFailure.status, 401)
   assert.match(backingFailure.headers.get('www-authenticate') ?? '', /resource_metadata=/)
   const failedBody = await backingFailure.json() as {
-    result: { isError: boolean; _meta: { 'mcp/www_authenticate': string[] } }
+    result: {
+      isError: boolean
+      content: Array<{ text: string }>
+      _meta: { 'mcp/www_authenticate': string[] }
+    }
   }
   assert.equal(failedBody.result.isError, true)
+  assert.equal((JSON.parse(failedBody.result.content[0]!.text) as { error: string }).error, 'expired access')
   assert.equal(failedBody.result._meta['mcp/www_authenticate'].length, 1)
 
   const wrapped = gateway(backing, { hostedChat: true, forwardUnauthorizedStatus: false })
@@ -265,7 +294,11 @@ test('hosted MCP keeps OAuth challenges on both pre-route and backing-route fail
     jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'browse', arguments: {} },
   }, `Bearer ${ACCESS_TOKEN}`))
   assert.equal(wrappedFailure.status, 200)
-  assert.equal((await wrappedFailure.json() as { result: { isError: boolean } }).result.isError, true)
+  const wrappedBody = await wrappedFailure.json() as {
+    result: { isError: boolean; content: Array<{ text: string }> }
+  }
+  assert.equal(wrappedBody.result.isError, true)
+  assert.equal((JSON.parse(wrappedBody.result.content[0]!.text) as { error: string }).error, 'expired access')
 })
 
 test('ordinary MCP keeps backing errors inside the tool result and warns on nested credentials', async () => {

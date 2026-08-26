@@ -130,11 +130,10 @@ function deferred<T>() {
 }
 
 function jsonResponse(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(JSON.stringify(body), {
     status,
-    json: async () => body,
-  }
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
 const AISLE_NAMES = [
@@ -189,7 +188,7 @@ function startWindowClient(fetch: (input: unknown, init?: Record<string, unknown
     clearTimeout(id: number) { timers.delete(id) },
   }
   const context = vm.createContext({
-    AbortController, Date, Intl, Map, Math, Number, Promise, Set, String, URL, console,
+    AbortController, Date, Intl, Map, Math, Number, Promise, Set, String, TextDecoder, TextEncoder, Uint8Array, URL, console,
     document, fetch, globalThis: undefined, window: fakeWindow,
   })
   vm.runInContext(WINDOW_JS, context, { timeout: 1_000 })
@@ -368,8 +367,8 @@ test('the shop window fetches only public data and renders hostile listing detai
       })
     }
     const body = payloads[url.pathname + url.search] ?? payloads[url.pathname]
-    if (body === undefined) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) }
-    return { ok: true, status: 200, json: async () => body }
+    if (body === undefined) return jsonResponse({ error: 'not found' }, 404)
+    return jsonResponse(body)
   }
   const fakeWindow = {
     location: { href: currentUrl.href, origin: currentUrl.origin },
@@ -388,7 +387,7 @@ test('the shop window fetches only public data and renders hostile listing detai
     clearTimeout(id: number) { timers.delete(id) },
   }
   const context = vm.createContext({
-    AbortController, Date, Intl, Map, Math, Number, Promise, Set, String, URL, console, document, fetch,
+    AbortController, Date, Intl, Map, Math, Number, Promise, Set, String, TextDecoder, TextEncoder, Uint8Array, URL, console, document, fetch,
     globalThis: undefined,
     pwned: false,
     window: fakeWindow,
@@ -557,6 +556,80 @@ test('the shop window fetches only public data and renders hostile listing detai
   }
 })
 
+test('HTTP failures preserve each bounded API cause as text in the human window', async () => {
+  const ready = boundedSnapshot(1, 1, 1, 1)
+  const causes = {
+    aisle: 'aisle index is unavailable; retry later',
+    listing: '<img src=x onerror="globalThis.pwned=true"> listing storage is unavailable',
+    store: 'store ledger is unavailable; retry later',
+  }
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    if (url.pathname === '/api/window') return jsonResponse(ready)
+    if (url.pathname === '/api/shelves') return jsonResponse({ error: causes.aisle }, 503)
+    if (url.pathname === '/api/listing/1') return jsonResponse({ error: causes.listing }, 503)
+    if (url.pathname === '/api/store/store-1') return jsonResponse({ error: causes.store }, 503)
+    return jsonResponse({ error: 'unexpected test request' }, 500)
+  })
+  await settle()
+
+  const listing = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
+  assert.ok(listing)
+  await listing.click()
+  await settle()
+  const detail = document.getElementById('listing-detail')!
+  assert.match(detail.textContent, new RegExp(causes.listing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.equal(descendants(detail).some(element => element.tagName === 'IMG'), false)
+
+  const merchant = byAttribute(document, 'aria-label', 'Look into store-1 store')
+  assert.ok(merchant)
+  await merchant.click()
+  await settle()
+  assert.match(detail.textContent, new RegExp(causes.store.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  const tools = allElements(document).find(element =>
+    element.tagName === 'BUTTON' && element.textContent === 'tools 1')
+  assert.ok(tools)
+  await tools.click()
+  await settle()
+  assert.match(document.getElementById('listing-list')!.textContent,
+    new RegExp(causes.aisle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+})
+
+test('oversized and malformed HTTP error bodies use a fixed public category', async () => {
+  const privateTail = 'PRIVATE_ERROR_TAIL'
+  for (const response of [
+    jsonResponse({ error: 'x'.repeat(501) + privateTail }, 503),
+    new Response(JSON.stringify({ error: 'x'.repeat(4_096), marker: privateTail }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }),
+    new Response('{not-json', { status: 503, headers: { 'content-type': 'application/json' } }),
+  ]) {
+    const { document } = startWindowClient(async () => response)
+    await settle()
+    assertPanelsMatch(document, /Cause: the market returned an unreadable HTTP failure response/i)
+    assert.doesNotMatch(allElements(document).map(element => element.textContent).join('\n'),
+      new RegExp(privateTail))
+  }
+})
+
+test('network and unreadable successful responses name their fixed public failure category', async () => {
+  for (const [fetch, cause] of [
+    [async () => { throw new Error('private network topology') }, 'the public market could not be reached'],
+    [async () => new Response('{not-json', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }), 'the market returned unreadable JSON'],
+  ] as const) {
+    const { document } = startWindowClient(fetch)
+    await settle()
+    assertPanelsMatch(document, new RegExp(`Cause: ${cause}`, 'i'))
+    assert.doesNotMatch(allElements(document).map(element => element.textContent).join('\n'),
+      /private network topology/i)
+  }
+})
+
 test('focused aisle reads reject partial counts and wrong-aisle rows as one failed bundle', async () => {
   const snapshotPayload = {
     events: [], events_has_more: false, merchants: [], merchant_total: 0,
@@ -625,6 +698,7 @@ test('focused aisle reads reject partial counts and wrong-aisle rows as one fail
 
     const listings = document.getElementById('listing-list')!
     assert.match(listings.textContent, /failed|could not|out of view/i)
+    assert.match(listings.textContent, /Cause: the market returned incomplete or inconsistent public data/i)
     assert.equal(
       descendants(listings).some(element =>
         element.tagName === 'BUTTON' && /try again|retry/i.test(element.textContent)),
@@ -655,7 +729,7 @@ test('snapshot bounded rows reject underfill, overflow, and malformed records', 
   for (const payload of invalidSnapshots) {
     const { document } = startWindowClient(async () => jsonResponse(payload))
     await settle()
-    assertPanelsMatch(document, /failed|unavailable|could not/i)
+    assertPanelsMatch(document, /Cause: the market returned incomplete or inconsistent public data/i)
     assert.match(document.getElementById('window-status')!.textContent, /failed/i)
     assert.match(document.getElementById('window-status')!.textContent, /try again/i)
   }
@@ -721,6 +795,8 @@ test('focused store goods reject underfill and accept the exact 50-row boundary'
     await settle()
     assert.match(document.getElementById('dialog-title')!.textContent, /store read failed/i)
     assert.match(document.getElementById('listing-detail')!.textContent, /try again/i)
+    assert.match(document.getElementById('listing-detail')!.textContent,
+      /Cause: the market returned incomplete or inconsistent public data/i)
   }
 
   for (const total of [50, 51]) {
@@ -791,6 +867,7 @@ test('detail reads distinguish completed 404s from malformed successful payloads
   await listing.click()
   await settle()
   assert.match(detail.textContent, /failed|could not|fogged/i)
+  assert.match(detail.textContent, /Cause: the market returned incomplete or inconsistent public data/i)
   assert.match(document.getElementById('dialog-title')!.textContent, /item read failed/i)
   assert.doesNotMatch(document.getElementById('dialog-title')!.textContent, /reading/i)
   assert.equal(descendants(detail).some(element => element.className.includes('empty-state--error')), true)
@@ -808,6 +885,7 @@ test('detail reads distinguish completed 404s from malformed successful payloads
   await merchant.click()
   await settle()
   assert.match(detail.textContent, /failed|could not|dark/i)
+  assert.match(detail.textContent, /Cause: the market returned incomplete or inconsistent public data/i)
   assert.match(document.getElementById('dialog-title')!.textContent, /store read failed/i)
   assert.equal(descendants(detail).some(element => element.className.includes('empty-state--error')), true)
   assert.match(detail.textContent, /try again|retry/i)

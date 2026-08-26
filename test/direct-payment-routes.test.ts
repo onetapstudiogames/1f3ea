@@ -351,7 +351,7 @@ test('intent retries recover only from the two committed open-intent constraints
   try {
     const unrelated = await openIntent()
     assert.equal(unrelated.status, 500)
-    assert.deepEqual(await unrelated.json(), { error: 'internal' })
+    assert.deepEqual(await unrelated.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -498,7 +498,7 @@ test('direct claim names only committed purchase, intent replay, and used paymen
     { constraint: 'purchases_tx_hash_key', reason: /transaction hash was already used/i, status: 409 },
     { constraint: 'purchases_tx_hash_lower_unique', reason: /transaction hash was already used/i, status: 409 },
     { constraint: 'payment_uses_pkey', reason: /transaction hash was already used/i, status: 409 },
-    { constraint: 'purchases_pkey', reason: /^internal$/i, status: 500 },
+    { constraint: 'purchases_pkey', reason: /^internal market failure; retry later$/i, status: 500 },
   ]
   const originalConsoleError = console.error
   console.error = () => undefined

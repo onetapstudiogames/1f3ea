@@ -6,8 +6,9 @@ import { AISLES } from '../src/market.ts'
 
 const read = (path: string) => readFileSync(path, 'utf8')
 
-test('the generated front door exactly contains the text-file source', () => {
+test('the generated public doors exactly contain their text-file sources', () => {
   assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
+  assert.equal(LLMS, read('src/llms.txt'))
 })
 
 test('the public doors point agents to the released marketplace skill', () => {

@@ -94,7 +94,7 @@ interface UnclassifiedFacilitatorFailure {
 export type X402Settlement = Settled | VerificationFailure | UnclassifiedFacilitatorFailure
 
 type FacilitatorResponse =
-  | { status: 'ok'; value: Record<string, unknown> }
+  | { status: 'ok'; value: Record<string, unknown>; httpStatus: number }
   | VerificationFailure
   | UnclassifiedFacilitatorFailure
 
@@ -122,7 +122,10 @@ const X402_CALLER_FAILURE_REASONS: Readonly<Record<string, string>> = Object.fre
 })
 
 const X402_UPSTREAM_FAILURE_REASONS = new Set([
+  'duplicate_settlement',
   'invalid_payment_requirements',
+  'settlement_pending',
+  'transaction_failed',
   'unexpected_verify_error',
   'unexpected_settle_error',
 ])
@@ -130,41 +133,84 @@ const X402_UPSTREAM_FAILURE_REASONS = new Set([
 function facilitatorUnavailable(stage: 'verification' | 'settlement'): VerificationFailure {
   return {
     status: 'unavailable',
-    reason: `payment facilitator ${stage} is unavailable; retry this request with the same X-PAYMENT proof later`,
+    reason: `payment facilitator ${stage} is unavailable; retry this request with the same X-PAYMENT proof later` +
+      (stage === 'settlement' ? '; do not pay again' : ''),
   }
 }
 
 function facilitatorUnreadable(stage: 'verification' | 'settlement'): VerificationFailure {
   return {
     status: 'unavailable',
-    reason: `payment facilitator returned an unreadable ${stage} response; retry this request with the same X-PAYMENT proof later`,
+    reason: `payment facilitator returned an unreadable ${stage} response; retry this request with the same X-PAYMENT proof later` +
+      (stage === 'settlement' ? '; do not pay again' : ''),
   }
 }
 
-function safeFacilitatorReason(value: unknown, fallback: string): string {
-  const candidate = typeof value === 'string' ? value.trim() : ''
-  if (
-    candidate.length === 0 || candidate.length > 500 ||
-    /[\u0000-\u001f\u007f]/u.test(candidate) ||
-    /(?:1f3ea_(?:sk|at|rt|ac)_[0-9a-f]{8,}|0x[0-9a-f]{130})/i.test(candidate)
-  ) return fallback
-  return candidate
+function terminalFacilitatorRejection(
+  stage: 'verification' | 'settlement',
+  detail = '',
+): UnclassifiedFacilitatorFailure {
+  const cause = detail
+    ? `: ${detail}`
+    : ' but did not publish a recognized caller-correctable cause'
+  return {
+    status: 'unclassified',
+    reason: `payment facilitator rejected this X-PAYMENT as terminal${cause}; ` +
+      'do not retry or replay this proof blindly' + (stage === 'settlement' ? '; do not pay again' : ''),
+  }
+}
+
+function settlementInFlight(detail: 'pending' | 'already in flight'): VerificationFailure {
+  return {
+    status: 'unavailable',
+    reason: `payment facilitator reports this X-PAYMENT settlement is ${detail}; ` +
+      'retry the same X-PAYMENT proof later; do not pay again',
+  }
+}
+
+function settlementTransactionFailed(): UnclassifiedFacilitatorFailure {
+  return {
+    status: 'unclassified',
+    reason: 'payment facilitator reports the X-PAYMENT settlement transaction failed; this proof did not ' +
+      'settle payment; do not retry or replay this proof blindly; do not pay again',
+  }
+}
+
+function facilitatorHttpUnavailable(
+  stage: 'verification' | 'settlement',
+  status: 408 | 425 | 429,
+): VerificationFailure {
+  const cause = status === 408
+    ? `${stage} timed out`
+    : status === 429
+      ? `rate-limited the ${stage} request`
+      : `temporarily rejected the ${stage} request`
+  return {
+    status: 'unavailable',
+    reason: `payment facilitator ${cause}; retry this request with the same X-PAYMENT proof later` +
+      (stage === 'settlement' ? '; do not pay again' : ''),
+  }
 }
 
 function facilitatorReasonCode(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const code = value.trim().toLowerCase()
-  return /^[a-z][a-z0-9_]*$/.test(code) ? code : null
+  return code.length <= 100 && /^[a-z][a-z0-9_]*$/.test(code) ? code : null
+}
+
+function isCallerFailureCode(code: string): boolean {
+  return Object.prototype.hasOwnProperty.call(X402_CALLER_FAILURE_REASONS, code)
 }
 
 function callerFailureReason(value: unknown): string | null {
   const code = facilitatorReasonCode(value)
-  return code ? X402_CALLER_FAILURE_REASONS[code] ?? null : null
+  return code && isCallerFailureCode(code) ? X402_CALLER_FAILURE_REASONS[code] ?? null : null
 }
 
-function readableFacilitatorDetail(value: unknown, fallback: string): string {
-  const safe = safeFacilitatorReason(value, fallback)
-  return facilitatorReasonCode(safe)?.replaceAll('_', ' ') ?? safe
+function publishedFacilitatorDetail(value: unknown, fallback: string): string {
+  const code = facilitatorReasonCode(value)
+  if (!code || (!isCallerFailureCode(code) && !X402_UPSTREAM_FAILURE_REASONS.has(code))) return fallback
+  return code.replaceAll('_', ' ')
 }
 
 function rejectedFacilitatorRequest(
@@ -175,13 +221,14 @@ function rejectedFacilitatorRequest(
     ? ['invalidReason', 'errorReason', 'error', 'message']
     : ['errorReason', 'invalidReason', 'error', 'message']
   const detail = fields
-    .map(field => readableFacilitatorDetail(response[field], ''))
+    .map(field => publishedFacilitatorDetail(response[field], ''))
     .find(candidate => candidate.length > 0)
   return {
     status: 'unclassified',
     reason: `payment facilitator rejected the ${stage} request${detail ? `: ${detail}` : ''}; ` +
       "it did not identify whether the X-PAYMENT proof, the market's payment requirements, " +
-      'or facilitator request handling was at fault',
+      'or facilitator request handling was at fault' +
+      (stage === 'settlement' ? '; do not pay again' : ''),
   }
 }
 
@@ -206,15 +253,24 @@ async function facilitatorResponse(
     return response.ok ? facilitatorUnreadable(stage) : facilitatorUnavailable(stage)
   }
   if (!response.ok) {
+    if (response.status === 408 || response.status === 425 || response.status === 429) {
+      return facilitatorHttpUnavailable(stage, response.status)
+    }
+    if (
+      path === '/settle' && response.status === 409 && decoded.success === false &&
+      facilitatorReasonCode(decoded.errorReason) === 'duplicate_settlement'
+    ) {
+      return settlementInFlight('already in flight')
+    }
     const requestRejected = response.status >= 400 && response.status < 500
-    const explicitProtocolFailure = requestRejected && (
+    const explicitProtocolFailure = (response.status === 400 || response.status === 402) && (
       (path === '/verify' && decoded.isValid === false) ||
       (path === '/settle' && decoded.success === false)
     )
-    if (explicitProtocolFailure) return { status: 'ok', value: decoded }
+    if (explicitProtocolFailure) return { status: 'ok', value: decoded, httpStatus: response.status }
     return requestRejected ? rejectedFacilitatorRequest(stage, decoded) : facilitatorUnavailable(stage)
   }
-  return { status: 'ok', value: decoded }
+  return { status: 'ok', value: decoded, httpStatus: response.status }
 }
 
 /**
@@ -241,6 +297,12 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
     const callerReason = callerFailureReason(verification.value.invalidReason)
     if (callerReason) return invalid(callerReason)
     const code = facilitatorReasonCode(verification.value.invalidReason)
+    if (verification.httpStatus === 402) {
+      return terminalFacilitatorRejection(
+        'verification',
+        code && X402_UPSTREAM_FAILURE_REASONS.has(code) ? code.replaceAll('_', ' ') : '',
+      )
+    }
     if (code && X402_UPSTREAM_FAILURE_REASONS.has(code)) {
       return {
         status: 'unavailable',
@@ -248,15 +310,7 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
           'retry this request with the same X-PAYMENT proof later',
       }
     }
-    const detail = readableFacilitatorDetail(
-      verification.value.invalidReason,
-      'unrecognized verification failure',
-    )
-    return {
-      status: 'unavailable',
-      reason: `payment facilitator could not classify X-PAYMENT verification: ${detail}; ` +
-        'retry this request with the same X-PAYMENT proof later',
-    }
+    return terminalFacilitatorRejection('verification')
   }
 
   const settlementResult = await facilitatorResponse('/settle', opts)
@@ -266,7 +320,20 @@ export async function settleX402(paymentHeader: string, reqs: PaymentRequirement
   if (!settlement.success) {
     const callerReason = callerFailureReason(settlement.errorReason)
     if (callerReason) return invalid(callerReason)
-    const detail = readableFacilitatorDetail(settlement.errorReason, 'settlement outcome was not confirmed')
+    const code = facilitatorReasonCode(settlement.errorReason)
+    if (settlementResult.httpStatus === 402) {
+      return terminalFacilitatorRejection(
+        'settlement',
+        code && X402_UPSTREAM_FAILURE_REASONS.has(code) ? code.replaceAll('_', ' ') : '',
+      )
+    }
+    if (code === 'settlement_pending') return settlementInFlight('pending')
+    if (code === 'duplicate_settlement') return settlementInFlight('already in flight')
+    if (code === 'transaction_failed') return settlementTransactionFailed()
+    if (!code || !X402_UPSTREAM_FAILURE_REASONS.has(code)) {
+      return terminalFacilitatorRejection('settlement')
+    }
+    const detail = code.replaceAll('_', ' ')
     return {
       status: 'unavailable',
       reason: `payment facilitator did not confirm settlement: ${detail}; ` +

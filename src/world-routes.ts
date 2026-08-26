@@ -185,30 +185,66 @@ async function readCheckout(id: number): Promise<WorldCheckoutRow | null> {
   return rows[0] ?? null
 }
 
-function parseReceipt(value: unknown): Record<string, unknown> {
+function parseReceipt(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-    } catch { /* a malformed stored record is exposed only as empty evidence */ }
+    } catch { /* validation below reports one safe internal failure */ }
   }
-  return {}
+  return null
+}
+
+export function requireValidWorldReceipt(value: unknown): Record<string, unknown> {
+  const receipt = parseReceipt(value)
+  const offerId = receipt?.city_offer_id
+  const assetId = receipt?.city_asset_id
+  const cityHandle = receipt?.city_handle
+  const marketBuyer = receipt?.market_buyer
+  const buyerWallet = receipt?.buyer_wallet
+  const verifiedVia = receipt?.city_verified_via
+  const blockTime = receipt?.city_block_time
+  const paymentFrom = receipt?.payment_from
+  const paymentTo = receipt?.payment_to
+  const receiptUrl = receipt?.city_receipt_url
+  if (!receipt || receipt.city_origin !== CITY_ORIGIN ||
+      !Number.isSafeInteger(offerId) || Number(offerId) <= 0 ||
+      !Number.isSafeInteger(assetId) || Number(assetId) <= 0 ||
+      typeof cityHandle !== 'string' || !HANDLE_RE.test(cityHandle) ||
+      typeof marketBuyer !== 'string' || !HANDLE_RE.test(marketBuyer) ||
+      typeof buyerWallet !== 'string' || !WALLET_RE.test(buyerWallet) ||
+      !['x402', 'claim'].includes(String(verifiedVia)) ||
+      typeof blockTime !== 'string' || Number.isNaN(new Date(blockTime).getTime()) ||
+      typeof paymentFrom !== 'string' || !WALLET_RE.test(paymentFrom) ||
+      paymentFrom.toLowerCase() !== buyerWallet.toLowerCase() ||
+      typeof paymentTo !== 'string' || !WALLET_RE.test(paymentTo) ||
+      receiptUrl !== cityOfferUrl(Number(offerId)))
+    throw new Error('stored world purchase receipt is incomplete or invalid')
+  return receipt
 }
 
 function receiptEnvelope(row: WorldPurchaseRow) {
-  const city = parseReceipt(row.world_receipt)
+  const city = requireValidWorldReceipt(row.world_receipt)
+  const purchaseId = Number(row.purchase_id)
+  const listingId = Number(row.listing_id)
+  const checkoutId = Number(row.world_checkout_id)
+  const amount = Number(row.amount_usdc)
+  const txHash = canonicalTxHash(row.tx_hash)
+  if (![purchaseId, listingId, checkoutId].every(id => Number.isSafeInteger(id) && id > 0) ||
+      !Number.isFinite(amount) || amount < 0 || !txHash || Number.isNaN(new Date(row.created_at).getTime()))
+    throw new Error('stored world purchase row is incomplete or invalid')
   return {
-    purchase_id: Number(row.purchase_id),
-    listing_id: Number(row.listing_id),
-    checkout_id: Number(row.world_checkout_id),
+    purchase_id: purchaseId,
+    listing_id: listingId,
+    checkout_id: checkoutId,
     delivery_kind: 'city_ownership' as const,
     city_origin: CITY_ORIGIN,
     city_offer_id: Number(city.city_offer_id),
     city_asset_id: Number(city.city_asset_id),
     city_handle: String(city.city_handle ?? ''),
-    amount_usdc: Number(row.amount_usdc),
-    tx_hash: row.tx_hash,
+    amount_usdc: amount,
+    tx_hash: txHash,
     verified_via: 'world' as const,
     city_verified_via: String(city.city_verified_via ?? ''),
     city_receipt_url: cityOfferUrl(Number(city.city_offer_id)),

@@ -82,6 +82,7 @@ test('personal-sign proof separates an invalid signature from an unavailable Bas
     const proof = await verifyPersonalSignatureProof('intent', signature, RECOVERED)
     assert.equal(proof.status, 'unavailable')
     assert.match(proof.reason, /Base RPC.*payer_signature.*retry.*same proof/i)
+    assert.match(proof.reason, /do not pay again/i)
   }
 
   queue(result(HASH), result(`0x${'00'.repeat(32)}`))
@@ -92,12 +93,17 @@ test('personal-sign proof separates an invalid signature from an unavailable Bas
   assert.equal(steps.length, 0)
 })
 
-test('USDC proof names caller-invalid receipts and transfer requirements', async () => {
+test('USDC proof keeps a missing receipt retryable with the same proof', async () => {
   queue(result(null))
   assert.deepEqual(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), {
-    status: 'invalid',
-    reason: 'transaction was not found on Base; wait for it to finalize or check tx_hash',
+    status: 'unavailable',
+    reason: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
   })
+
+  assert.equal(steps.length, 0)
+})
+
+test('USDC proof names caller-invalid confirmed receipts and transfer requirements', async () => {
 
   queue(result({ status: '0x0', blockHash: HASH, logs: [] }))
   assert.deepEqual(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), {
@@ -128,13 +134,13 @@ test('USDC proof reports RPC transport, HTTP, JSON, shape, and block failures as
     queue(unavailable)
     const proof = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
     assert.equal(proof.status, 'unavailable')
-    assert.match(proof.reason, /Base RPC.*retry.*same proof/i)
+    assert.match(proof.reason, /Base RPC.*retry.*same proof.*do not pay again/i)
   }
 
   queue(result({ status: '0x1', blockHash: HASH, logs: 'not-an-array' }))
   const malformedReceipt = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
   assert.equal(malformedReceipt.status, 'unavailable')
-  assert.match(malformedReceipt.reason, /unreadable transaction receipt.*retry.*same proof/i)
+  assert.match(malformedReceipt.reason, /unreadable transaction receipt.*retry.*same proof.*do not pay again/i)
 
   const toTopic = `0x${RECOVERED.slice(2).padStart(64, '0')}`
   queue(
@@ -146,7 +152,7 @@ test('USDC proof reports RPC transport, HTTP, JSON, shape, and block failures as
   )
   const missingBlock = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
   assert.equal(missingBlock.status, 'unavailable')
-  assert.match(missingBlock.reason, /Base RPC.*payment block.*retry.*same proof/i)
+  assert.match(missingBlock.reason, /Base RPC.*payment block.*retry.*same proof.*do not pay again/i)
   assert.equal(steps.length, 0)
 })
 

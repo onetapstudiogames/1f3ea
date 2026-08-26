@@ -23,7 +23,7 @@ import {
 } from './market-oauth.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
-import { registerWorldRoutes } from './world-routes.ts'
+import { registerWorldRoutes, requireValidWorldReceipt } from './world-routes.ts'
 import { CITY_ORIGIN, cityCancelUrl } from './world.ts'
 import {
   DIRECT_PURCHASE_INTENT_TTL_MS, directPaymentWindowError, purchaseIntentChallenge,
@@ -61,7 +61,7 @@ mountMarketOAuthRoutes(app)
 configureMarketOAuthMerchantResolver()
 app.onError((e, c) => {
   console.error(e)
-  return c.json({ error: 'internal' }, 500)
+  return c.json({ error: 'internal market failure; retry later' }, 500)
 })
 app.notFound(c => c.json({ error: 'no such shelf. GET / for the front door.' }, 404))
 
@@ -1091,7 +1091,7 @@ app.get('/api/purchases', async c => {
       return artifactPurchase
     }
     const { artifact: _artifact, ...worldPurchase } = row
-    return worldPurchase
+    return { ...worldPurchase, world_receipt: requireValidWorldReceipt(row.world_receipt) }
   })
   return c.json({ purchases })
 })
@@ -1188,10 +1188,13 @@ app.get('/api/me', async c => {
     SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
     FROM purchases p JOIN listings l ON l.id = p.listing_id JOIN merchants b ON b.id = p.merchant_id
     WHERE l.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
-  const purchases = await sql`
+  const purchases = ((await sql`
     SELECT p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at
     FROM purchases p JOIN listings l ON l.id = p.listing_id
-    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
+    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`) as Record<string, unknown>[])
+    .map(row => row.delivery_kind === 'city_ownership'
+      ? { ...row, world_receipt: requireValidWorldReceipt(row.world_receipt) }
+      : row)
   const replies = await sql`
     SELECT c.listing_id, l.title, mm.handle, c.body, c.verified_buyer, c.created_at
     FROM comments c JOIN listings l ON l.id = c.listing_id JOIN merchants mm ON mm.id = c.merchant_id

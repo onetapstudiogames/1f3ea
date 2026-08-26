@@ -101,6 +101,7 @@ const state = {
   facilitatorSettleReason: 'settlement failed (test)',
   facilitatorTransaction: TX_CASE_UPPER,
   rpcUnavailableMethod: null as string | null,
+  rpcReceiptMissing: false,
   mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
@@ -459,6 +460,7 @@ function chainRespond(method: string): unknown {
   if (method === 'web3_sha3') return '0x' + 'aa'.repeat(32)
   if (method === 'eth_call') return '0x' + '00'.repeat(12) + state.feeFrom.toLowerCase().slice(2)
   if (method === 'eth_getTransactionReceipt') {
+    if (state.rpcReceiptMissing) return null
     return {
       status: '0x1',
       blockHash: '0x' + 'bb'.repeat(32),
@@ -616,6 +618,7 @@ function reset() {
   state.facilitatorSettleReason = 'settlement failed (test)'
   state.facilitatorTransaction = TX_CASE_UPPER
   state.rpcUnavailableMethod = null
+  state.rpcReceiptMissing = false
   state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
@@ -667,7 +670,7 @@ test('registration does not misreport another merchant unique violation as a tak
       body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -685,7 +688,7 @@ test('registration reports a non-conflict database failure as internal', async (
       body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -703,7 +706,7 @@ test('registration reports a late event unique violation as internal', async () 
       body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -733,7 +736,7 @@ test('voting reports an unrelated unique violation as internal', async () => {
       method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -750,7 +753,7 @@ test('voting reports a non-conflict database failure as internal', async () => {
       method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -1424,7 +1427,7 @@ test('paid listing reports only fee transaction unique constraints as already us
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -1441,7 +1444,7 @@ test('a database outage is not misreported as a reused payment', async () => {
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -1512,7 +1515,7 @@ test('a purchase database outage is not misreported as a reused payment', async 
   try {
     const res = await app.request('/api/buy/1', { method: 'POST', headers: authed })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal' })
+    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
   } finally {
     console.error = originalConsoleError
   }
@@ -1524,7 +1527,7 @@ test('buy distinguishes purchase replay, used payment proof, and unrelated uniqu
     { constraint: 'purchases_tx_hash_key', status: 409, reason: /transaction hash was already used/i },
     { constraint: 'purchases_tx_hash_lower_unique', status: 409, reason: /transaction hash was already used/i },
     { constraint: 'payment_uses_pkey', status: 409, reason: /transaction hash was already used/i },
-    { constraint: 'purchases_pkey', status: 500, reason: /^internal$/i },
+    { constraint: 'purchases_pkey', status: 500, reason: /^internal market failure; retry later$/i },
   ]
   const originalConsoleError = console.error
   console.error = () => undefined
@@ -1568,10 +1571,10 @@ test('x402 verification success followed by settlement failure writes nothing', 
     headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
     body: listingBody(),
   })
-  assert.equal(res.status, 503)
+  assert.equal(res.status, 502)
   assert.deepEqual(await res.json(), {
-    error: 'payment facilitator did not confirm settlement: settlement failed (test); ' +
-      'retry this request with the same X-PAYMENT proof later; do not pay again',
+    error: 'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
+      'caller-correctable cause; do not retry or replay this proof blindly; do not pay again',
   })
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
@@ -1622,10 +1625,10 @@ test('facilitator rejection writes nothing and runs no listing quota SQL', async
     headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
     body: listingBody(),
   })
-  assert.equal(res.status, 503)
+  assert.equal(res.status, 502)
   assert.deepEqual(await res.json(), {
-    error: 'payment facilitator could not classify X-PAYMENT verification: facilitator says no (test); ' +
-      'retry this request with the same X-PAYMENT proof later',
+    error: 'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
+      'caller-correctable cause; do not retry or replay this proof blindly',
   })
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
@@ -1633,7 +1636,7 @@ test('facilitator rejection writes nothing and runs no listing quota SQL', async
   assert.equal(hasSql(/listings_today/), false)
 })
 
-test('listing and buying distinguish an invalid x402 proof from an unavailable facilitator', async () => {
+test('listing and buying distinguish invalid, unclassified, and unavailable x402 failures', async () => {
   for (const action of ['listing', 'buy'] as const) {
     reset()
     if (action === 'buy') {
@@ -1664,10 +1667,26 @@ test('listing and buying distinguish an invalid x402 proof from an unavailable f
       headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
       body,
     })
-    assert.equal(rejected.status, 503, action)
+    assert.equal(rejected.status, 502, action)
     assert.equal((await rejected.json() as { error: string }).error,
-      'payment facilitator could not classify X-PAYMENT verification: facilitator says no (test); ' +
-      'retry this request with the same X-PAYMENT proof later', action)
+      'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
+      'caller-correctable cause; do not retry or replay this proof blindly', action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyHttpStatus = 402
+    const terminal = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(terminal.status, 502, action)
+    assert.equal((await terminal.json() as { error: string }).error,
+      'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
+      'caller-correctable cause; do not retry or replay this proof blindly', action)
 
     reset()
     if (action === 'buy') {
@@ -1688,6 +1707,42 @@ test('listing and buying distinguish an invalid x402 proof from an unavailable f
       /X-PAYMENT proof, the market's payment requirements, or facilitator request handling was at fault/i,
       action)
     assert.doesNotMatch(ambiguousReason, /retry.*same|fresh payment proof/i, action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyHttpStatus = 429
+    state.facilitatorVerifyBody = { isValid: false, invalidReason: 'invalid_payload' }
+    const rateLimited = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(rateLimited.status, 503, action)
+    const rateLimitedReason = (await rateLimited.json() as { error: string }).error
+    assert.match(rateLimitedReason, /facilitator rate-limited.*retry.*same X-PAYMENT proof/i, action)
+    assert.doesNotMatch(rateLimitedReason, /payload is malformed/i, action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyHttpStatus = 401
+    state.facilitatorVerifyBody = { isValid: false, invalidReason: 'invalid_payload' }
+    const unauthorizedUpstream = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(unauthorizedUpstream.status, 502, action)
+    const unauthorizedReason = (await unauthorizedUpstream.json() as { error: string }).error
+    assert.match(unauthorizedReason, /facilitator rejected the verification request/i, action)
+    assert.match(unauthorizedReason,
+      /X-PAYMENT proof, the market's payment requirements, or facilitator request handling was at fault/i,
+      action)
 
     reset()
     if (action === 'buy') {
@@ -1715,7 +1770,17 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(fee.status, 503)
   assert.deepEqual(await fee.json(), {
-    error: 'Base RPC could not verify this payment; retry the same proof later',
+    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
+  })
+
+  reset()
+  state.rpcReceiptMissing = true
+  const pendingFee = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(pendingFee.status, 503)
+  assert.deepEqual(await pendingFee.json(), {
+    error: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
   })
 
   reset()
@@ -1729,7 +1794,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(signature.status, 503)
   assert.deepEqual(await signature.json(), {
-    error: 'Base RPC could not verify payer_signature; retry the same proof later',
+    error: 'Base RPC could not verify payer_signature; retry the same proof later; do not pay again',
   })
 
   reset()
@@ -1743,7 +1808,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(payment.status, 503)
   assert.deepEqual(await payment.json(), {
-    error: 'Base RPC could not verify this payment; retry the same proof later',
+    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
   })
 })
 

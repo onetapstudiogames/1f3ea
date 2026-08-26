@@ -85,7 +85,7 @@ type PersonalSignerProof =
 
 const signatureUnavailable = (): VerificationFailure => ({
   status: 'unavailable',
-  reason: 'Base RPC could not verify payer_signature; retry the same proof later',
+  reason: 'Base RPC could not verify payer_signature; retry the same proof later; do not pay again',
 })
 
 async function recoverPersonalSignerProof(message: string, signature: string): Promise<PersonalSignerProof> {
@@ -198,7 +198,7 @@ export type UsdcTransferVerification =
 
 const paymentUnavailable = (detail = 'this payment'): VerificationFailure => ({
   status: 'unavailable',
-  reason: `Base RPC could not verify ${detail}; retry the same proof later`,
+  reason: `Base RPC could not verify ${detail}; retry the same proof later; do not pay again`,
 })
 
 function formatUsdc(units: bigint): string {
@@ -229,8 +229,8 @@ export async function verifyUsdcTransfer(
   if (receiptResult.status === 'unavailable') return paymentUnavailable()
   if (receiptResult.value === null) {
     return {
-      status: 'invalid',
-      reason: 'transaction was not found on Base; wait for it to finalize or check tx_hash',
+      status: 'unavailable',
+      reason: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
     }
   }
   if (!isRecord(receiptResult.value)) {

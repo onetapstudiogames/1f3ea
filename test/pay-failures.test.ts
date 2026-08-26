@@ -23,6 +23,9 @@ const {
 const TX = `0x${'ab'.repeat(32)}`
 const PAYER = '0x1111111111111111111111111111111111111111'
 const reqs = requirements(process.env.TREASURY_ADDRESS, 1, '/api/listing', 'listing fee')
+const TERMINAL_UNCLASSIFIED = 'payment facilitator rejected this X-PAYMENT as terminal but did not publish a ' +
+  'recognized caller-correctable cause; do not retry or replay this proof blindly'
+const TERMINAL_SETTLEMENT_UNCLASSIFIED = TERMINAL_UNCLASSIFIED + '; do not pay again'
 const payload = (value: unknown = { payload: { authorization: { from: PAYER } } }) =>
   Buffer.from(JSON.stringify(value)).toString('base64')
 const json = (value: unknown, status = 200) => () => new Response(JSON.stringify(value), {
@@ -49,9 +52,8 @@ test('x402 separates malformed caller proofs from unavailable verification upstr
 
   queue(json({ isValid: false, invalidReason: 'signature rejected' }))
   assert.deepEqual(await settleX402(payload(), reqs), {
-    status: 'unavailable',
-    reason: 'payment facilitator could not classify X-PAYMENT verification: signature rejected; ' +
-      'retry this request with the same X-PAYMENT proof later',
+    status: 'unclassified',
+    reason: TERMINAL_UNCLASSIFIED,
   })
 
   queue(json({ isValid: false, invalidReason: 'invalid_payload' }, 400))
@@ -59,6 +61,43 @@ test('x402 separates malformed caller proofs from unavailable verification upstr
     status: 'invalid',
     reason: 'X-PAYMENT payload is malformed or missing required fields',
   })
+
+  queue(json({ isValid: false, invalidReason: 'invalid_payload' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'invalid',
+    reason: 'X-PAYMENT payload is malformed or missing required fields',
+  })
+
+  queue(json({ isValid: false, invalidReason: 'new_unknown_verify_reason' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: TERMINAL_UNCLASSIFIED,
+  })
+
+  queue(json({ isValid: false, invalidReason: 'invalid_payment_requirements' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: 'payment facilitator rejected this X-PAYMENT as terminal: invalid payment requirements; ' +
+      'do not retry or replay this proof blindly',
+  })
+
+  for (const status of [408, 429]) {
+    queue(json({ isValid: false, invalidReason: 'invalid_payload' }, status))
+    const retryable = await settleX402(payload(), reqs)
+    assert.equal(retryable.status, 'unavailable', String(status))
+    assert.match(retryable.reason, /facilitator.*(?:timed out|rate-limited).*retry.*same X-PAYMENT proof/i,
+      String(status))
+    assert.doesNotMatch(retryable.reason, /payload is malformed/i, String(status))
+  }
+
+  for (const status of [401, 422]) {
+    queue(json({ isValid: false, invalidReason: 'invalid_payload' }, status))
+    const ambiguousStatus = await settleX402(payload(), reqs)
+    assert.equal(ambiguousStatus.status, 'unclassified', String(status))
+    assert.match(ambiguousStatus.reason, /facilitator rejected the verification request/i, String(status))
+    assert.match(ambiguousStatus.reason,
+      /X-PAYMENT proof, the market's payment requirements, or facilitator request handling/i, String(status))
+  }
 
   queue(json({ isValid: false, invalidReason: 'unexpected_verify_error' }))
   assert.deepEqual(await settleX402(payload(), reqs), {
@@ -69,22 +108,34 @@ test('x402 separates malformed caller proofs from unavailable verification upstr
 
   queue(json({ isValid: false, invalidReason: 'new_unknown_verify_reason' }))
   assert.deepEqual(await settleX402(payload(), reqs), {
-    status: 'unavailable',
-    reason: 'payment facilitator could not classify X-PAYMENT verification: new unknown verify reason; ' +
-      'retry this request with the same X-PAYMENT proof later',
+    status: 'unclassified',
+    reason: TERMINAL_UNCLASSIFIED,
   })
 
-  for (const [rejected, publishedCause] of [
-    [{ error: 'invalid_payment_requirements' }, 'invalid payment requirements'],
-    [{ message: 'payload or requirements rejected' }, 'payload or requirements rejected'],
+  queue(json({ isValid: false, invalidReason: 'constructor' }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: TERMINAL_UNCLASSIFIED,
+  })
+
+  queue(json({ error: 'invalid_payment_requirements' }, 400))
+  const knownRejected = await settleX402(payload(), reqs)
+  assert.equal(knownRejected.status, 'unclassified')
+  assert.match(knownRejected.reason, /facilitator rejected the verification request.*invalid payment requirements/i)
+  assert.match(knownRejected.reason,
+    /X-PAYMENT proof, the market's payment requirements, or facilitator request handling/i)
+
+  for (const privateDetail of [
+    'payload or requirements rejected',
+    'SQLSTATE 23505 at payment-db.internal:5432',
   ]) {
-    queue(json(rejected, 400))
+    queue(json({ message: privateDetail }, 400))
     const result = await settleX402(payload(), reqs)
     assert.equal(result.status, 'unclassified')
     assert.match(result.reason, /facilitator rejected the verification request/i)
-    assert.match(result.reason, new RegExp(String(publishedCause), 'i'))
     assert.match(result.reason,
       /X-PAYMENT proof, the market's payment requirements, or facilitator request handling/i)
+    assert.doesNotMatch(result.reason, new RegExp(privateDetail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'))
     assert.doesNotMatch(result.reason, /retry.*same|fresh payment proof/i)
   }
 
@@ -101,9 +152,8 @@ test('x402 separates malformed caller proofs from unavailable verification upstr
   queue(json({ isValid: false, invalidReason: `rejected ${reflectedSecret}` }))
   const redacted = await settleX402(payload(), reqs)
   assert.deepEqual(redacted, {
-    status: 'unavailable',
-    reason: 'payment facilitator could not classify X-PAYMENT verification: ' +
-      'unrecognized verification failure; retry this request with the same X-PAYMENT proof later',
+    status: 'unclassified',
+    reason: TERMINAL_UNCLASSIFIED,
   })
   assert.doesNotMatch(JSON.stringify(redacted), /1f3ea_sk_/i)
 
@@ -123,14 +173,13 @@ test('x402 separates unconfirmed settlements from unclassified request rejection
   queue(json({ isValid: true }), invalidJson())
   assert.deepEqual(await settleX402(payload(), reqs), {
     status: 'unavailable',
-    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later',
+    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later; do not pay again',
   })
 
   queue(json({ isValid: true }), json({ success: false, errorReason: 'not settled' }))
   assert.deepEqual(await settleX402(payload(), reqs), {
-    status: 'unavailable',
-    reason: 'payment facilitator did not confirm settlement: not settled; ' +
-      'retry this request with the same X-PAYMENT proof later; do not pay again',
+    status: 'unclassified',
+    reason: TERMINAL_SETTLEMENT_UNCLASSIFIED,
   })
 
   for (const [errorReason, reason] of [
@@ -154,10 +203,55 @@ test('x402 separates unconfirmed settlements from unclassified request rejection
     }, errorReason)
   }
 
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'invalid_payload' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'invalid',
+    reason: 'X-PAYMENT payload is malformed or missing required fields',
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'new_unknown_settlement_error' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: TERMINAL_SETTLEMENT_UNCLASSIFIED,
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'invalid_payment_requirements' }, 402))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: 'payment facilitator rejected this X-PAYMENT as terminal: invalid payment requirements; ' +
+      'do not retry or replay this proof blindly; do not pay again',
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'duplicate_settlement' }, 409))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unavailable',
+    reason: 'payment facilitator reports this X-PAYMENT settlement is already in flight; ' +
+      'retry the same X-PAYMENT proof later; do not pay again',
+  })
+
+  for (const status of [408, 429]) {
+    queue(json({ isValid: true }), json({ success: false, errorReason: 'invalid_payload' }, status))
+    const retryable = await settleX402(payload(), reqs)
+    assert.equal(retryable.status, 'unavailable', String(status))
+    assert.match(retryable.reason, /facilitator.*(?:timed out|rate-limited).*retry.*same X-PAYMENT proof/i,
+      String(status))
+    assert.match(retryable.reason, /do not pay again/i, String(status))
+    assert.doesNotMatch(retryable.reason, /payload is malformed/i, String(status))
+  }
+
+  for (const status of [401, 422]) {
+    queue(json({ isValid: true }), json({ success: false, errorReason: 'invalid_payload' }, status))
+    const ambiguousStatus = await settleX402(payload(), reqs)
+    assert.equal(ambiguousStatus.status, 'unclassified', String(status))
+    assert.match(ambiguousStatus.reason, /facilitator rejected the settlement request/i, String(status))
+    assert.match(ambiguousStatus.reason,
+      /X-PAYMENT proof, the market's payment requirements, or facilitator request handling/i, String(status))
+    assert.match(ambiguousStatus.reason, /do not pay again/i, String(status))
+  }
+
   for (const errorReason of [
     'invalid_payment_requirements',
     'unexpected_settle_error',
-    'new_unknown_settlement_error',
   ]) {
     queue(json({ isValid: true }), json({ success: false, errorReason }))
     const result = await settleX402(payload(), reqs)
@@ -166,36 +260,69 @@ test('x402 separates unconfirmed settlements from unclassified request rejection
       errorReason)
   }
 
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'new_unknown_settlement_error' }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: TERMINAL_SETTLEMENT_UNCLASSIFIED,
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'settlement_pending' }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unavailable',
+    reason: 'payment facilitator reports this X-PAYMENT settlement is pending; ' +
+      'retry the same X-PAYMENT proof later; do not pay again',
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'duplicate_settlement' }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unavailable',
+    reason: 'payment facilitator reports this X-PAYMENT settlement is already in flight; ' +
+      'retry the same X-PAYMENT proof later; do not pay again',
+  })
+
+  queue(json({ isValid: true }), json({ success: false, errorReason: 'transaction_failed' }))
+  assert.deepEqual(await settleX402(payload(), reqs), {
+    status: 'unclassified',
+    reason: 'payment facilitator reports the X-PAYMENT settlement transaction failed; this proof did not ' +
+      'settle payment; do not retry or replay this proof blindly; do not pay again',
+  })
+
   queue(json({ isValid: true }), json({ success: false, errorReason: 'private upstream detail' }, 503))
   assert.deepEqual(await settleX402(payload(), reqs), {
     status: 'unavailable',
-    reason: 'payment facilitator settlement is unavailable; retry this request with the same X-PAYMENT proof later',
+    reason: 'payment facilitator settlement is unavailable; retry this request with the same X-PAYMENT proof later; do not pay again',
   })
 
-  for (const [rejected, publishedCause] of [
-    [{ errorReason: 'invalid_payment_requirements' }, 'invalid payment requirements'],
-    [{ invalidReason: 'payload or requirements rejected' }, 'payload or requirements rejected'],
+  queue(json({ isValid: true }), json({ errorReason: 'invalid_payment_requirements' }, 400))
+  const knownSettlementRejection = await settleX402(payload(), reqs)
+  assert.equal(knownSettlementRejection.status, 'unclassified')
+  assert.match(knownSettlementRejection.reason,
+    /facilitator rejected the settlement request.*invalid payment requirements/i)
+
+  for (const privateDetail of [
+    'payload or requirements rejected',
+    'SQLSTATE 23505 at payment-db.internal:5432',
   ]) {
-    queue(json({ isValid: true }), json(rejected, 400))
+    queue(json({ isValid: true }), json({ invalidReason: privateDetail }, 400))
     const result = await settleX402(payload(), reqs)
     assert.equal(result.status, 'unclassified')
     assert.match(result.reason, /facilitator rejected the settlement request/i)
-    assert.match(result.reason, new RegExp(String(publishedCause), 'i'))
     assert.match(result.reason,
       /X-PAYMENT proof, the market's payment requirements, or facilitator request handling/i)
+    assert.doesNotMatch(result.reason, new RegExp(privateDetail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'))
     assert.doesNotMatch(result.reason, /retry.*same|fresh payment proof/i)
   }
 
   queue(json({ isValid: true }), json({ success: true }))
   assert.deepEqual(await settleX402(payload(), reqs), {
     status: 'unavailable',
-    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later',
+    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later; do not pay again',
   })
 
   queue(json({ isValid: true }), json({ success: true, transaction: 'not-a-hash' }))
   assert.deepEqual(await settleX402(payload(), reqs), {
     status: 'unavailable',
-    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later',
+    reason: 'payment facilitator returned an unreadable settlement response; retry this request with the same X-PAYMENT proof later; do not pay again',
   })
 })
 
@@ -232,7 +359,7 @@ test('x402 reports verification and settlement network outages without leaking t
   queue(json({ isValid: true }), () => { throw new Error('private upstream detail') })
   assert.deepEqual(await settleX402(payload(), reqs), {
     status: 'unavailable',
-    reason: 'payment facilitator settlement is unavailable; retry this request with the same X-PAYMENT proof later',
+    reason: 'payment facilitator settlement is unavailable; retry this request with the same X-PAYMENT proof later; do not pay again',
   })
   assert.equal(canonicalTxHash(7), null)
   assert.equal(steps.length, 0)

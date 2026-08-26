@@ -28,8 +28,9 @@ const SESSION_COOKIE = '__Host-1f3ea_oauth'
 const MAX_FORM_BYTES = 8_192
 const ACCESS_TOKEN_SECONDS = 10 * 60
 const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
+const TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR = 120
 const REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR = 120
-const REVOCATION_RATE_RETRY_AFTER_SECONDS = 60 * 60
+const OAUTH_RATE_RETRY_AFTER_SECONDS = 60 * 60
 const AUTHORIZATION_FIELDS = new Set([
   'response_type', 'client_id', 'redirect_uri', 'resource', 'scope', 'state',
   'code_challenge', 'code_challenge_method', 'ui_locales',
@@ -240,6 +241,20 @@ function tokenError(c: Context, error: 'invalid_request' | 'invalid_client' | 'i
   return c.json({ error }, 400)
 }
 
+function oauthUnavailable(
+  c: Context,
+  status: 429 | 503,
+  description: string,
+  retryAfter = 1,
+) {
+  privateHeaders(c)
+  c.header('Retry-After', String(retryAfter))
+  return c.json({
+    error: 'temporarily_unavailable',
+    error_description: description,
+  }, status)
+}
+
 function tokenResponse(c: Context, accessToken: string, refreshToken: string) {
   privateHeaders(c)
   return c.json({
@@ -436,9 +451,17 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         oauth,
         [`ip:${clientAddress(c, oauth.environment)}`, `client:${clientId}`],
         grantType === 'refresh_token' ? 'refresh' : 'token',
-        120,
+        TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR,
       )
-      if (!allowed) return tokenError(c, 'invalid_grant')
+      if (!allowed) {
+        return oauthUnavailable(
+          c,
+          429,
+          `token requests allow ${TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
+            'for each IP and each client; retry after the next UTC hour begins',
+          OAUTH_RATE_RETRY_AFTER_SECONDS,
+        )
+      }
 
       if (grantType === 'authorization_code') {
         const code = one(values, 'code', 100)
@@ -477,9 +500,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       if (rotated !== 'rotated') return tokenError(c, 'invalid_grant')
       return tokenResponse(c, accessToken, refreshToken)
     } catch {
-      privateHeaders(c)
-      c.header('Retry-After', '1')
-      return c.json({ error: 'temporarily_unavailable' }, 503)
+      return oauthUnavailable(c, 503, 'token request could not be completed; retry later')
     }
   })
 
@@ -488,19 +509,11 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       privateHeaders(c)
       return c.body(null, 200)
     }
-    const retryableFailure = (status: 429 | 503, description: string, retryAfter = 1) => {
-      privateHeaders(c)
-      c.header('Retry-After', String(retryAfter))
-      return c.json({
-        error: 'temporarily_unavailable',
-        error_description: description,
-      }, status)
-    }
     let values: URLSearchParams | null
     try {
       values = await form(c)
     } catch {
-      return opaqueSuccess()
+      return oauthUnavailable(c, 503, 'revocation request could not be read; retry later')
     }
     const clientId = values ? one(values, 'client_id', 2_048) : null
     const token = values ? one(values, 'token', 100) : null
@@ -520,21 +533,22 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR,
         )
     } catch {
-      return retryableFailure(503, 'revocation could not be completed; retry later')
+      return oauthUnavailable(c, 503, 'revocation could not be completed; retry later')
     }
     if (!allowed) {
-      return retryableFailure(
+      return oauthUnavailable(
+        c,
         429,
         `revocation allows ${REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
           'for each IP and each client; retry after the next UTC hour begins',
-        REVOCATION_RATE_RETRY_AFTER_SECONDS,
+        OAUTH_RATE_RETRY_AFTER_SECONDS,
       )
     }
 
     try {
       await oauth.store.revokeTokenFamilyByToken({ tokenHash: sha256(token!), clientId: clientId! })
     } catch {
-      return retryableFailure(503, 'revocation could not be completed; retry later')
+      return oauthUnavailable(c, 503, 'revocation could not be completed; retry later')
     }
     return opaqueSuccess()
   })

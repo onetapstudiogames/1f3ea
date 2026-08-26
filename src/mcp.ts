@@ -61,8 +61,10 @@ const PAYMENT_FAILURE_GUIDANCE =
   'A 402 means payment is required or the proof is known to be invalid. ' +
   'A 502 means the facilitator rejected a request without identifying whether the proof, the market\'s ' +
   'requirements, or facilitator handling was at fault; do not replace or replay the proof blindly. ' +
+  'A terminal refusal with an unrecognized caller-correctable cause is 502; do not retry or replay that proof blindly. ' +
   'A 503 means payment or chain verification is unavailable, including an explicit facilitator failure ' +
-  'that did not match a known caller mistake; retry the same proof and do not pay again.'
+  'that did not match a known caller mistake; retry the same proof and do not pay again. ' +
+  'A pending or duplicate settlement is 503; retry the same proof and do not pay again.'
 
 const TOOLS: ToolDef[] = [
   {
@@ -459,37 +461,51 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
     }
 
-    const { method: m, path, body } = tool.route(args)
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (headerAuth) headers.authorization = headerAuth
-    const backingRequest = new Request(new URL(path, c.req.url), {
-      method: m,
-      headers,
-      body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
-    })
-    if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
-      allowOAuthForHostedConnectorRequest(backingRequest)
-    }
-    const res = await app.request(backingRequest)
-    const rawText = await res.text()
-    const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
-    if (hostedChat && res.status === 401) {
-      const challenge = hostedChallenge()
-      c.header('WWW-Authenticate', challenge)
-      const response = {
+    try {
+      const { method: m, path, body } = tool.route(args)
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      if (headerAuth) headers.authorization = headerAuth
+      const backingRequest = new Request(new URL(path, c.req.url), {
+        method: m,
+        headers,
+        body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
+      })
+      if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
+        allowOAuthForHostedConnectorRequest(backingRequest)
+      }
+      const res = await app.request(backingRequest)
+      const rawText = await res.text()
+      const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
+      if (hostedChat && res.status === 401) {
+        const challenge = hostedChallenge()
+        c.header('WWW-Authenticate', challenge)
+        const response = {
+          jsonrpc: '2.0', id: id ?? null,
+          result: {
+            content: [{ type: 'text', text }],
+            isError: true,
+            _meta: { 'mcp/www_authenticate': [challenge] },
+          },
+        }
+        return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+      }
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: { content: [{ type: 'text', text }], isError: res.status >= 400 },
+      })
+    } catch (error) {
+      console.error(error)
+      return c.json({
         jsonrpc: '2.0', id: id ?? null,
         result: {
-          content: [{ type: 'text', text }],
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'internal connector failure; retry later' }),
+          }],
           isError: true,
-          _meta: { 'mcp/www_authenticate': [challenge] },
         },
-      }
-      return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+      })
     }
-    return c.json({
-      jsonrpc: '2.0', id: id ?? null,
-      result: { content: [{ type: 'text', text }], isError: res.status >= 400 },
-    })
   }
   return rpcError(c, id, -32601, `method not found: ${method}`)
 }
