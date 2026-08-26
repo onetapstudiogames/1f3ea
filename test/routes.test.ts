@@ -18,6 +18,10 @@ const TX2 = '0x' + '22'.repeat(32)
 const TX_CASE_LOWER = '0x' + 'ab'.repeat(32)
 const TX_CASE_UPPER = '0x' + 'AB'.repeat(32)
 const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
+const DOOR_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled'])
+const WINDOW_EVENT_KINDS = new Set([
+  ...DOOR_EVENT_KINDS, 'listing_edit', 'withdrawal', 'moderation',
+])
 
 interface PurchaseIntentRow {
   id: number
@@ -108,6 +112,16 @@ const state = {
   quotaDayStale: false,
   commentQuotaLeft: true,
   failActivity: false,
+  shelfRows: null as Record<string, unknown>[] | null,
+  aisleCounts: [
+    { name: 'tools', count: 2 }, { name: 'services', count: 1 },
+  ] as Array<{ name: string; count: number }>,
+  commentRows: null as Record<string, unknown>[] | null,
+  merchantRows: null as Record<string, unknown>[] | null,
+  feeRows: null as Record<string, unknown>[] | null,
+  meSales: null as Record<string, unknown>[] | null,
+  mePurchases: null as Record<string, unknown>[] | null,
+  meReplies: null as Record<string, unknown>[] | null,
   calls: [] as DbCall[],
   activity: [
     {
@@ -227,6 +241,110 @@ function postgresError(fixture: PostgresErrorFixture, message: string): Error {
 }
 
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
+  const byIdDescending = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    Number(right.id) - Number(left.id)
+  const byCreatedDescending = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    String(right.created_at).localeCompare(String(left.created_at)) || byIdDescending(left, right)
+  const byCreatedAscending = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    String(left.created_at).localeCompare(String(right.created_at)) || Number(left.id) - Number(right.id)
+  const byMerchantJoin = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    String(left.joined_at).localeCompare(String(right.joined_at)) || Number(left.id) - Number(right.id)
+  const byStoreOrder = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) || byCreatedDescending(left, right)
+  const anchoredPage = (
+    rows: Record<string, unknown>[], cursor: unknown, fetchLimit: unknown,
+    compare: (left: Record<string, unknown>, right: Record<string, unknown>) => number,
+  ): Record<string, unknown>[] => {
+    const ordered = [...rows].sort(compare)
+    const anchor = cursor == null ? -1 : ordered.findIndex(row => Number(row.id) === Number(cursor))
+    if (cursor != null && anchor < 0) return [{ id: null, __total: rows.length, __cursor_valid: false }]
+    const page = ordered.slice(anchor + 1, anchor + 1 + Number(fetchLimit))
+    return page.length
+      ? page.map(row => ({ ...row, __total: rows.length, __cursor_valid: true }))
+      : [{ id: null, __total: rows.length, __cursor_valid: true }]
+  }
+  const descendingPage = (rows: Record<string, unknown>[], cursor: unknown, fetchLimit: unknown) => {
+    const page = rows
+      .filter(row => cursor == null || Number(row.id) < Number(cursor))
+      .sort((left, right) => Number(right.id) - Number(left.id))
+      .slice(0, Number(fetchLimit))
+    return page.length
+      ? page.map(row => ({ ...row, __total: rows.length }))
+      : [{ id: null, __total: rows.length }]
+  }
+  if (query.includes('/* public:shelves */')) {
+    const rows: Record<string, unknown>[] = state.shelfRows ?? [publicListing()]
+    const compare = query.includes('votes DESC')
+      ? (left: Record<string, unknown>, right: Record<string, unknown>) =>
+          Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
+          Number(right.votes) - Number(left.votes) || byCreatedDescending(left, right)
+      : byStoreOrder
+    return anchoredPage(rows, params.at(-2), params.at(-1), compare).map(row => ({
+      ...row,
+      __aisles: JSON.stringify(state.aisleCounts),
+      __cursor_created_at: row.id == null
+        ? null
+        : row.__cursor_created_at ?? (row.created_at instanceof Date
+            ? row.created_at.toISOString()
+            : String(row.created_at)),
+    }))
+  }
+  if (query.includes('/* public:listing-comments */')) {
+    const rows = state.commentRows ?? []
+    return anchoredPage(rows, params.at(-2), params.at(-1), byCreatedAscending)
+  }
+  if (query.includes('/* public:merchants */')) {
+    const rows = state.merchantRows ?? [{
+      id: 8, handle: 'agent-8', model: 'test-model', line: state.storeLine, karma: 3,
+      joined_at: '2026-08-06T00:00:00Z', store_url: '/api/store/agent-8', listings: 1,
+    }]
+    return anchoredPage(rows, params.at(-2), params.at(-1), byMerchantJoin)
+  }
+  if (query.includes('/* public:events */')) {
+    const kind = typeof params[0] === 'string' ? params[0] : null
+    const scopeValue = params[1]
+    const kinds = scopeValue == null
+      ? null
+      : new Set((Array.isArray(scopeValue) ? scopeValue : String(scopeValue).replace(/^\{|\}$/g, '').split(','))
+          .map(value => String(value).replace(/^"|"$/g, '')))
+    const rows = state.activity.filter(row => (!kind || row.kind === kind) && (!kinds || kinds.has(row.kind)))
+    return anchoredPage(rows, params.at(-2), params.at(-1), byIdDescending)
+  }
+  if (query.includes('/* public:treasury-fees */')) {
+    const rows = anchoredPage(state.feeRows ?? [], params.at(-2), params.at(-1), byIdDescending)
+    const collected = (state.feeRows ?? []).reduce((sum, row) => sum + Number(row.amount_usdc), 0)
+    return rows.map(row => ({ ...row, __collected: collected }))
+  }
+  if (query.includes('/* private:me-sales */'))
+    return anchoredPage(state.meSales ?? [], params.at(-2), params.at(-1), byCreatedDescending)
+  if (query.includes('/* private:me-purchases */'))
+    return anchoredPage(state.mePurchases ?? [], params.at(-2), params.at(-1), byCreatedDescending)
+  if (query.includes('/* private:me-replies */'))
+    return anchoredPage(state.meReplies ?? [], params.at(-2), params.at(-1), byCreatedDescending)
+  if (query.includes('/* public:door-activity */')) {
+    const rows = descendingPage(state.activity.filter(row => DOOR_EVENT_KINDS.has(row.kind)), null, params.at(-1))
+    return rows
+  }
+  if (query.includes('/* public:store-page */')) {
+    const rows = state.shelfRows ?? [publicListing()]
+    return anchoredPage(rows, params.at(-2), params.at(-1), byStoreOrder)
+  }
+  if (query.includes('/* public:store-complete */')) return state.shelfRows ?? [publicListing()]
+  if (query.includes('/* public:window-merchants */')) {
+    const rows = state.merchantRows ?? [{
+      id: 8, handle: 'agent-8', model: 'test-model', line: state.storeLine, karma: 3,
+      joined_at: '2026-08-06T00:00:00Z', listings: 1,
+    }]
+    return anchoredPage(rows, null, 500, byMerchantJoin).map(row => ({
+      ...row, total_merchants: rows.length,
+    }))
+  }
+  if (query.includes('/* public:window-listings */')) {
+    const rows = state.shelfRows ?? [publicListing()]
+    return anchoredPage(rows, null, 50, byStoreOrder).map(row => ({
+      ...row, __aisles: JSON.stringify(state.aisleCounts),
+    }))
+  }
   if (query.includes('DELETE FROM reg_log')) return []
   if (query.includes('FROM reg_log')) return [{ ip: 0, all: 0 }]
   if (query.includes('INSERT INTO merchants')) {
@@ -449,6 +567,11 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
   }
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
+  if (query.includes('/* public:window-events */')) {
+    const eligible = state.activity.filter(row => WINDOW_EVENT_KINDS.has(row.kind))
+    const requested = Number(query.match(/LIMIT\s+(\d+)/i)?.[1] ?? state.activity.length)
+    return eligible.slice(0, requested).map(row => ({ ...row, total_events: eligible.length }))
+  }
   if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN')) {
     const requested = Number(query.match(/LIMIT\s+(\d+)/i)?.[1] ?? state.activity.length)
     return state.activity.slice(0, requested)
@@ -489,6 +612,7 @@ function neonEncode(rows: Record<string, unknown>[]) {
   const typeOf = (v: unknown) => {
     if (typeof v === 'boolean') return 16
     if (typeof v === 'number') return Number.isInteger(v) ? 23 : 701
+    if (v instanceof Date) return 1184
     if (Array.isArray(v)) return 1009
     if (v != null && typeof v === 'object') return 3802
     return 25
@@ -496,6 +620,7 @@ function neonEncode(rows: Record<string, unknown>[]) {
   const encode = (v: unknown) => {
     if (v === null) return null
     if (typeof v === 'boolean') return v ? 't' : 'f'
+    if (v instanceof Date) return v.toISOString()
     if (Array.isArray(v)) return pgArray(v)
     if (typeof v === 'object') return JSON.stringify(v)
     return String(v)
@@ -513,7 +638,7 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
   const body = init?.body ? JSON.parse(init.body) : null
   state.calls.push({ url, query: body?.query, params: body?.params })
   if (url.includes('/sql')) {
-    if (state.failActivity && String(body.query).includes('SELECT at, kind, actor, detail FROM events'))
+    if (state.failActivity && String(body.query).includes('/* public:door-activity */'))
       return jsonRes({ message: 'database unavailable' }, 503)
     return jsonRes(neonEncode(dbRespond(body.query, body.params ?? [])))
   }
@@ -549,6 +674,7 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
 const { default: app } = await import('../src/index.ts')
 const { FRONTDOOR } = await import('../src/door.ts')
 const { AISLES } = await import('../src/market.ts')
+const { decodeShelfCursor } = await import('../src/public-pagination.ts')
 const {
   allowOAuthForHostedConnectorRequest,
   auth,
@@ -625,6 +751,14 @@ function reset() {
   state.quotaDayStale = false
   state.commentQuotaLeft = true
   state.failActivity = false
+  state.shelfRows = null
+  state.aisleCounts = [{ name: 'tools', count: 2 }, { name: 'services', count: 1 }]
+  state.commentRows = null
+  state.merchantRows = null
+  state.feeRows = null
+  state.meSales = null
+  state.mePurchases = null
+  state.meReplies = null
   state.calls = []
 }
 
@@ -1909,15 +2043,34 @@ test('a public storefront returns its line and only public live listings', async
   assert.ok(sqlCalls().some(call => call.query?.includes('NOT l.removed')))
 })
 
-test('the human window requests a bounded storefront view', async () => {
+test('the storefront API supports an optional bounded page', async () => {
   reset()
   const res = await app.request('/api/store/agent-8?limit=50')
   assert.equal(res.status, 200)
   assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
   const listingRead = sqlCalls().find(call =>
     call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('l.merchant_id'))
-  assert.match(listingRead?.query ?? '', /LIMIT \$2/)
-  assert.deepEqual(listingRead?.params?.map(Number), [8, 50])
+  assert.match(listingRead?.query ?? '', /LIMIT \$3/)
+  assert.deepEqual(listingRead?.params?.map(value => value == null ? null : Number(value)), [8, null, 51])
+})
+
+test('an unbounded storefront returns its complete catalog and one matching exact count', async () => {
+  reset()
+  state.shelfRows = Array.from({ length: 51 }, (_, index) => ({
+    ...publicListing(), id: 51 - index, title: `Store item ${51 - index}`,
+  }))
+  const response = await app.request('/api/store/agent-8')
+  assert.equal(response.status, 200)
+  const body = await response.json() as {
+    store: { listings: number }; listings: Array<{ id: number }>
+    total: number; returned: number; page_size: number; has_more: boolean; next_before_id: null
+  }
+  assert.equal(body.listings.length, 51)
+  assert.equal(body.store.listings, 51)
+  assert.deepEqual({
+    total: body.total, returned: body.returned, page_size: body.page_size,
+    has_more: body.has_more, next_before_id: body.next_before_id,
+  }, { total: 51, returned: 51, page_size: 51, has_more: false, next_before_id: null })
 })
 
 test('invalid storefront limits fail before database reads', async () => {
@@ -1949,69 +2102,469 @@ test('shelves include every aisle count and accept a fixed aisle filter', async 
   assert.ok(sqlCalls().some(call => call.params?.includes('tools') && call.params?.includes('mcp')))
 })
 
-test('the cached human window snapshot proves its event bound and preserves safe action detail', async () => {
+test('shelf pages are exact at 50 and expose a scope-bound continuation past 50', async () => {
+  for (const total of [50, 51]) {
+    reset()
+    state.shelfRows = Array.from({ length: total }, (_, index) => ({
+      ...publicListing(), id: total - index, title: `Shelf item ${total - index}`,
+      votes: 7, pinned: false, created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    const response = await app.request('/api/shelves?aisle=tools&sort=karma&limit=50')
+    assert.equal(response.status, 200)
+    const body = await response.json() as {
+      listings: Array<{ id: number }>
+      total: number; returned: number; page_size: number; has_more: boolean; next_cursor: string | null
+    }
+    assert.equal(body.total, total)
+    assert.equal(body.returned, 50)
+    assert.equal(body.page_size, 50)
+    assert.equal(body.has_more, total === 51)
+    assert.equal(body.next_cursor === null, total === 50)
+    if (body.next_cursor) {
+      const later = await app.request('/api/shelves?aisle=tools&sort=karma&limit=50&cursor=' +
+        encodeURIComponent(body.next_cursor))
+      assert.equal(later.status, 200)
+      const laterBody = await later.json() as typeof body
+      assert.deepEqual(laterBody.listings.map(row => row.id), [1])
+      assert.equal(laterBody.total, 51)
+      assert.equal(laterBody.has_more, false)
+
+      const wrongScope = await app.request('/api/shelves?aisle=services&sort=karma&cursor=' +
+        encodeURIComponent(body.next_cursor))
+      assert.equal(wrongScope.status, 400)
+    }
+  }
+})
+
+test('shelf cursors preserve the exact PostgreSQL timestamp behind Neon Date rows', async () => {
+  reset()
+  state.shelfRows = [
+    {
+      ...publicListing(), id: 3, created_at: new Date('2026-08-25T12:00:00.123Z'),
+      __cursor_created_at: '2026-08-25T12:00:00.123456Z',
+    },
+    {
+      ...publicListing(), id: 2, created_at: new Date('2026-08-25T12:00:00.123Z'),
+      __cursor_created_at: '2026-08-25T12:00:00.123455Z',
+    },
+    {
+      ...publicListing(), id: 1, created_at: new Date('2026-08-25T12:00:00.123Z'),
+      __cursor_created_at: '2026-08-25T12:00:00.123454Z',
+    },
+  ]
+  state.aisleCounts = [{ name: 'tools', count: 3 }]
+
+  const first = await app.request('/api/shelves?limit=2')
+  assert.equal(first.status, 200)
+  const firstBody = await first.json() as {
+    listings: Array<Record<string, unknown> & { id: number }>; next_cursor: string
+  }
+  assert.equal(firstBody.listings.some(row => '__cursor_created_at' in row), false)
+  assert.equal(decodeShelfCursor(firstBody.next_cursor, {
+    q: null, tag: null, aisle: null, sort: 'new',
+  })?.createdAt, '2026-08-25T12:00:00.123455Z')
+  const shelfQuery = sqlCalls().find(call => call.query?.includes('/* public:shelves */'))?.query ?? ''
+  assert.match(shelfQuery, /to_char\([\s\S]*US[\s\S]*AS __cursor_created_at/i)
+
+  const later = await app.request(`/api/shelves?limit=2&cursor=${encodeURIComponent(firstBody.next_cursor)}`)
+  assert.equal(later.status, 200)
+  assert.deepEqual(((await later.json()) as typeof firstBody).listings.map(row => row.id), [1])
+})
+
+test('listing comments keep their oldest-first order and make comment 201 reachable', async () => {
+  for (const total of [200, 201]) {
+    reset()
+    state.commentRows = Array.from({ length: total }, (_, index) => ({
+      id: index + 1, handle: 'reader-one', parent_id: null, body: `Comment ${index + 1}`,
+      verified_buyer: false, created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    const response = await app.request('/api/listing/1?comments_limit=200')
+    assert.equal(response.status, 200)
+    const body = await response.json() as {
+      comments: Array<{ id: number }>
+      comments_total: number; comments_returned: number; comments_page_size: number
+      comments_has_more: boolean; comments_next_after_id: number | null
+    }
+    assert.equal(body.comments_total, total)
+    assert.equal(body.comments_returned, 200)
+    assert.equal(body.comments_page_size, 200)
+    assert.equal(body.comments_has_more, total === 201)
+    assert.equal(body.comments_next_after_id, total === 201 ? 200 : null)
+    if (body.comments_next_after_id) {
+      const later = await app.request(`/api/listing/1?comments_limit=200&comments_after_id=${body.comments_next_after_id}`)
+      assert.equal(later.status, 200)
+      const laterBody = await later.json() as typeof body
+      assert.deepEqual(laterBody.comments.map(row => row.id), [201])
+      assert.equal(laterBody.comments_has_more, false)
+    }
+  }
+})
+
+test('merchant and event collections distinguish exactly-at-bound from past-bound pages', async () => {
+  for (const total of [500, 501]) {
+    reset()
+    state.merchantRows = Array.from({ length: total }, (_, index) => ({
+      id: index + 1, handle: `agent-${index + 1}`, model: 'test-model', line: '', karma: 0,
+      joined_at: '2026-08-25T12:00:00.000Z', store_url: `/api/store/agent-${index + 1}`, listings: 0,
+    }))
+    const response = await app.request('/api/merchants?limit=500')
+    assert.equal(response.status, 200)
+    const body = await response.json() as {
+      merchants: Array<{ handle: string }>; total: number; returned: number; page_size: number
+      has_more: boolean; next_after_id: number | null
+    }
+    assert.equal(body.total, total)
+    assert.equal(body.returned, 500)
+    assert.equal(body.has_more, total === 501)
+    assert.equal(body.next_after_id, total === 501 ? 500 : null)
+  }
+
+  const previousActivity = state.activity
+  try {
+    for (const total of [200, 201]) {
+      reset()
+      state.activity = Array.from({ length: total }, (_, index) => ({
+        id: total - index, at: '2026-08-25T12:00:00.000Z', kind: 'listing', actor: 'agent-8',
+        detail: { listing_id: total - index },
+      }))
+      const response = await app.request('/api/events?limit=200')
+      assert.equal(response.status, 200)
+      const body = await response.json() as {
+        events: Array<{ id: number }>; total: number; returned: number; page_size: number
+        has_more: boolean; next_before_id: number | null
+      }
+      assert.equal(body.total, total)
+      assert.equal(body.returned, 200)
+      assert.equal(body.has_more, total === 201)
+      assert.equal(body.next_before_id, total === 201 ? 2 : null)
+      if (body.next_before_id) {
+        const later = await app.request(`/api/events?limit=200&before_id=${body.next_before_id}`)
+        assert.deepEqual(((await later.json()) as typeof body).events.map(row => row.id), [1])
+      }
+    }
+  } finally {
+    state.activity = previousActivity
+  }
+})
+
+test('event continuations stay inside their named public scope and reject mixed filters', async () => {
   reset()
   const previousActivity = state.activity
-  state.activity = Array.from({ length: 102 }, (_, index) => index === 1
+  try {
+    state.activity = [
+      { id: 9, at: '2026-08-25T12:09:00Z', kind: 'listing_edit', actor: 'agent-8', detail: { listing_id: 9 } },
+      { id: 8, at: '2026-08-25T12:08:00Z', kind: 'sale', actor: 'agent-8', detail: { listing_id: 8 } },
+      { id: 7, at: '2026-08-25T12:07:00Z', kind: 'flag', actor: 'agent-8', detail: { listing_id: 7 } },
+      { id: 6, at: '2026-08-25T12:06:00Z', kind: 'listing', actor: 'agent-8', detail: { listing_id: 6 } },
+      { id: 5, at: '2026-08-25T12:05:00Z', kind: 'moderation', actor: 'agent-8', detail: { listing_id: 5 } },
+    ]
+    const first = await app.request('/api/events?scope=door&limit=1')
+    assert.equal(first.status, 200)
+    const firstBody = await first.json() as {
+      events: Array<{ id: number }>; total: number; has_more: boolean; next_before_id: number
+    }
+    assert.deepEqual(firstBody.events.map(row => row.id), [8])
+    assert.equal(firstBody.total, 2)
+    assert.equal(firstBody.has_more, true)
+
+    const later = await app.request(`/api/events?scope=door&limit=1&before_id=${firstBody.next_before_id}`)
+    assert.equal(later.status, 200)
+    const laterBody = await later.json() as typeof firstBody
+    assert.deepEqual(laterBody.events.map(row => row.id), [6])
+    assert.equal(laterBody.total, 2)
+    assert.equal(laterBody.has_more, false)
+
+    assert.equal((await app.request('/api/events?scope=door&kind=sale')).status, 400)
+    assert.equal((await app.request('/api/events?scope=made-up')).status, 400)
+    assert.equal((await app.request('/api/events?kind=moderation&before_id=8')).status, 400)
+  } finally {
+    state.activity = previousActivity
+  }
+})
+
+test('treasury fees and bounded storefronts expose exact continuation metadata', async () => {
+  for (const total of [50, 51]) {
+    reset()
+    state.feeRows = Array.from({ length: total }, (_, index) => ({
+      id: total - index, amount_usdc: 1, tx_hash: `0x${String(total - index).padStart(64, '0')}`,
+      handle: 'agent-8', listing_id: total - index, created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    const treasury = await app.request('/treasury?limit=50')
+    assert.equal(treasury.status, 200)
+    const books = await treasury.json() as {
+      recent_fees: Array<{ id: number }>; fees_count: number; fees_returned: number
+      fees_page_size: number; fees_has_more: boolean; fees_next_before_id: number | null
+    }
+    assert.equal(books.fees_count, total)
+    assert.equal(books.fees_returned, 50)
+    assert.equal(books.fees_has_more, total === 51)
+    assert.equal(books.fees_next_before_id, total === 51 ? 2 : null)
+
+    reset()
+    state.shelfRows = Array.from({ length: total }, (_, index) => ({
+      ...publicListing(), id: total - index, title: `Store item ${total - index}`,
+    }))
+    const store = await app.request('/api/store/agent-8?limit=50')
+    assert.equal(store.status, 200)
+    const storeBody = await store.json() as {
+      listings: Array<{ id: number }>; total: number; returned: number; page_size: number
+      has_more: boolean; next_before_id: number | null
+    }
+    assert.equal(storeBody.total, total)
+    assert.equal(storeBody.returned, 50)
+    assert.equal(storeBody.has_more, total === 51)
+    assert.equal(storeBody.next_before_id, total === 51 ? 2 : null)
+  }
+})
+
+test('authenticated standing pages are exact at each bound and continue every past-bound collection', async () => {
+  for (const pastBound of [false, true]) {
+    reset()
+    const saleTotal = pastBound ? 51 : 50
+    const replyTotal = pastBound ? 21 : 20
+    state.meSales = Array.from({ length: saleTotal }, (_, index) => ({
+      id: saleTotal - index, listing_id: 1, title: 'Sold item', buyer: 'agent-8', amount_usdc: 1,
+      verified_via: 'free', created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    state.mePurchases = Array.from({ length: saleTotal }, (_, index) => ({
+      id: saleTotal - index, listing_id: 1, title: 'Bought item', delivery_kind: 'artifact',
+      world_receipt: null, created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    state.meReplies = Array.from({ length: replyTotal }, (_, index) => ({
+      id: replyTotal - index, listing_id: 1, title: 'Discussed item', handle: 'agent-8', body: 'hello',
+      verified_buyer: false, created_at: '2026-08-25T12:00:00.000Z',
+    }))
+    const response = await app.request('/api/me', { headers: authed })
+    assert.equal(response.status, 200)
+    const body = await response.json() as Record<string, unknown>
+    assert.deepEqual({
+      total: body.sales_total, returned: body.sales_returned, pageSize: body.sales_page_size,
+      hasMore: body.sales_has_more, cursor: body.sales_next_before_id,
+    }, { total: saleTotal, returned: 50, pageSize: 50, hasMore: pastBound, cursor: pastBound ? 2 : null })
+    assert.deepEqual({
+      total: body.purchases_total, returned: body.purchases_returned, pageSize: body.purchases_page_size,
+      hasMore: body.purchases_has_more, cursor: body.purchases_next_before_id,
+    }, { total: saleTotal, returned: 50, pageSize: 50, hasMore: pastBound, cursor: pastBound ? 2 : null })
+    assert.deepEqual({
+      total: body.replies_total, returned: body.replies_returned, pageSize: body.replies_page_size,
+      hasMore: body.replies_has_more, cursor: body.replies_next_before_id,
+    }, { total: replyTotal, returned: 20, pageSize: 20, hasMore: pastBound, cursor: pastBound ? 2 : null })
+
+    if (pastBound) {
+      const later = await app.request(
+        '/api/me?sales_before_id=2&purchases_before_id=2&replies_before_id=2', { headers: authed },
+      )
+      assert.equal(later.status, 200)
+      const laterBody = await later.json() as {
+        sales: Array<{ id: number }>; purchases: Array<{ id: number }>; replies: Array<{ id: number }>
+        sales_has_more: boolean; purchases_has_more: boolean; replies_has_more: boolean
+      }
+      assert.deepEqual(laterBody.sales.map(row => row.id), [1])
+      assert.deepEqual(laterBody.purchases.map(row => row.id), [1])
+      assert.deepEqual(laterBody.replies.map(row => row.id), [1])
+      assert.deepEqual([
+        laterBody.sales_has_more, laterBody.purchases_has_more, laterBody.replies_has_more,
+      ], [false, false, false])
+    }
+  }
+})
+
+test('continuations follow each visible sort when ids and timestamps disagree', async () => {
+  reset()
+  state.shelfRows = [
+    { ...publicListing(), id: 90, pinned: false, created_at: '2026-08-25T12:00:00Z' },
+    { ...publicListing(), id: 5, pinned: true, created_at: '2026-08-01T12:00:00Z' },
+    { ...publicListing(), id: 80, pinned: false, created_at: '2026-08-20T12:00:00Z' },
+  ]
+  const shelfFirst = await app.request('/api/shelves?limit=2')
+  const shelfPage = await shelfFirst.json() as { listings: Array<{ id: number }>; next_cursor: string }
+  assert.deepEqual(shelfPage.listings.map(row => row.id), [5, 90])
+  const shelfLater = await app.request(`/api/shelves?limit=2&cursor=${encodeURIComponent(shelfPage.next_cursor)}`)
+  assert.deepEqual(((await shelfLater.json()) as typeof shelfPage).listings.map(row => row.id), [80])
+
+  const storeFirst = await app.request('/api/store/agent-8?limit=2')
+  const storePage = await storeFirst.json() as { listings: Array<{ id: number }>; next_before_id: number }
+  assert.deepEqual(storePage.listings.map(row => row.id), [5, 90])
+  const storeLater = await app.request(`/api/store/agent-8?limit=2&before_id=${storePage.next_before_id}`)
+  assert.deepEqual(((await storeLater.json()) as typeof storePage).listings.map(row => row.id), [80])
+  assert.equal((await app.request('/api/store/agent-8?before_id=999')).status, 400)
+
+  reset()
+  state.commentRows = [
+    { id: 90, handle: 'reader', parent_id: null, body: 'old', verified_buyer: false, created_at: '2026-08-01T12:00:00Z' },
+    { id: 3, handle: 'reader', parent_id: null, body: 'middle', verified_buyer: false, created_at: '2026-08-10T12:00:00Z' },
+    { id: 80, handle: 'reader', parent_id: null, body: 'new', verified_buyer: false, created_at: '2026-08-20T12:00:00Z' },
+  ]
+  const commentsFirst = await app.request('/api/listing/1?comments_limit=2')
+  const commentsPage = await commentsFirst.json() as {
+    comments: Array<{ id: number }>; comments_next_after_id: number
+  }
+  assert.deepEqual(commentsPage.comments.map(row => row.id), [90, 3])
+  const commentsLater = await app.request(
+    `/api/listing/1?comments_limit=2&comments_after_id=${commentsPage.comments_next_after_id}`,
+  )
+  assert.deepEqual(((await commentsLater.json()) as typeof commentsPage).comments.map(row => row.id), [80])
+  assert.equal((await app.request('/api/listing/1?comments_after_id=999')).status, 400)
+
+  reset()
+  state.merchantRows = [
+    { id: 90, handle: 'old', model: 'm', line: '', karma: 0, joined_at: '2026-08-01T12:00:00Z', store_url: '/api/store/old', listings: 0 },
+    { id: 3, handle: 'middle', model: 'm', line: '', karma: 0, joined_at: '2026-08-10T12:00:00Z', store_url: '/api/store/middle', listings: 0 },
+    { id: 80, handle: 'new', model: 'm', line: '', karma: 0, joined_at: '2026-08-20T12:00:00Z', store_url: '/api/store/new', listings: 0 },
+  ]
+  const merchantsFirst = await app.request('/api/merchants?limit=2')
+  const merchantsPage = await merchantsFirst.json() as {
+    merchants: Array<{ id: number }>; next_after_id: number
+  }
+  assert.deepEqual(merchantsPage.merchants.map(row => row.id), [90, 3])
+  const merchantsLater = await app.request(`/api/merchants?limit=2&after_id=${merchantsPage.next_after_id}`)
+  assert.deepEqual(((await merchantsLater.json()) as typeof merchantsPage).merchants.map(row => row.id), [80])
+  assert.equal((await app.request('/api/merchants?after_id=999')).status, 400)
+})
+
+test('standing and ledger cursors preserve their established order and reject foreign anchors', async () => {
+  reset()
+  const datedRows = [
+    { id: 4, created_at: '2026-08-01T12:00:00Z' },
+    { id: 99, created_at: '2026-08-20T12:00:00Z' },
+    { id: 2, created_at: '2026-08-10T12:00:00Z' },
+  ]
+  state.meSales = datedRows.map(row => ({
+    ...row, listing_id: 1, title: 'Sold item', buyer: 'agent-8', amount_usdc: 1, verified_via: 'free',
+  }))
+  state.mePurchases = datedRows.map(row => ({
+    ...row, listing_id: 1, title: 'Bought item', delivery_kind: 'artifact', world_receipt: null,
+  }))
+  state.meReplies = datedRows.map(row => ({
+    ...row, listing_id: 1, title: 'Discussed item', handle: 'reader', body: 'hello', verified_buyer: false,
+  }))
+  const first = await app.request('/api/me?sales_limit=2&purchases_limit=2&replies_limit=2', { headers: authed })
+  const page = await first.json() as {
+    sales: Array<{ id: number }>; purchases: Array<{ id: number }>; replies: Array<{ id: number }>
+    sales_next_before_id: number
+  }
+  assert.deepEqual(page.sales.map(row => row.id), [99, 2])
+  assert.deepEqual(page.purchases.map(row => row.id), [99, 2])
+  assert.deepEqual(page.replies.map(row => row.id), [99, 2])
+  const later = await app.request(`/api/me?sales_limit=2&sales_before_id=${page.sales_next_before_id}`, {
+    headers: authed,
+  })
+  assert.deepEqual(((await later.json()) as typeof page).sales.map(row => row.id), [4])
+  assert.equal((await app.request('/api/me?sales_before_id=999', { headers: authed })).status, 400)
+
+  reset()
+  state.feeRows = [
+    { id: 4, amount_usdc: 1, tx_hash: `0x${'4'.padStart(64, '0')}`, handle: 'agent-8', listing_id: 4, created_at: '2026-08-25T12:00:00Z' },
+    { id: 99, amount_usdc: 1, tx_hash: `0x${'9'.padStart(64, '0')}`, handle: 'agent-8', listing_id: 99, created_at: '2026-08-01T12:00:00Z' },
+    { id: 2, amount_usdc: 1, tx_hash: `0x${'2'.padStart(64, '0')}`, handle: 'agent-8', listing_id: 2, created_at: '2026-08-20T12:00:00Z' },
+  ]
+  const feesFirst = await app.request('/treasury?limit=2')
+  const feesPage = await feesFirst.json() as { recent_fees: Array<{ id: number }>; fees_next_before_id: number }
+  assert.deepEqual(feesPage.recent_fees.map(row => row.id), [99, 4])
+  const feesLater = await app.request(`/treasury?limit=2&before_id=${feesPage.fees_next_before_id}`)
+  assert.deepEqual(((await feesLater.json()) as typeof feesPage).recent_fees.map(row => row.id), [2])
+  assert.equal((await app.request('/treasury?before_id=999')).status, 400)
+})
+
+test('the cached human window snapshot is exact at each bound and honest past every bound', async () => {
+  reset()
+  const previousActivity = state.activity
+  const realNow = Date.now
+  let now = realNow()
+  Date.now = () => now
+  const events = (total: number) => Array.from({ length: total }, (_, index) => index === 1
     ? {
-        id: 499,
-        at: '2026-08-08T00:01:00.000Z',
-        kind: 'world_sale',
-        actor: 'agent-8',
+        id: total - 1, at: '2026-08-08T00:01:00.000Z', kind: 'world_sale', actor: 'agent-8',
         detail: { listing_id: 16, amount_usdc: 2, buyer_wallet: 'private wallet must not cross' },
       }
     : {
-        id: 500 - index,
+        id: total - index,
         at: `2026-08-08T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
-        kind: 'listing_edit',
-        actor: 'agent-8',
+        kind: 'listing_edit', actor: 'agent-8',
         detail: {
           listing_id: 15,
           changed_fields: ['description', '<img onerror=alert(1)>', 'preview'],
           changed_values: { description: 'private edit value must not cross the window boundary' },
         },
       })
+  const merchants = (total: number) => Array.from({ length: total }, (_, index) => ({
+    id: index + 1, handle: `agent-${index + 1}`, model: 'test-model', line: '', karma: 0,
+    joined_at: '2026-08-25T12:00:00.000Z', listings: 0,
+  }))
+  const listings = (total: number) => Array.from({ length: total }, (_, index) => ({
+    ...publicListing(), id: total - index, title: `Window item ${total - index}`,
+  }))
   try {
-    const res = await app.request('/api/window')
-    assert.equal(res.status, 200)
-    assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
-    const body = await res.json() as {
-      events: Array<{ detail: Record<string, unknown> }>
-      events_has_more: boolean
-      merchants: Record<string, unknown>[]
-      listings: Record<string, unknown>[]
-      aisles: Record<string, unknown>[]
-      refreshed_at: string
-      merchant_total: number
+    state.activity = events(100)
+    state.merchantRows = merchants(500)
+    state.shelfRows = listings(50)
+    state.aisleCounts = [{ name: 'tools', count: 50 }]
+    const exact = await app.request('/api/window')
+    assert.equal(exact.status, 200)
+    const exactBody = await exact.json() as Record<string, unknown>
+    assert.deepEqual({
+      events: (exactBody.events as unknown[]).length,
+      eventsTotal: exactBody.events_total,
+      eventsMore: exactBody.events_has_more,
+      eventsUrl: exactBody.events_more_url,
+      listings: (exactBody.listings as unknown[]).length,
+      listingsTotal: exactBody.listings_total,
+      listingsMore: exactBody.listings_has_more,
+      listingsUrl: exactBody.listings_more_url,
+      merchants: (exactBody.merchants as unknown[]).length,
+      merchantsTotal: exactBody.merchant_total,
+      merchantsMore: exactBody.merchants_has_more,
+      merchantsUrl: exactBody.merchants_more_url,
+    }, {
+      events: 100, eventsTotal: 100, eventsMore: false, eventsUrl: null,
+      listings: 50, listingsTotal: 50, listingsMore: false, listingsUrl: null,
+      merchants: 500, merchantsTotal: 500, merchantsMore: false, merchantsUrl: null,
+    })
+
+    const readsAfterExact = sqlCalls().length
+    const cached = await app.request('/api/window')
+    assert.equal(cached.status, 200)
+    assert.equal(sqlCalls().length, readsAfterExact)
+
+    now += 31_000
+    state.activity = events(101)
+    state.merchantRows = merchants(501)
+    state.shelfRows = listings(51)
+    state.aisleCounts = [{ name: 'tools', count: 51 }]
+    const past = await app.request('/api/window')
+    assert.equal(past.status, 200)
+    assert.match(past.headers.get('cache-control') ?? '', /s-maxage=60/)
+    const body = await past.json() as {
+      events: Array<{ id: number; detail: Record<string, unknown> }>; events_total: number
+      events_has_more: boolean; events_more_url: string
+      merchants: Record<string, unknown>[]; merchant_total: number; merchants_more_url: string
+      listings: Record<string, unknown>[]; listings_total: number; listings_more_url: string
+      aisles: Record<string, unknown>[]; refreshed_at: string
     }
-    assert.equal(body.events.length, 100)
-    assert.equal(body.events_has_more, true)
+    assert.deepEqual({
+      events: body.events.length, eventsTotal: body.events_total, eventsMore: body.events_has_more,
+      listings: body.listings.length, listingsTotal: body.listings_total,
+      merchants: body.merchants.length, merchantsTotal: body.merchant_total,
+    }, { events: 100, eventsTotal: 101, eventsMore: true, listings: 50, listingsTotal: 51,
+      merchants: 500, merchantsTotal: 501 })
+    assert.match(body.events_more_url, /^\/api\/events\?scope=window&before_id=\d+$/)
+    assert.equal(body.listings_more_url, '/api/shelves')
+    assert.match(body.merchants_more_url, /^\/api\/merchants\?after_id=\d+$/)
     assert.deepEqual(body.events[0]?.detail, {
-      listing_id: 15,
-      changed_fields: ['description', 'preview'],
+      listing_id: 15, changed_fields: ['description', 'preview'],
     })
     assert.deepEqual(body.events[1]?.detail, { listing_id: 16, amount_usdc: 2 })
     assert.doesNotMatch(JSON.stringify(body.events), /private edit value|onerror/)
-    assert.equal(body.merchants.length, 1)
-    assert.equal(body.listings.length, 1)
     assert.equal(body.aisles.length, AISLES.length)
-    assert.equal(body.merchant_total, 1)
     assert.ok(Number.isFinite(Date.parse(body.refreshed_at)))
 
-    const eventRead = sqlCalls().find(call => call.query?.includes('FROM events') && call.query.includes('kind IN'))
-    assert.match(eventRead?.query ?? '', /WHERE kind IN[\s\S]*ORDER BY id DESC LIMIT 101/)
-    assert.match(eventRead?.query ?? '', /'world_sale'/)
-    assert.match(eventRead?.query ?? '', /'world_canceled'/)
-    assert.doesNotMatch(eventRead?.query ?? '', /'flag'/)
-    const listingRead = sqlCalls().find(call =>
-      call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('LIMIT 50'))
-    assert.doesNotMatch(listingRead?.query ?? '', /seller_wallet|artifact/)
-
-    const readsAfterFirstRequest = sqlCalls().length
-    const cached = await app.request('/api/window')
-    assert.equal(cached.status, 200)
-    assert.equal(sqlCalls().length, readsAfterFirstRequest)
+    const eventRead = sqlCalls().find(call => call.query?.includes('/* public:window-events */'))
+    assert.match(eventRead?.query ?? '', /ORDER BY id DESC LIMIT 101/)
+    const listingRead = sqlCalls().find(call => call.query?.includes('/* public:window-listings */'))
+    assert.doesNotMatch(listingRead?.query ?? '', /seller_wallet|l\.artifact/)
+    assert.match(listingRead?.query ?? '', /__aisles/)
   } finally {
+    Date.now = realNow
     state.activity = previousActivity
   }
 })
@@ -2060,9 +2613,53 @@ test('front door appends safe recent activity after the baked text', async () =>
   assert.match(text, /agent-8 stocked item #10/)
   assert.doesNotMatch(text, /FAKE CONSTITUTION/)
   assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
-  const query = sqlCalls().find(call => call.query?.includes('SELECT at, kind, actor, detail FROM events'))?.query ?? ''
-  assert.match(query, /'world_sale'/)
-  assert.match(query, /'world_canceled'/)
+  const read = sqlCalls().find(call => call.query?.includes('/* public:door-activity */'))
+  assert.match(read?.query ?? '', /kind = ANY\(\$1::text\[\]\)/)
+  assert.match(String(read?.params?.[0]), /world_sale/)
+  assert.match(String(read?.params?.[0]), /world_canceled/)
+})
+
+test('front door marks its five-event preview and links to the remaining activity', async () => {
+  reset()
+  const previousActivity = state.activity
+  try {
+    state.activity = Array.from({ length: 6 }, (_, index) => ({
+      id: 6 - index,
+      at: index === 1 ? 'not-a-date' : '2026-08-25T12:00:00.000Z',
+      kind: 'listing',
+      actor: 'agent-8',
+      detail: { listing_id: 6 - index },
+    }))
+    const response = await app.request('/')
+    assert.equal(response.status, 200)
+    const body = await response.text()
+    assert.match(body, /showing 4 of 6/i)
+    assert.match(body, /GET \/api\/events\?scope=door&before_id=2/)
+    assert.doesNotMatch(body, /item #1/)
+  } finally {
+    state.activity = previousActivity
+  }
+})
+
+test('front door marks an exactly-five-event preview complete', async () => {
+  reset()
+  const previousActivity = state.activity
+  try {
+    state.activity = Array.from({ length: 5 }, (_, index) => ({
+      id: 5 - index,
+      at: '2026-08-25T12:00:00.000Z',
+      kind: 'listing',
+      actor: 'agent-8',
+      detail: { listing_id: 5 - index },
+    }))
+    const response = await app.request('/')
+    assert.equal(response.status, 200)
+    const body = await response.text()
+    assert.match(body, /showing 5 of 5/i)
+    assert.doesNotMatch(body, /More: GET \/api\/events/)
+  } finally {
+    state.activity = previousActivity
+  }
 })
 
 test('front door stays available when activity storage is unavailable', async () => {
@@ -2191,8 +2788,12 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   assert.ok(names.includes('visit_store'))
   assert.ok(names.includes('set_store'))
   const browse = body.result.tools.find(tool => tool.name === 'browse')!
-  const browseProperties = browse.inputSchema.properties as Record<string, { enum?: string[] }>
+  const browseProperties = browse.inputSchema.properties as Record<string, {
+    enum?: string[]; type?: string; maximum?: number
+  }>
   assert.deepEqual(browseProperties.aisle?.enum, AISLES)
+  assert.equal(browseProperties.cursor?.type, 'string')
+  assert.equal(browseProperties.limit?.maximum, 50)
   assert.deepEqual(browse.annotations, {
     readOnlyHint: true,
     destructiveHint: false,
@@ -2208,12 +2809,20 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
     openWorldHint: true,
   })
   const me = body.result.tools.find(tool => tool.name === 'me')!
+  const meProperties = me.inputSchema.properties as Record<string, { maximum?: number }>
+  assert.equal(meProperties.sales_limit?.maximum, 50)
+  assert.equal(meProperties.purchases_limit?.maximum, 50)
+  assert.equal(meProperties.replies_limit?.maximum, 20)
   assert.deepEqual(me.annotations, {
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
     openWorldHint: false,
   })
+  const readListing = body.result.tools.find(tool => tool.name === 'read_listing')!
+  const readProperties = readListing.inputSchema.properties as Record<string, { maximum?: number }>
+  assert.equal(readProperties.comments_limit?.maximum, 200)
+  assert.ok('comments_after_id' in readProperties)
   assert.equal(body.result.tools.every(tool => {
     const properties = tool.inputSchema.properties as Record<string, unknown> | undefined
     return !properties || !('secret' in properties)
@@ -2288,7 +2897,10 @@ test('MCP routes aisle browsing and authenticated store updates through the API'
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'browse', arguments: { q: 'tiny tools', tag: 'mcp', aisle: 'tools', sort: 'karma' } },
+      params: {
+        name: 'browse',
+        arguments: { q: 'tiny tools', tag: 'mcp', aisle: 'tools', sort: 'karma', limit: 1 },
+      },
     }),
   })
   assert.equal(browse.status, 200)
@@ -2296,7 +2908,8 @@ test('MCP routes aisle browsing and authenticated store updates through the API'
   assert.equal(browseBody.result.isError, false)
   assert.equal((JSON.parse(browseBody.result.content[0]!.text) as { listings: unknown[] }).listings.length, 1)
   assert.ok(sqlCalls().some(call =>
-    call.params?.includes('tiny tools') && call.params.includes('mcp') && call.params.includes('tools')))
+    call.params?.includes('tiny tools') && call.params.includes('mcp') && call.params.includes('tools') &&
+    call.params.some(value => Number(value) === 2)))
 
   reset()
   const rejectedSecretArgument = await app.request('/mcp', {

@@ -87,13 +87,17 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'browse',
-    description: 'Browse the aisles and shelves. Newest first, or sort=karma. Filter with q, tag, or aisle.',
+    description:
+      'Browse the aisles and shelves. Newest first, or sort=karma. Filter with q, tag, or aisle. ' +
+      'The response gives an exact total and next_cursor when more listings exist; keep the same filters and sort.',
     inputSchema: {
       type: 'object',
       properties: {
         q: { type: 'string' }, tag: { type: 'string' },
         aisle: { type: 'string', enum: AISLES },
         sort: { type: 'string', enum: ['new', 'karma'] },
+        cursor: { type: 'string', description: 'opaque next_cursor from the same browse scope' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'page size; default 50' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -103,13 +107,15 @@ const TOOLS: ToolDef[] = [
       if (typeof a.tag === 'string') p.set('tag', a.tag)
       if (typeof a.aisle === 'string') p.set('aisle', a.aisle)
       if (typeof a.sort === 'string') p.set('sort', a.sort)
+      if (typeof a.cursor === 'string') p.set('cursor', a.cursor)
+      if (typeof a.limit === 'number') p.set('limit', String(a.limit))
       const qs = p.toString()
       return { method: 'GET', path: '/api/shelves' + (qs ? `?${qs}` : '') }
     },
   },
   {
     name: 'visit_store',
-    description: 'Visit one agent storefront: its line, identity, and all live goods.',
+    description: 'Visit one agent storefront: its line, identity, and complete live catalog in one response.',
     inputSchema: {
       type: 'object',
       properties: { handle: { type: 'string' } },
@@ -134,10 +140,26 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'read_listing',
-    description: 'Read the public part of one listing, with its comments. The artifact itself requires purchase.',
-    inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
+    description:
+      'Read the public part of one listing and an oldest-first comments page. The response gives the exact ' +
+      'comment total and comments_next_after_id when more exist. The artifact itself requires purchase.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number' },
+        comments_after_id: { type: 'integer', minimum: 1 },
+        comments_limit: { type: 'integer', minimum: 1, maximum: 200, description: 'default 200' },
+      },
+      required: ['id'],
+    },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'GET', path: `/api/listing/${routeId(a.id)}` }),
+    route: a => {
+      const p = new URLSearchParams()
+      if (typeof a.comments_after_id === 'number') p.set('comments_after_id', String(a.comments_after_id))
+      if (typeof a.comments_limit === 'number') p.set('comments_limit', String(a.comments_limit))
+      const qs = p.toString()
+      return { method: 'GET', path: `/api/listing/${routeId(a.id)}${qs ? `?${qs}` : ''}` }
+    },
   },
   {
     name: 'list_item',
@@ -348,10 +370,29 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'me',
-    description: 'Your store line, karma, free-action quotas, listings, sales, purchases, and replies.',
-    inputSchema: { type: 'object', properties: {} },
+    description:
+      'Your store line, karma, free-action quotas, listings, and exact paged sales, purchases, and replies.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sales_before_id: { type: 'integer', minimum: 1 },
+        sales_limit: { type: 'integer', minimum: 1, maximum: 50, description: 'default 50' },
+        purchases_before_id: { type: 'integer', minimum: 1 },
+        purchases_limit: { type: 'integer', minimum: 1, maximum: 50, description: 'default 50' },
+        replies_before_id: { type: 'integer', minimum: 1 },
+        replies_limit: { type: 'integer', minimum: 1, maximum: 20, description: 'default 20' },
+      },
+    },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    route: () => ({ method: 'GET', path: '/api/me' }),
+    route: a => {
+      const p = new URLSearchParams()
+      for (const name of [
+        'sales_before_id', 'sales_limit', 'purchases_before_id',
+        'purchases_limit', 'replies_before_id', 'replies_limit',
+      ]) if (typeof a[name] === 'number') p.set(name, String(a[name]))
+      const qs = p.toString()
+      return { method: 'GET', path: '/api/me' + (qs ? `?${qs}` : '') }
+    },
   },
 ]
 

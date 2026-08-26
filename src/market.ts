@@ -16,12 +16,46 @@ export const AISLES = [
 
 export type Aisle = typeof AISLES[number]
 
+const DOOR_EVENT_KINDS = [
+  'register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled',
+] as const
+
+export const PUBLIC_EVENT_SCOPES = {
+  door: DOOR_EVENT_KINDS,
+  window: [
+    ...DOOR_EVENT_KINDS, 'listing_edit', 'withdrawal', 'moderation',
+  ],
+} as const
+
+export type PublicEventScope = keyof typeof PUBLIC_EVENT_SCOPES
+
 export const EDITABLE_LISTING_FIELDS = [
   'title', 'description', 'preview', 'artifact', 'tags', 'aisle',
 ] as const
 
 export function isAisle(value: string): value is Aisle {
   return (AISLES as readonly string[]).includes(value)
+}
+
+export function parseAisleCounts(value: unknown): Map<Aisle, number> {
+  let rows: unknown
+  try {
+    rows = typeof value === 'string' ? JSON.parse(value) : value
+  } catch {
+    throw new Error('aisle counts are inconsistent')
+  }
+  if (!Array.isArray(rows)) throw new Error('aisle counts are inconsistent')
+  const counts = new Map<Aisle, number>()
+  for (const value of rows) {
+    if (!value || typeof value !== 'object') throw new Error('aisle counts are inconsistent')
+    const row = value as Record<string, unknown>
+    const name = String(row.name ?? '')
+    const count = Number(row.count)
+    if (!isAisle(name) || !Number.isSafeInteger(count) || count < 0 || counts.has(name))
+      throw new Error('aisle counts are inconsistent')
+    counts.set(name, count)
+  }
+  return counts
 }
 
 export function suggestAisle(tags: string[]): Aisle {
@@ -61,6 +95,13 @@ export interface ActivityEvent {
   detail: unknown
 }
 
+export interface ActivityPreview {
+  total: number
+  hasMore: boolean
+  nextBeforeId: number | null
+  scope: PublicEventScope
+}
+
 function safeListingId(detail: unknown): number | null {
   if (!detail || typeof detail !== 'object') return null
   const id = Number((detail as Record<string, unknown>).listing_id)
@@ -85,11 +126,14 @@ function activityLine(event: ActivityEvent): string | null {
   return null
 }
 
-export function formatActivity(events: ActivityEvent[]): string {
+export function formatActivity(events: ActivityEvent[], preview?: ActivityPreview): string {
   const lines = events.map(activityLine).filter((line): line is string => Boolean(line)).slice(0, 5)
   return [
-    'RECENT ACTIVITY',
+    preview ? `RECENT ACTIVITY — showing ${lines.length} of ${preview.total}` : 'RECENT ACTIVITY',
     '---------------',
     ...(lines.length ? lines.map(line => `- ${line}`) : ['- The aisles are quiet.']),
+    ...(preview?.hasMore && preview.nextBeforeId
+      ? [`More: GET /api/events?scope=${preview.scope}&before_id=${preview.nextBeforeId}`]
+      : []),
   ].join('\n')
 }

@@ -40,6 +40,15 @@ test('every market discovery surface tells the same family and world-delivery tr
     assert.match(value, /payment.invalid/iu, `${name}: invalid payment`)
     assert.match(value, /(?:without|must not|do not) pay(?:ing)? again/iu, `${name}: no second payment`)
   }
+
+  for (const [name, value] of surfaces.slice(0, 4)) {
+    assert.match(value, /exact total/iu, `${name}: bounded collection total`)
+    assert.match(value, /\/api\/window/iu, `${name}: human window completeness`)
+  }
+  for (const [name, value] of surfaces.slice(0, 3)) {
+    assert.match(value, /scope=door/iu, `${name}: front-door activity scope`)
+    assert.match(value, /scope=window/iu, `${name}: window activity scope`)
+  }
 })
 
 test('official facts and MCP advertise the city bridge and all world tools', async () => {
@@ -53,6 +62,13 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
   assert.match(directFacts, /signed payer/i)
   assert.match(directFacts, /Base USDC/i)
   assert.match(directFacts, /one fee or one purchase/i)
+  const paginationFacts = JSON.stringify(facts.public_pagination)
+  assert.match(paginationFacts, /exact total/i)
+  assert.match(paginationFacts, /next_cursor/i)
+  assert.match(paginationFacts, /comments_next_after_id/i)
+  assert.match(paginationFacts, /next_before_id/i)
+  assert.match(paginationFacts, /scope=door\|window/i)
+  assert.match(paginationFacts, /\/api\/window/i)
 
   const initialized = await app.request('/mcp', {
     method: 'POST',

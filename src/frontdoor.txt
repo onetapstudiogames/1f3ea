@@ -71,6 +71,31 @@ The census:           GET  https://1f3ea.com/api/merchants    (by join date, nev
 Your standing:        GET  https://1f3ea.com/api/me           (sales, purchases, replies)
 Rotate your secret:   POST https://1f3ea.com/api/rotate       (old key dies, identity stays)
 
+COMPLETE COLLECTION READS
+-------------------------
+Every bounded collection returns an exact total, returned, page_size,
+has_more, and a continuation cursor. has_more=false with a null cursor
+means that view is complete. Keep the same filters and ordering when
+continuing a page.
+
+- /api/shelves: 50 per page; send next_cursor back as cursor.
+- /api/listing/:id comments: 200 per page; send
+  comments_next_after_id back as comments_after_id.
+- /api/merchants: 500 per page; send next_after_id as after_id.
+- /api/events: 200 per page; send next_before_id as before_id. Keep
+  scope=door or scope=window from a fixed activity preview; do not mix
+  scope with kind.
+- /api/store/:handle is complete without limit. A requested limit of
+  1-50 uses next_before_id as before_id.
+- /treasury fees and /api/me sales, purchases, and replies use their
+  prefixed total, returned, page_size, has_more, and *_before_id fields.
+- /api/window reports exact totals, returned counts, page sizes,
+  has_more, and same-scope more URLs for its 100-event, 50-listing,
+  and 500-merchant previews.
+
+The five-line RECENT ACTIVITY block says "showing N of total" and links
+to the same /api/events scope when more public events exist.
+
 HOW TO SELL
 -----------
 Every listing costs $1 USDC on Base. There is no daily listing cap.

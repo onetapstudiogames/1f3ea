@@ -28,43 +28,48 @@ function deferred<T>() {
 }
 
 function snapshot(overrides: Record<string, unknown> = {}) {
-  return {
+  const payload = {
     events: [
       {
+        id: 15,
         kind: 'listing_edit', actor: 'safe-store', at: '2026-08-10T10:00:04Z',
         detail: { listing_id: 15, changed_fields: ['description', 'preview'] },
       },
       {
+        id: 14,
         kind: 'world_canceled', actor: 'other-store', at: '2026-08-10T10:00:03.500Z',
         detail: { listing_id: 14 },
       },
       {
+        id: 13,
         kind: 'listing_edit', actor: 'safe-store', at: '2026-08-10T10:00:03Z',
         detail: { listing_id: 15, changed_fields: ['description', 'preview'] },
       },
       {
+        id: 12,
         kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:02Z',
         detail: { listing_id: 10 },
       },
       {
+        id: 11,
         kind: 'world_sale', actor: 'safe-store', at: '2026-08-10T10:00:01Z',
         detail: { listing_id: 12, amount_usdc: 2 },
       },
       {
+        id: 10,
         kind: 'world_canceled', actor: 'safe-store', at: '2026-08-10T10:00:00Z',
         detail: { listing_id: 13 },
       },
     ],
-    events_has_more: false,
     merchants: [
-      { handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 2 },
+      { id: 1, handle: 'safe-store', line: LONG_STOREFRONT, model: 'test-model', listings: 2 },
     ],
     merchant_total: 1,
     aisles: aisleVector({ tools: 2 }),
     listings: [
       {
         id: 10, merchant: 'safe-store', title: 'Long listing',
-        description: 'Open the complete focused read', preview: 'public',
+        description: LONG_DESCRIPTION, preview: 'public',
         price_usdc: 0, sales: 1, votes: 2, tags: ['safe'], aisle: 'tools',
       },
       {
@@ -75,6 +80,39 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     ],
     refreshed_at: '2026-08-10T10:00:00Z',
     ...overrides,
+  }
+  const events = payload.events as Array<{ id?: unknown }>
+  const merchants = payload.merchants as Array<{ id?: unknown }>
+  const listings = payload.listings as unknown[]
+  const aisles = payload.aisles as Array<{ count?: unknown }>
+  const eventsTotal = Number(overrides.events_total ?? events.length)
+  const listingsTotal = Number(overrides.listings_total ?? aisles.reduce(
+    (sum, row) => sum + (Number.isSafeInteger(row.count) ? Number(row.count) : 0), 0,
+  ))
+  const merchantTotal = Number(payload.merchant_total)
+  const eventsHaveMore = eventsTotal > events.length
+  const listingsHaveMore = listingsTotal > listings.length
+  const merchantsHaveMore = merchantTotal > merchants.length
+  return {
+    ...payload,
+    events_total: eventsTotal,
+    events_returned: events.length,
+    events_page_size: 100,
+    events_has_more: eventsHaveMore,
+    events_more_url: eventsHaveMore
+      ? `/api/events?scope=window&before_id=${String(events.at(-1)?.id)}`
+      : null,
+    listings_total: listingsTotal,
+    listings_returned: listings.length,
+    listings_page_size: 50,
+    listings_has_more: listingsHaveMore,
+    listings_more_url: listingsHaveMore ? '/api/shelves' : null,
+    merchants_returned: merchants.length,
+    merchants_page_size: 500,
+    merchants_has_more: merchantsHaveMore,
+    merchants_more_url: merchantsHaveMore
+      ? `/api/merchants?after_id=${String(merchants.at(-1)?.id)}`
+      : null,
   }
 }
 
@@ -122,6 +160,15 @@ async function expectWindowFits(page: Page, projectName: string) {
     "matchMedia('(prefers-color-scheme: " + scheme + ")').matches",
   ) as boolean
   expect(preferred).toBe(true)
+  const headlineContained = await page.locator('.activity-label').evaluate(label => {
+    const heading = label.querySelector('h1')
+    if (!heading) return false
+    const labelBounds = label.getBoundingClientRect()
+    const headingBounds = heading.getBoundingClientRect()
+    return heading.scrollWidth <= heading.clientWidth &&
+      headingBounds.left >= labelBounds.left && headingBounds.right <= labelBounds.right
+  })
+  expect(headlineContained).toBe(true)
 }
 
 test('focused reads keep counts and complete text with the source that supplied the rows', async (
@@ -143,10 +190,15 @@ test('focused reads keep counts and complete text with the source that supplied 
             created_at: '2026-08-10T10:00:00Z',
           },
           comments: [],
+          comments_total: 0,
+          comments_returned: 0,
+          comments_page_size: 200,
+          comments_has_more: false,
+          comments_next_after_id: null,
         },
       }
     }
-    if (key === '/api/store/safe-store?limit=50') {
+    if (key === '/api/store/safe-store') {
       return {
         body: {
           store: {
@@ -157,6 +209,11 @@ test('focused reads keep counts and complete text with the source that supplied 
             { id: 10, title: 'Long listing', price_usdc: 0 },
             { id: 9, title: 'Older listing', price_usdc: 1 },
           ],
+          total: 2,
+          returned: 2,
+          page_size: 2,
+          has_more: false,
+          next_before_id: null,
         },
       }
     }
@@ -171,6 +228,11 @@ test('focused reads keep counts and complete text with the source that supplied 
               sales: 0, votes: 0, tags: ['safe'], aisle: 'tools',
             },
           ],
+          total: 1,
+          returned: 1,
+          page_size: 50,
+          has_more: false,
+          next_cursor: null,
         },
       }
     }
@@ -179,6 +241,20 @@ test('focused reads keep counts and complete text with the source that supplied 
 
   await page.goto(ORIGIN + '/window')
   await expect(page.locator('#window-status')).toContainText('Lights on')
+  const listingExcerpt = page.getByRole('button', { name: 'Long listing, item #10' })
+    .locator('.listing-row__description')
+  const listingMarker = listingExcerpt.locator('.excerpt-marker')
+  await expect(listingMarker).toBeVisible()
+  await expect(listingMarker).toHaveText('EXCERPT')
+  expect(await listingExcerpt.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+  const storefrontExcerpt = page.getByRole('button', { name: 'Look into safe-store store' })
+    .locator('.merchant-row__line')
+  const storefrontMarker = storefrontExcerpt.locator('.excerpt-marker')
+  await expect(storefrontMarker).toBeVisible()
+  await expect(storefrontMarker).toHaveText('EXCERPT')
+  await expect(storefrontExcerpt).toHaveCSS('-webkit-line-clamp', '2')
+  const storefrontClipped = await storefrontExcerpt.evaluate(element => element.scrollHeight > element.clientHeight)
+  if (!testInfo.project.name.startsWith('tablet-')) expect(storefrontClipped).toBe(true)
   await expect(page.locator('#activity-list')).toContainText(/updated description, preview on item #15/i)
   await expect(page.locator('#activity-list')).toContainText(/sold city ownership for item #12[^.]*2 USDC/i)
   await expect(page.locator('#activity-list')).not.toContainText('×2')
@@ -190,12 +266,14 @@ test('focused reads keep counts and complete text with the source that supplied 
 
   await page.getByRole('button', { name: 'Long listing, item #10' }).click()
   await expect(page.locator('#listing-detail')).toContainText('END-OF-DESCRIPTION')
+  await expect(page.locator('#listing-detail')).not.toContainText(/\bEXCERPT\b/)
   expect(requests.get('/api/listing/10')).toBe(1)
   await page.getByRole('button', { name: 'Close item details' }).click()
 
   await page.getByRole('button', { name: 'Look into safe-store store' }).click()
   await expect(page.locator('#listing-detail')).toContainText('END-OF-STOREFRONT')
-  expect(requests.get('/api/store/safe-store?limit=50')).toBe(1)
+  await expect(page.locator('#listing-detail')).not.toContainText(/\bEXCERPT\b/)
+  expect(requests.get('/api/store/safe-store')).toBe(1)
   await page.getByRole('button', { name: 'Close item details' }).click()
   await expect(page.getByRole('button', { name: /show more|read more/i })).toHaveCount(0)
 
@@ -243,10 +321,15 @@ test('focused item and store reads distinguish loading, not found, failure, and 
             state: 'live', created_at: '2026-08-10T10:00:00Z',
           },
           comments: [],
+          comments_total: 0,
+          comments_returned: 0,
+          comments_page_size: 200,
+          comments_has_more: false,
+          comments_next_after_id: null,
         },
       }
     }
-    if (key === '/api/store/safe-store?limit=50') {
+    if (key === '/api/store/safe-store') {
       storeReads += 1
       if (storeReads === 1) return heldStore404.promise
       if (storeReads === 2) {
@@ -264,6 +347,11 @@ test('focused item and store reads distinguish loading, not found, failure, and 
             model: 'test-model', joined_at: '2026-08-01T10:00:00Z', listings: 1,
           },
           listings: [{ id: 10, title: 'Recovered listing', price_usdc: 0 }],
+          total: 1,
+          returned: 1,
+          page_size: 1,
+          has_more: false,
+          next_before_id: null,
         },
       }
     }
@@ -332,7 +420,7 @@ test('bounded API causes survive every HTTP failure view as inert text', async (
     }
     if (key === '/api/shelves?aisle=tools') return { status: 503, body: { error: causes.aisle } }
     if (key === '/api/listing/10') return { status: 503, body: { error: causes.listing } }
-    if (key === '/api/store/safe-store?limit=50') return { status: 503, body: { error: causes.store } }
+    if (key === '/api/store/safe-store') return { status: 503, body: { error: causes.store } }
     return null
   })
 
@@ -380,6 +468,11 @@ test('background failure survives focused settlement and invalid focused bundles
         body: {
           aisles: aisleVector({ tools: 1, services: 1 }),
           listings: [],
+          total: 1,
+          returned: 0,
+          page_size: 50,
+          has_more: true,
+          next_cursor: null,
         },
       }
     }
@@ -402,6 +495,11 @@ test('background failure survives focused settlement and invalid focused bundles
         id: 8, merchant: 'safe-store', title: 'Focused aisle item', description: '',
         price_usdc: 0, sales: 0, votes: 0, tags: [], aisle: 'tools',
       }],
+      total: 1,
+      returned: 1,
+      page_size: 50,
+      has_more: false,
+      next_cursor: null,
     },
   })
   await expect(page.locator('#listing-list')).toContainText('Focused aisle item')
@@ -472,13 +570,15 @@ test('filter empties name only bounds that can hide another matching record', as
   const unexpected = await serveWindow(page, url => url.pathname === '/api/window'
     ? {
         body: snapshot({
-          events: [{
+          events: Array.from({ length: 100 }, (_, index) => ({
+            id: 101 - index,
             kind: 'listing', actor: 'safe-store', at: '2026-08-10T10:00:00Z',
-            detail: { listing_id: 10 },
-          }],
-          events_has_more: true,
+            detail: { listing_id: 101 - index },
+          })),
+          events_total: 101,
           merchants: Array.from({ length: 500 }, (_, index) => ({
-            handle: `store-${index + 1}`, line: 'Patient tools', model: 'test-model', listings: 1,
+            id: index + 1, handle: `store-${index + 1}`,
+            line: 'Patient tools', model: 'test-model', listings: 1,
           })),
           merchant_total: 501,
           aisles: aisleVector({ tools: 51 }),
@@ -497,6 +597,7 @@ test('filter empties name only bounds that can hide another matching record', as
   await expect(page.locator('#activity-list')).toContainText(/bounded|newest 100/i)
   await expect(page.locator('#listing-list')).toContainText(/bounded|newest 50/i)
   await expect(page.locator('#merchant-list')).toContainText(/bounded|first 500/i)
+  await expect(page.locator('#merchant-list a[href="/api/merchants"]')).toBeVisible()
   for (const selector of ['#activity-list', '#listing-list', '#merchant-list'])
     await expect(page.locator(selector).getByRole('button', { name: 'Try again' })).toHaveCount(0)
   await expect(page.locator('#clear-filter')).toBeVisible()

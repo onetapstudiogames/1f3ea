@@ -1,6 +1,8 @@
 import type { Context } from 'hono'
 import { sql } from './db.ts'
-import { AISLES, EDITABLE_LISTING_FIELDS } from './market.ts'
+import {
+  AISLES, EDITABLE_LISTING_FIELDS, parseAisleCounts, PUBLIC_EVENT_SCOPES,
+} from './market.ts'
 import { WINDOW_JS } from './window-client.ts'
 import { WINDOW_HTML } from './window-page.ts'
 import { WINDOW_CSS } from './window-style.ts'
@@ -39,9 +41,15 @@ const WINDOW_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.pr
   (l.delivery_kind = 'city_ownership') AS requires_city_resident,
   l.created_at, 'live'::text AS state`
 
+const WINDOW_EVENT_PAGE_SIZE = 100
+const WINDOW_LISTING_PAGE_SIZE = 50
+const WINDOW_MERCHANT_PAGE_SIZE = 500
+
 function publicWindowEvent(value: unknown) {
   if (!value || typeof value !== 'object') return null
   const row = value as Record<string, unknown>
+  const id = Number(row.id)
+  if (!Number.isSafeInteger(id) || id <= 0) return null
   const detail = row.detail && typeof row.detail === 'object'
     ? row.detail as Record<string, unknown>
     : {}
@@ -61,7 +69,7 @@ function publicWindowEvent(value: unknown) {
     if (changedFields.length) safeDetail.changed_fields = changedFields
   }
   return {
-    id: row.id,
+    id,
     at: row.at,
     kind: row.kind,
     actor: row.actor,
@@ -70,44 +78,100 @@ function publicWindowEvent(value: unknown) {
 }
 
 async function readWindowSnapshot() {
-  const [events, merchants, listings, countRows] = await Promise.all([
+  const [events, merchants, listings] = await Promise.all([
     sql.query(
-      `SELECT id, at, kind, actor, detail FROM events
-       WHERE kind IN ('register','listing','maintainer_seed','sale','world_sale','world_canceled','listing_edit','withdrawal','moderation')
-       ORDER BY id DESC LIMIT 101`,
+      `/* public:window-events */
+       SELECT id, at, kind, actor, detail, count(*) OVER()::int AS total_events FROM events
+       WHERE kind = ANY($1::text[])
+       ORDER BY id DESC LIMIT ${WINDOW_EVENT_PAGE_SIZE + 1}`,
+      [[...PUBLIC_EVENT_SCOPES.window]],
     ),
     sql`
-      SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
+      /* public:window-merchants */
+      SELECT m.id, m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
         count(l.id)::int AS listings, count(*) OVER()::int AS total_merchants
       FROM merchants m LEFT JOIN listings l
         ON l.merchant_id = m.id AND NOT l.removed AND NOT l.withdrawn
-          AND (l.world_state IS NULL OR l.world_state = 'active')
-      GROUP BY m.id ORDER BY m.joined_at ASC LIMIT 500`,
+          AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
+      GROUP BY m.id ORDER BY m.joined_at ASC, m.id ASC LIMIT ${WINDOW_MERCHANT_PAGE_SIZE}`,
     sql.query(
-      `SELECT ${WINDOW_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
-       WHERE NOT l.removed AND NOT l.withdrawn
-         AND (l.world_state IS NULL OR l.world_state = 'active')
-       ORDER BY l.pinned DESC, l.created_at DESC LIMIT 50`,
+      `/* public:window-listings */
+       WITH active AS (
+         SELECT ${WINDOW_LISTING} FROM listings l JOIN merchants m ON m.id = l.merchant_id
+         WHERE NOT l.removed AND NOT l.withdrawn
+           AND (l.delivery_kind = 'artifact' OR l.world_state = 'active')
+       ), active_counts AS (
+         SELECT aisle, count(*)::int AS count FROM active GROUP BY aisle
+       ), aisle_counts AS (
+         SELECT coalesce(
+           jsonb_agg(jsonb_build_object('name', aisle, 'count', count) ORDER BY aisle),
+           '[]'::jsonb
+         )::text AS __aisles FROM active_counts
+       ), totals AS (
+         SELECT count(*)::int AS __total FROM active
+       ), page AS (
+         SELECT * FROM active
+         ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ${WINDOW_LISTING_PAGE_SIZE}
+       )
+       SELECT page.*, totals.__total, aisle_counts.__aisles
+       FROM totals CROSS JOIN aisle_counts LEFT JOIN page ON TRUE
+       ORDER BY page.pinned DESC, page.created_at DESC, page.id DESC`,
     ),
-    sql`SELECT aisle, count(*)::int AS count
-        FROM listings WHERE NOT removed AND NOT withdrawn
-          AND (world_state IS NULL OR world_state = 'active') GROUP BY aisle`,
   ])
-  const counts = new Map(
-    (countRows as { aisle: string; count: number }[]).map(row => [row.aisle, Number(row.count)]),
-  )
   const merchantRows = merchants as Record<string, unknown>[]
-  const merchantTotal = Number(merchantRows[0]?.total_merchants ?? merchantRows.length)
+  const merchantTotal = merchantRows.length ? Number(merchantRows[0]?.total_merchants) : 0
+  if (!Number.isSafeInteger(merchantTotal) || merchantTotal < merchantRows.length)
+    throw new Error('window merchant count is inconsistent')
   const publicMerchants = merchantRows.map(({ total_merchants: _total, ...merchant }) => merchant)
-  const eventRows = events as unknown[]
+  const eventRows = events as Record<string, unknown>[]
+  const eventTotal = eventRows.length ? Number(eventRows[0]?.total_events) : 0
+  if (!Number.isSafeInteger(eventTotal) || eventTotal < eventRows.length)
+    throw new Error('window event count is inconsistent')
+  const eventPage = eventRows.slice(0, WINDOW_EVENT_PAGE_SIZE).map(publicWindowEvent)
+  if (eventPage.some(event => event === null)) throw new Error('window event row is inconsistent')
+  const publicEvents = eventPage.filter(event => event !== null)
+  const rawListingRows = listings as Record<string, unknown>[]
+  const listingsTotal = Number(rawListingRows[0]?.__total ?? 0)
+  const counts = parseAisleCounts(rawListingRows[0]?.__aisles)
+  const listingRows = rawListingRows.flatMap(row => {
+    const { __aisles: _aisles, __total: _total, ...listing } = row
+    const id = Number(listing.id)
+    return Number.isSafeInteger(id) && id > 0 ? [listing] : []
+  })
+  if (!Number.isSafeInteger(listingsTotal) || listingsTotal < 0)
+    throw new Error('window listing count is inconsistent')
+  if (listingsTotal < listingRows.length) throw new Error('window listing count is inconsistent')
+  const eventsHaveMore = eventTotal > publicEvents.length
+  const listingsHaveMore = listingsTotal > listingRows.length
+  const merchantsHaveMore = merchantTotal > publicMerchants.length
+  const lastEventId = publicEvents.at(-1)?.id
+  const lastMerchantId = Number(publicMerchants.at(-1)?.id)
+  if (eventsHaveMore && !lastEventId) throw new Error('window event continuation is missing')
+  if (merchantsHaveMore && (!Number.isSafeInteger(lastMerchantId) || lastMerchantId <= 0))
+    throw new Error('window merchant continuation is missing')
   return {
-    events: eventRows.slice(0, 100).map(publicWindowEvent).filter(Boolean),
-    events_has_more: eventRows.length > 100,
+    events: publicEvents,
+    events_total: eventTotal,
+    events_returned: publicEvents.length,
+    events_page_size: WINDOW_EVENT_PAGE_SIZE,
+    events_has_more: eventsHaveMore,
+    events_more_url: eventsHaveMore
+      ? `/api/events?scope=window&before_id=${String(lastEventId)}`
+      : null,
     merchants: publicMerchants,
-    merchant_total: Number.isSafeInteger(merchantTotal) && merchantTotal >= 0
-      ? merchantTotal
-      : publicMerchants.length,
-    listings,
+    merchant_total: merchantTotal,
+    merchants_returned: publicMerchants.length,
+    merchants_page_size: WINDOW_MERCHANT_PAGE_SIZE,
+    merchants_has_more: merchantsHaveMore,
+    merchants_more_url: merchantsHaveMore
+      ? `/api/merchants?after_id=${String(lastMerchantId)}`
+      : null,
+    listings: listingRows,
+    listings_total: listingsTotal,
+    listings_returned: listingRows.length,
+    listings_page_size: WINDOW_LISTING_PAGE_SIZE,
+    listings_has_more: listingsHaveMore,
+    listings_more_url: listingsHaveMore ? '/api/shelves' : null,
     aisles: AISLES.map(name => ({ name, count: counts.get(name) ?? 0 })),
     refreshed_at: new Date().toISOString(),
   }
