@@ -1,3 +1,4 @@
+import { EDITABLE_LISTING_FIELDS } from './market.ts'
 export const WINDOW_JS = String.raw`(() => {
   'use strict'
 
@@ -5,46 +6,25 @@ export const WINDOW_JS = String.raw`(() => {
   const MAX_REFRESH_MS = 300_000
   const REQUEST_TIMEOUT_MS = 10_000
   const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
-  const SAFE_AISLES = new Set([
-    'skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other',
-  ])
-  const SAFE_EVENT_KINDS = new Set([
-    'register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal',
-    'moderation',
-  ])
-
+  const SAFE_AISLES = new Set(['skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other'])
+  const SAFE_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal', 'moderation'])
+  const SAFE_LISTING_STATES = new Set(['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale'])
+  const SAFE_CHANGED_FIELDS = new Set(${JSON.stringify(EDITABLE_LISTING_FIELDS)})
   const state = {
-    events: [],
-    merchants: [],
-    merchantTotal: 0,
-    listings: [],
-    aisleListings: new Map(),
-    aisleCounts: new Map(),
-    aisle: 'all',
-    filter: '',
-    refreshing: false,
-    failures: 0,
-    hasSnapshot: false,
-    pollTimer: 0,
-    detailController: null,
-    aisleController: null,
+    events: [], eventsHaveMore: false, merchants: [], merchantTotal: 0,
+    listings: [], aisleListings: new Map(), snapshotCounts: new Map(), aisleCounts: new Map(),
+    aisle: 'all', aislePhase: 'ready', filter: '',
+    refreshing: false, failures: 0, hasSnapshot: false, snapshotFailed: false,
+    pollTimer: 0, detailController: null, aisleController: null,
   }
-
   const nodes = {
-    status: document.getElementById('window-status'),
-    updated: document.getElementById('updated-at'),
-    counts: document.getElementById('market-counts'),
-    filter: document.getElementById('filter-input'),
-    clearFilter: document.getElementById('clear-filter'),
-    filterNote: document.getElementById('filter-note'),
-    activity: document.getElementById('activity-list'),
-    aisles: document.getElementById('aisle-list'),
-    listings: document.getElementById('listing-list'),
-    merchants: document.getElementById('merchant-list'),
-    dialog: document.getElementById('listing-dialog'),
-    dialogClose: document.getElementById('dialog-close'),
-    detail: document.getElementById('listing-detail'),
-    dialogTitle: document.getElementById('dialog-title'),
+    status: document.getElementById('window-status'), updated: document.getElementById('updated-at'),
+    counts: document.getElementById('market-counts'), filter: document.getElementById('filter-input'),
+    clearFilter: document.getElementById('clear-filter'), filterNote: document.getElementById('filter-note'),
+    activity: document.getElementById('activity-list'), aisles: document.getElementById('aisle-list'),
+    listings: document.getElementById('listing-list'), merchants: document.getElementById('merchant-list'),
+    dialog: document.getElementById('listing-dialog'), dialogClose: document.getElementById('dialog-close'),
+    detail: document.getElementById('listing-detail'), dialogTitle: document.getElementById('dialog-title'),
   }
 
   function element(tag, className, value) {
@@ -53,125 +33,89 @@ export const WINDOW_JS = String.raw`(() => {
     if (value !== undefined && value !== null) node.textContent = String(value)
     return node
   }
-
   function button(className, label, onClick) {
     const node = element('button', className, label)
     node.type = 'button'
     node.addEventListener('click', onClick)
     return node
   }
-
-  function safeText(value, fallback) {
-    return typeof value === 'string' ? value : fallback
-  }
-
-  function safeHandle(value) {
-    if (typeof value !== 'string') return null
-    const handle = value.toLowerCase()
-    return HANDLE_RE.test(handle) ? handle : null
-  }
-
-  function safeId(value) {
-    const id = Number(value)
-    return Number.isSafeInteger(id) && id > 0 ? id : null
-  }
-
-  function safeNumber(value) {
-    const number = Number(value)
-    return Number.isFinite(number) && number >= 0 ? number : 0
-  }
-
+  function safeText(value, fallback) { return typeof value === 'string' ? value : fallback }
+  function safeHandle(value) { const handle = typeof value === 'string' ? value.toLowerCase() : ''; return HANDLE_RE.test(handle) ? handle : null }
+  function safeId(value) { const id = Number(value); return Number.isSafeInteger(id) && id > 0 ? id : null }
+  function safeNumber(value) { const number = Number(value); return Number.isFinite(number) && number >= 0 ? number : 0 }
   function safeDate(value) {
     if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
     const date = new Date(typeof value === 'string' || typeof value === 'number' ? value : NaN)
     return Number.isNaN(date.getTime()) ? null : date
   }
-
   function formatDate(value) {
-    const date = safeDate(value)
-    if (!date) return 'time unknown'
-    return new Intl.DateTimeFormat(undefined, {
-      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-    }).format(date)
+    const date = safeDate(value); if (!date) return 'time unknown'
+    return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date)
   }
-
   function timeNode(value) {
     const date = safeDate(value)
     const node = element('time', 'movement__time', date ? formatDate(date) : 'time unknown')
-    if (date) {
-      node.dateTime = date.toISOString()
-      node.setAttribute('aria-label', date.toLocaleString())
-    }
+    if (date) { node.dateTime = date.toISOString(); node.setAttribute('aria-label', date.toLocaleString()) }
     return node
   }
-
-  function priceLabel(value) {
-    const amount = safeNumber(value)
-    if (amount === 0) return 'FREE'
-    return amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC'
-  }
-
-  function listingPath(id) {
-    const safe = safeId(id)
-    return safe ? '/api/listing/' + String(safe) : null
-  }
-
+  function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
+  function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
   async function getJson(path, signal) {
     const url = new URL(path, window.location.origin)
     if (url.origin !== window.location.origin) throw new Error('cross-origin request refused')
     const response = await fetch(url, {
-      credentials: 'omit',
-      cache: 'default',
-      headers: { Accept: 'application/json' },
-      signal,
+      credentials: 'omit', cache: 'default', headers: { Accept: 'application/json' }, signal,
     })
-    if (!response.ok) throw new Error('request failed with ' + String(response.status))
+    if (!response.ok) {
+      const error = new Error('request failed with ' + String(response.status)); error.status = response.status
+      throw error
+    }
     return response.json()
   }
-
-  function setStatus(message, mode) {
-    if (!nodes.status) return
-    nodes.status.textContent = message
-    nodes.status.dataset.mode = mode || 'quiet'
+  function setStatus(message, mode) { if (nodes.status) { nodes.status.textContent = message; nodes.status.dataset.mode = mode || 'quiet' } }
+  function setStatusFailure(message, retry) {
+    setStatus(message, 'error'); if (nodes.status) nodes.status.append(element('span', '', ' · '), button('text-button', 'Try again', retry))
   }
-
+  function setSnapshotFailureStatus() { setStatusFailure('The latest market read failed · showing the last completed snapshot.', refreshMarket) }
+  function setSettledStatus() {
+    if (state.snapshotFailed) setSnapshotFailureStatus()
+    else if (state.refreshing) setStatus('Checking the street…', 'working')
+    else setStatus('Lights on · watching live', 'live')
+  }
   function setViewParam(kind, value) {
     const url = new URL(window.location.href)
-    url.searchParams.delete('item')
-    url.searchParams.delete('store')
+    url.searchParams.delete('item'); url.searchParams.delete('store')
     if (kind && value) url.searchParams.set(kind, String(value))
     window.history.replaceState(null, '', url)
   }
-
   function showDialog(title) {
     if (!nodes.dialog || !nodes.detail || !nodes.dialogTitle) return false
     nodes.dialogTitle.textContent = title
     if (!nodes.dialog.open) nodes.dialog.showModal()
     return true
   }
-
   function closeDialog() {
     if (state.detailController) state.detailController.abort()
     state.detailController = null
     if (nodes.dialog && nodes.dialog.open) nodes.dialog.close()
     setViewParam(null, null)
   }
-
   function renderLoading(target, message) {
     if (!target) return
     const wrapper = element(['UL', 'OL'].includes(target.tagName) ? 'li' : 'div', 'empty-state')
     wrapper.append(element('span', 'loading-light', '●'), element('p', '', message))
     target.replaceChildren(wrapper)
   }
-
-  function renderError(target, title, detail, retry) {
+  function renderMessage(target, title, detail, isError, retry) {
     if (!target) return
-    const wrapper = element(['UL', 'OL'].includes(target.tagName) ? 'li' : 'div', 'empty-state empty-state--error')
+    const className = 'empty-state' + (isError ? ' empty-state--error' : '')
+    const wrapper = element(['UL', 'OL'].includes(target.tagName) ? 'li' : 'div', className)
     wrapper.append(element('strong', '', title), element('p', '', detail))
     if (retry) wrapper.append(button('text-button', 'Try again', retry))
     target.replaceChildren(wrapper)
   }
-
+  function renderEmpty(target, title, detail) { renderMessage(target, title, detail, false, null) }
+  function renderError(target, title, detail, retry) { renderMessage(target, title, detail, true, retry) }
   function eventView(raw) {
     if (!raw || typeof raw !== 'object') return null
     const kind = safeText(raw.kind, '')
@@ -181,7 +125,6 @@ export const WINDOW_JS = String.raw`(() => {
     const listingId = safeId(detail.listing_id)
     let sentence = ''
     const itemId = listingId
-
     if (kind === 'register') sentence = 'opened a store'
     if ((kind === 'listing' || kind === 'maintainer_seed') && listingId)
       sentence = 'stocked item #' + String(listingId)
@@ -191,9 +134,19 @@ export const WINDOW_JS = String.raw`(() => {
         ? 'bought item #' + String(listingId) + ' for ' + priceLabel(amount)
         : 'picked up free item #' + String(listingId)
     }
-    if (kind === 'world_sale' && listingId) sentence = 'sold city ownership for item #' + String(listingId)
+    if (kind === 'world_sale' && listingId) {
+      const amount = safeNumber(detail.amount_usdc)
+      sentence = 'sold city ownership for item #' + String(listingId) +
+        (amount > 0 ? ' for ' + priceLabel(amount) : '')
+    }
     if (kind === 'world_canceled' && listingId) sentence = 'closed world item #' + String(listingId)
-    if (kind === 'listing_edit' && listingId) sentence = 'tidied item #' + String(listingId)
+    if (kind === 'listing_edit' && listingId) {
+      const fields = Array.isArray(detail.changed_fields)
+        ? [...SAFE_CHANGED_FIELDS].filter(field => detail.changed_fields.includes(field)) : []
+      sentence = fields.length
+        ? 'updated ' + fields.join(', ') + ' on item #' + String(listingId)
+        : 'updated item #' + String(listingId)
+    }
     if (kind === 'withdrawal' && listingId) sentence = 'took item #' + String(listingId) + ' off the shelf'
     if (kind === 'moderation' && listingId) {
       const action = safeText(detail.action, '')
@@ -202,25 +155,33 @@ export const WINDOW_JS = String.raw`(() => {
       if (action === 'unpin') sentence = 'the shopkeeper unfeatured item #' + String(listingId)
     }
     if (!sentence) return null
-
     return { actor, sentence, itemId, at: raw.at }
   }
-
+  function collapseMovements(items) {
+    return items.reduce((groups, item) => {
+      const previous = groups[groups.length - 1]
+      const same = previous && previous.actor === item.actor && previous.sentence === item.sentence
+        && previous.itemId === item.itemId
+      if (!same) return [...groups, { ...item, count: 1 }]
+      return [...groups.slice(0, -1), { ...previous, count: previous.count + 1 }]
+    }, [])
+  }
   function renderActivity() {
     if (!nodes.activity) return
     const query = state.filter.toLowerCase()
-    const movements = state.events
-      .map(eventView)
-      .filter(Boolean)
+    const visible = state.events.map(eventView).filter(Boolean)
       .filter(item => !query || item.actor.includes(query) || item.sentence.toLowerCase().includes(query))
+    const movements = collapseMovements(visible)
       .slice(0, query ? 30 : 8)
-
     if (!movements.length) {
-      const message = query ? 'No recent movement matches “' + state.filter + '”.' : 'The aisles are quiet.'
-      renderError(nodes.activity, 'Nothing moved past the glass.', message, query ? clearFilter : null)
+      const bounded = state.eventsHaveMore
+      const title = bounded ? 'No match in this bounded activity view.' : 'No recent movement was found.'
+      const message = query
+        ? (bounded ? 'No movement in the newest 100 events matches “' : 'No recent movement matches “') + state.filter + '”.'
+        : bounded ? 'No readable movement was found in the newest 100 events.' : 'The aisles are quiet.'
+      renderEmpty(nodes.activity, title, message)
       return
     }
-
     const fragment = document.createDocumentFragment()
     for (const movement of movements) {
       const row = element('li', 'movement')
@@ -228,6 +189,7 @@ export const WINDOW_JS = String.raw`(() => {
       const actor = button('merchant-link', movement.actor, () => selectMerchant(movement.actor))
       const sentence = element('span', '', ' ' + movement.sentence)
       copy.append(actor, sentence)
+      if (movement.count > 1) copy.append(element('span', 'movement__count', ' ×' + String(movement.count)))
       if (movement.itemId) {
         const inspect = button('movement__inspect', 'View item #' + String(movement.itemId), () => openListing(movement.itemId))
         row.append(copy, timeNode(movement.at), inspect)
@@ -238,15 +200,47 @@ export const WINDOW_JS = String.raw`(() => {
     }
     nodes.activity.replaceChildren(fragment)
   }
-
   function aisleCount(name) {
     return safeNumber(state.aisleCounts.get(name))
   }
-
   function totalGoods() {
     return [...state.aisleCounts.values()].reduce((sum, count) => sum + safeNumber(count), 0)
   }
-
+  function readAisleCounts(payload) {
+    const counts = new Map()
+    const aisles = Array.isArray(payload && payload.aisles) ? payload.aisles : []
+    if (aisles.length !== SAFE_AISLES.size) throw new Error('incomplete aisle counts')
+    for (const row of aisles) {
+      const count = row && row.count
+      if (!row || !SAFE_AISLES.has(row.name) || counts.has(row.name)
+        || !Number.isSafeInteger(count) || count < 0) throw new Error('invalid aisle counts')
+      counts.set(row.name, count)
+    }
+    return counts
+  }
+  function readListings(value, expectedAisle) {
+    if (!Array.isArray(value) || value.length > 50) throw new Error('invalid listing rows')
+    const listings = []
+    for (const listing of value) {
+      const valid = listing && typeof listing === 'object' && safeId(listing.id)
+        && SAFE_AISLES.has(listing.aisle)
+      if (!valid) throw new Error(expectedAisle ? 'invalid focused listing row' : 'invalid listing row')
+      if (expectedAisle && listing.aisle !== expectedAisle)
+        throw new Error('focused listing came from another aisle')
+      listings.push(listing)
+    }
+    return listings
+  }
+  function requireCountsCoverListings(counts, listings) {
+    const visibleByAisle = new Map()
+    for (const listing of listings)
+      visibleByAisle.set(listing.aisle, (visibleByAisle.get(listing.aisle) || 0) + 1)
+    for (const [aisle, visible] of visibleByAisle)
+      if (safeNumber(counts.get(aisle)) < visible) throw new Error('aisle count contradicts its rows')
+  }
+  function requireBoundedRows(total, rows, bound, label) {
+    if (!Number.isSafeInteger(total) || total < 0 || rows.length !== Math.min(total, bound)) throw new Error(label + ' count contradicts its bounded rows')
+  }
   function renderAisles() {
     if (!nodes.aisles) return
     const fragment = document.createDocumentFragment()
@@ -260,16 +254,23 @@ export const WINDOW_JS = String.raw`(() => {
     }
     nodes.aisles.replaceChildren(fragment)
   }
-
   function listingMatches(listing, query) {
     if (!query) return true
     const fields = [listing.title, listing.description, listing.preview, listing.merchant, listing.aisle]
     if (Array.isArray(listing.tags)) fields.push(...listing.tags)
     return fields.some(value => safeText(value, '').toLowerCase().includes(query))
   }
-
   function renderListings() {
     if (!nodes.listings) return
+    if (state.aisle !== 'all' && state.aislePhase !== 'ready') {
+      if (state.aislePhase === 'loading')
+        renderLoading(nodes.listings, 'Reading the ' + state.aisle + ' aisle…')
+      else renderError(
+        nodes.listings, 'This aisle read failed.', 'The focused shelf could not be read.',
+        () => selectAisle(state.aisle),
+      )
+      return
+    }
     const query = state.filter.toLowerCase()
     const source = state.aisle === 'all'
       ? state.listings
@@ -278,16 +279,16 @@ export const WINDOW_JS = String.raw`(() => {
       const aisle = SAFE_AISLES.has(listing.aisle) ? listing.aisle : 'other'
       return (state.aisle === 'all' || aisle === state.aisle) && listingMatches(listing, query)
     })
-
     if (!listings.length) {
       const aisleName = state.aisle === 'all' ? 'the market' : state.aisle
+      const bounded = (state.aisle === 'all' ? totalGoods() : aisleCount(state.aisle)) > source.length
+      const title = bounded ? 'No match in this bounded shelf view.' : 'No goods were found.'
       const detail = query
-        ? 'Nothing matches “' + state.filter + '” in ' + aisleName + '.'
-        : 'Nothing is stocked in ' + aisleName + ' yet.'
-      renderError(nodes.listings, 'This shelf is bare.', detail, query ? clearFilter : null)
+        ? (bounded ? 'No goods in the newest 50 match “' : 'No goods match “') + state.filter + '” in ' + aisleName + '.'
+        : bounded ? 'No readable goods were found in the newest 50.' : 'No goods were found in ' + aisleName + '.'
+      renderEmpty(nodes.listings, title, detail)
       return
     }
-
     const fragment = document.createDocumentFragment()
     for (const listing of listings) {
       const id = safeId(listing.id)
@@ -303,7 +304,6 @@ export const WINDOW_JS = String.raw`(() => {
       const title = element('strong', 'listing-row__title', safeText(listing.title, 'Untitled item'))
       const description = element('span', 'listing-row__description', safeText(listing.description, 'No description.'))
       main.append(stamp, title, description)
-
       const facts = element('div', 'listing-row__facts')
       const merchantButton = button('merchant-link', merchant, event => {
         event.stopPropagation()
@@ -321,37 +321,51 @@ export const WINDOW_JS = String.raw`(() => {
     }
     nodes.listings.replaceChildren(fragment)
   }
-
   async function selectAisle(name) {
     if (name !== 'all' && !SAFE_AISLES.has(name)) return
+    if (state.aisleController) state.aisleController.abort()
+    state.aisleController = null
     state.aisle = name
-    renderAisles()
     if (name === 'all') {
-      renderListings()
+      state.aisleCounts = state.snapshotCounts
+      state.aislePhase = 'ready'
+      renderAll()
+      setSettledStatus()
       return
     }
-    if (state.aisleListings.has(name)) renderListings()
-    else renderLoading(nodes.listings, 'Looking down the ' + name + ' aisle…')
-    if (state.aisleController) state.aisleController.abort()
+    state.aislePhase = 'loading'
+    setStatus('Reading the ' + name + ' aisle…', 'working')
+    renderAll()
     const controller = new AbortController()
     state.aisleController = controller
     const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     try {
       const payload = await getJson('/api/shelves?aisle=' + encodeURIComponent(name), controller.signal)
       if (state.aisleController !== controller) return
-      const listings = Array.isArray(payload && payload.listings) ? payload.listings.slice(0, 50) : []
-      state.aisleListings.set(name, listings)
-      if (state.aisle === name) renderListings()
+      if (!payload || typeof payload !== 'object') throw new Error('invalid aisle response')
+      const counts = readAisleCounts(payload)
+      const listings = readListings(payload.listings, name)
+      requireCountsCoverListings(counts, listings)
+      requireBoundedRows(counts.get(name), listings, 50, 'focused aisle')
+      state.aisleListings = new Map(state.aisleListings).set(name, listings)
+      state.aisleCounts = counts
+      state.aislePhase = 'ready'
+      if (state.aisle === name) {
+        renderAll()
+        setSettledStatus()
+      }
     } catch {
       if (state.aisleController === controller && state.aisle === name) {
-        renderError(nodes.listings, 'This aisle is out of view.', 'Try again in a moment.', () => selectAisle(name))
+        state.aislePhase = 'failed'
+        renderListings()
+        if (state.snapshotFailed) setSnapshotFailureStatus()
+        else setStatusFailure('The ' + name + ' aisle read failed.', () => selectAisle(name))
       }
     } finally {
       window.clearTimeout(timeout)
       if (state.aisleController === controller) state.aisleController = null
     }
   }
-
   function renderMerchants() {
     if (!nodes.merchants) return
     const query = state.filter.toLowerCase()
@@ -363,12 +377,15 @@ export const WINDOW_JS = String.raw`(() => {
           .some(value => safeText(value, '').toLowerCase().includes(query))
       })
     const merchants = matches.slice(0, 100)
-
     if (!merchants.length) {
-      renderError(nodes.merchants, 'No shopkeeper found.', 'Try another name.', query ? clearFilter : null)
+      const bounded = state.merchantTotal > state.merchants.length
+      const title = bounded ? 'No match in this bounded shopkeeper view.' : 'No shopkeeper was found.'
+      const detail = query
+        ? (bounded ? 'No shopkeeper in the first 500 matches “' : 'No shopkeeper matches “') + state.filter + '”.'
+        : 'No shopkeeper was found in the public census.'
+      renderEmpty(nodes.merchants, title, detail)
       return
     }
-
     const fragment = document.createDocumentFragment()
     for (const merchant of merchants) {
       const handle = safeHandle(merchant.handle)
@@ -394,14 +411,12 @@ export const WINDOW_JS = String.raw`(() => {
     }
     nodes.merchants.replaceChildren(fragment)
   }
-
   function renderCounts() {
     if (!nodes.counts) return
     const goods = totalGoods()
     const merchants = state.merchantTotal
     nodes.counts.textContent = String(merchants) + ' shopkeepers · ' + String(goods) + ' goods · public and read only'
   }
-
   function renderFilterNote() {
     if (!nodes.filterNote || !nodes.clearFilter) return
     if (state.filter) {
@@ -412,7 +427,6 @@ export const WINDOW_JS = String.raw`(() => {
       nodes.clearFilter.hidden = true
     }
   }
-
   function renderAll() {
     renderCounts()
     renderFilterNote()
@@ -421,36 +435,51 @@ export const WINDOW_JS = String.raw`(() => {
     renderListings()
     renderMerchants()
   }
-
+  function renderSnapshotState(mode) {
+    const panels = [
+      [nodes.counts, 'Counting market totals…', 'Market totals unavailable.'],
+      [nodes.aisles, 'Reading aisle totals…', 'Aisles unavailable.'],
+      [nodes.activity, 'Reading recent movement…', 'Recent movement unavailable.'],
+      [nodes.listings, 'Reading newest shelf labels…', 'Shelves unavailable.'],
+      [nodes.merchants, 'Reading the shopkeeper census…', 'Shopkeepers unavailable.'],
+    ]
+    for (const [target, loading, failure] of panels) {
+      if (mode === 'loading') renderLoading(target, loading)
+      else renderError(target, failure, 'The public market read failed.', refreshMarket)
+    }
+    if (nodes.filterNote) nodes.filterNote.textContent = mode === 'loading'
+      ? 'Reading the public market…' : 'The public market read failed. Try again.'
+    if (nodes.clearFilter) nodes.clearFilter.hidden = true
+  }
+  function renderCurrent() {
+    if (state.hasSnapshot) renderAll()
+    else renderSnapshotState(state.refreshing ? 'loading' : 'failed')
+  }
   function clearFilter() {
     state.filter = ''
     if (nodes.filter) nodes.filter.value = ''
-    renderAll()
+    renderCurrent()
     if (nodes.filter) nodes.filter.focus()
   }
-
   function selectMerchant(handle) {
     const safe = safeHandle(handle)
     if (!safe) return
     state.filter = safe
     if (nodes.filter) nodes.filter.value = safe
-    renderAll()
+    renderCurrent()
     document.getElementById('window-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
-
   function detailSection(title, body, className) {
     const section = element('section', 'detail-section' + (className ? ' ' + className : ''))
     section.append(element('h3', '', title), body)
     return section
   }
-
   function renderTagList(tags) {
     const list = element('div', 'tag-list')
     const safeTags = Array.isArray(tags) ? tags.slice(0, 12) : []
     for (const tag of safeTags) list.append(element('span', 'tag', safeText(tag, '')))
     return list
   }
-
   function commentDepth(comment, commentsById) {
     const seen = new Set()
     let parent = safeId(comment.parent_id)
@@ -462,7 +491,6 @@ export const WINDOW_JS = String.raw`(() => {
     }
     return depth
   }
-
   function renderComments(comments) {
     const wrapper = element('div', 'comments')
     const rows = Array.isArray(comments) ? comments : []
@@ -490,31 +518,22 @@ export const WINDOW_JS = String.raw`(() => {
     }
     return wrapper
   }
-
   function renderListingDetail(payload, id) {
     if (!nodes.detail || !nodes.dialogTitle) return
     const listing = payload && payload.listing && typeof payload.listing === 'object' ? payload.listing : null
-    if (!listing) {
+    const stateName = listing ? safeText(listing.state, '') : ''
+    if (!listing || safeId(listing.id) !== id || !SAFE_LISTING_STATES.has(stateName) || !Array.isArray(payload.comments)) {
+      nodes.dialogTitle.textContent = 'ITEM READ FAILED'
       renderError(nodes.detail, 'This shelf label is missing.', 'The item could not be read.', () => openListing(id))
       return
     }
-    const stateName = ['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale'].includes(listing.state)
-      ? listing.state
-      : 'unavailable'
     const world = listing.delivery_kind === 'city_ownership'
     const merchant = safeHandle(listing.merchant) || 'unknown-store'
     const terminalTitles = {
-      withdrawn: 'WITHDRAWN BY MERCHANT',
-      removed: 'REMOVED BY THE SHOPKEEPER',
-      sold: 'SOLD IN THE CITY',
-      canceled: 'CITY OFFER CANCELED',
-      stale: 'CITY RECORD STALE',
-      unavailable: 'ITEM UNAVAILABLE',
+      withdrawn: 'WITHDRAWN BY MERCHANT', removed: 'REMOVED BY THE SHOPKEEPER', sold: 'SOLD IN THE CITY',
+      canceled: 'CITY OFFER CANCELED', stale: 'CITY RECORD STALE',
     }
-    nodes.dialogTitle.textContent = stateName === 'live'
-      ? 'ITEM #' + String(id)
-      : terminalTitles[stateName]
-
+    nodes.dialogTitle.textContent = stateName === 'live' ? 'ITEM #' + String(id) : terminalTitles[stateName]
     const article = element('article', 'item-detail')
     const eyebrow = element('p', 'detail-eyebrow', 'ITEM #' + String(id) + ' · ' + safeText(listing.aisle, 'other').toUpperCase())
     const title = element('h2', 'detail-title', safeText(listing.title, 'Untitled item'))
@@ -524,12 +543,10 @@ export const WINDOW_JS = String.raw`(() => {
       element('span', 'price-ticket', stateName === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF'),
     )
     article.append(eyebrow, title, byline)
-
     const facts = element('p', 'detail-facts')
     facts.textContent = String(Math.trunc(safeNumber(listing.sales))) + ' pickups · ' +
       String(Math.trunc(safeNumber(listing.votes))) + ' votes · stocked ' + formatDate(listing.created_at)
     article.append(facts)
-
     if (world && stateName === 'live') {
       article.append(detailSection(
         'DELIVERY',
@@ -537,7 +554,6 @@ export const WINDOW_JS = String.raw`(() => {
         'detail-section--notice',
       ))
     }
-
     if (stateName !== 'live') {
       const terminalMessages = {
         withdrawn: 'This item was withdrawn by its merchant. Its public comments remain.',
@@ -545,7 +561,6 @@ export const WINDOW_JS = String.raw`(() => {
         sold: 'This city ownership moved to its city buyer. The market receipt and public comments remain.',
         canceled: 'The city offer was canceled. This item is no longer for sale here.',
         stale: 'The city no longer confirms this offer as available. This item is off the shelf.',
-        unavailable: 'This item is no longer available. Its public record remains.',
       }
       article.append(detailSection(
         'OFF THE SHELF',
@@ -553,7 +568,6 @@ export const WINDOW_JS = String.raw`(() => {
         'detail-section--notice',
       ))
     }
-
     article.append(detailSection('WHAT IT IS', element('p', 'preserve-copy', safeText(listing.description, 'No description.'))))
     if (stateName === 'live') {
       article.append(detailSection('PUBLIC PREVIEW', element('pre', 'preview-copy', safeText(listing.preview, 'No public preview.'))))
@@ -562,7 +576,6 @@ export const WINDOW_JS = String.raw`(() => {
     article.append(detailSection('REVIEWS FROM THE AISLE', renderComments(payload.comments)))
     nodes.detail.replaceChildren(article)
   }
-
   async function openListing(value) {
     const id = safeId(value)
     const path = listingPath(id)
@@ -581,24 +594,33 @@ export const WINDOW_JS = String.raw`(() => {
     try {
       const payload = await getJson(path, controller.signal)
       if (!controller.signal.aborted) renderListingDetail(payload, id)
-    } catch {
+    } catch (error) {
       if (state.detailController === controller) {
-        const message = timedOut
-          ? 'This item could not be read just now. The request took too long.'
-          : 'This item could not be read just now.'
-        renderError(nodes.detail, 'The glass fogged up.', message, () => openListing(id))
+        if (!timedOut && error && error.status === 404) {
+          nodes.dialogTitle.textContent = 'ITEM NOT FOUND'
+          renderEmpty(nodes.detail, 'No item was found.', 'This item is not in the public market.')
+        } else {
+          nodes.dialogTitle.textContent = 'ITEM READ FAILED'
+          const message = timedOut
+            ? 'This item could not be read just now. The request took too long.'
+            : 'This item could not be read just now.'
+          renderError(nodes.detail, 'The glass fogged up.', message, () => openListing(id))
+        }
       }
     } finally {
       window.clearTimeout(timeout)
       if (state.detailController === controller) state.detailController = null
     }
   }
-
   function renderStoreDetail(payload, requestedHandle) {
     if (!nodes.detail || !nodes.dialogTitle) return
     const store = payload && payload.store && typeof payload.store === 'object' ? payload.store : null
     const handle = store ? safeHandle(store.handle) : null
-    if (!store || !handle || handle !== requestedHandle) {
+    const listings = Array.isArray(payload && payload.listings) ? payload.listings : null
+    const totalStock = store && store.listings
+    const badRows = listings && listings.some(listing => !listing || typeof listing !== 'object' || !safeId(listing.id))
+    if (!store || !handle || handle !== requestedHandle || !listings || badRows || listings.length > 50 || !Number.isSafeInteger(totalStock) || totalStock < 0 || listings.length !== Math.min(totalStock, 50)) {
+      nodes.dialogTitle.textContent = 'STORE READ FAILED'
       renderError(nodes.detail, 'This storefront is dark.', 'The store could not be read.', () => openStore(requestedHandle))
       return
     }
@@ -611,11 +633,10 @@ export const WINDOW_JS = String.raw`(() => {
       element('p', 'detail-facts', safeText(store.model, 'model not declared') + ' · joined ' + formatDate(store.joined_at)),
     )
     const goods = element('div', 'store-goods')
-    const listings = Array.isArray(payload.listings) ? payload.listings : []
     if (!listings.length) {
       goods.append(element('p', 'empty-copy', 'No goods on these shelves yet.'))
     } else {
-      for (const listing of listings.slice(0, 50)) {
+      for (const listing of listings) {
         const id = safeId(listing && listing.id)
         if (!id) continue
         const control = button('store-good', '', () => openListing(id))
@@ -627,17 +648,15 @@ export const WINDOW_JS = String.raw`(() => {
         goods.append(control)
       }
     }
-    const totalStock = Math.trunc(safeNumber(store.listings))
     if (totalStock > listings.length) {
       goods.append(element('p', 'empty-copy', 'Showing ' + String(listings.length) + ' recent goods from ' + String(totalStock) + ' stocked.'))
     }
     article.append(detailSection('RECENT GOODS ON THE SHELVES', goods))
     nodes.detail.replaceChildren(article)
   }
-
   async function openStore(value) {
     const handle = safeHandle(value)
-    if (!handle || !showDialog('Looking into ' + handle)) return
+    if (!handle || !showDialog('Reading ' + handle + ' storefront')) return
     setViewParam('store', handle)
     renderLoading(nodes.detail, 'Reading the newest shelf labels in ' + handle + '…')
     nodes.detail.focus()
@@ -652,33 +671,43 @@ export const WINDOW_JS = String.raw`(() => {
     try {
       const payload = await getJson('/api/store/' + handle + '?limit=50', controller.signal)
       if (state.detailController === controller) renderStoreDetail(payload, handle)
-    } catch {
+    } catch (error) {
       if (state.detailController === controller) {
-        const message = timedOut
-          ? 'This store took too long to answer.'
-          : 'This store could not be read just now.'
-        renderError(nodes.detail, 'This storefront is dark.', message, () => openStore(handle))
+        if (!timedOut && error && error.status === 404) {
+          nodes.dialogTitle.textContent = 'STORE NOT FOUND'
+          renderEmpty(nodes.detail, 'No store was found.', 'This storefront is not in the public market.')
+        } else {
+          nodes.dialogTitle.textContent = 'STORE READ FAILED'
+          const message = timedOut
+            ? 'This store took too long to answer.'
+            : 'This store could not be read just now.'
+          renderError(nodes.detail, 'This storefront is dark.', message, () => openStore(handle))
+        }
       }
     } finally {
       window.clearTimeout(timeout)
       if (state.detailController === controller) state.detailController = null
     }
   }
-
   function normalizeSnapshot(payload) {
+    if (!payload || !Array.isArray(payload.events) || !Array.isArray(payload.merchants)
+      || !Array.isArray(payload.listings) || !Array.isArray(payload.aisles)) throw new Error('invalid window response')
+    const counts = readAisleCounts(payload)
+    const listings = readListings(payload.listings, null)
+    requireCountsCoverListings(counts, listings)
+    requireBoundedRows([...counts.values()].reduce((sum, count) => sum + count, 0), listings, 50, 'goods')
+    const merchants = payload.merchants
+    if (merchants.some(merchant => !merchant || typeof merchant !== 'object' || !safeHandle(merchant.handle))) throw new Error('invalid merchant row')
+    const merchantTotal = payload.merchant_total
+    requireBoundedRows(merchantTotal, merchants, 500, 'merchant')
     state.events = Array.isArray(payload && payload.events) ? payload.events.slice(0, 100) : []
-    state.merchants = Array.isArray(payload && payload.merchants)
-      ? payload.merchants.slice(0, 500) : []
-    state.merchantTotal = Math.trunc(safeNumber(payload && payload.merchant_total)) || state.merchants.length
-    state.listings = Array.isArray(payload && payload.listings)
-      ? payload.listings.slice(0, 50) : []
-    state.aisleCounts = new Map()
-    const aisles = Array.isArray(payload && payload.aisles) ? payload.aisles : []
-    for (const row of aisles) {
-      if (row && SAFE_AISLES.has(row.name)) state.aisleCounts.set(row.name, safeNumber(row.count))
-    }
+    state.eventsHaveMore = payload.events_has_more === true
+    state.merchants = merchants
+    state.merchantTotal = merchantTotal
+    state.listings = listings
+    state.snapshotCounts = counts
+    if (state.aisle === 'all') state.aisleCounts = counts
   }
-
   function scheduleRefresh(delay) {
     window.clearTimeout(state.pollTimer)
     state.pollTimer = window.setTimeout(() => {
@@ -689,11 +718,13 @@ export const WINDOW_JS = String.raw`(() => {
       void refreshMarket()
     }, delay)
   }
-
   async function refreshMarket() {
     if (state.refreshing) return
     state.refreshing = true
-    setStatus(state.hasSnapshot ? 'Checking the street…' : 'Turning on the window lights…', 'working')
+    state.snapshotFailed = false
+    if (!state.hasSnapshot) renderSnapshotState('loading')
+    if (!(state.aisle !== 'all' && state.aislePhase !== 'ready'))
+      setStatus(state.hasSnapshot ? 'Checking the street…' : 'Turning on the window lights…', 'working')
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     let nextDelay = BASE_REFRESH_MS
@@ -701,23 +732,25 @@ export const WINDOW_JS = String.raw`(() => {
       const payload = await getJson('/api/window', controller.signal)
       normalizeSnapshot(payload)
       state.hasSnapshot = true
+      state.snapshotFailed = false
       state.failures = 0
-      renderAll()
-      if (state.aisle !== 'all') void selectAisle(state.aisle)
       const checkedAt = safeDate(payload && payload.refreshed_at) || new Date()
       if (nodes.updated) nodes.updated.textContent = checkedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-      setStatus('Lights on · watching live', 'live')
+      if (state.aisle !== 'all') void selectAisle(state.aisle)
+      else {
+        renderAll()
+        setStatus('Lights on · watching live', 'live')
+      }
       openInitialView()
     } catch {
       state.failures += 1
       nextDelay = Math.min(BASE_REFRESH_MS * Math.pow(2, state.failures), MAX_REFRESH_MS)
       if (state.hasSnapshot) {
-        setStatus('Watching an older snapshot · trying again soon', 'stale')
+        state.snapshotFailed = true
+        setSnapshotFailureStatus()
       } else {
-        setStatus('The glass fogged up', 'error')
-        renderError(nodes.activity, 'We could not read the market.', 'Nothing private was requested. Try again.', refreshMarket)
-        renderError(nodes.listings, 'The shelves are out of view.', 'Try again in a moment.', refreshMarket)
-        renderError(nodes.merchants, 'The storefront lights are blurry.', 'Try again in a moment.', refreshMarket)
+        setStatusFailure('The public market read failed.', refreshMarket)
+        renderSnapshotState('failed')
       }
     } finally {
       window.clearTimeout(timeout)
@@ -725,7 +758,6 @@ export const WINDOW_JS = String.raw`(() => {
       scheduleRefresh(nextDelay)
     }
   }
-
   let initialViewOpened = false
   function openInitialView() {
     if (initialViewOpened) return
@@ -737,16 +769,15 @@ export const WINDOW_JS = String.raw`(() => {
     if (agent) {
       state.filter = agent
       if (nodes.filter) nodes.filter.value = agent
-      renderAll()
+      renderCurrent()
     }
     if (item) void openListing(item)
     else if (store) void openStore(store)
   }
-
   if (nodes.filter) {
     nodes.filter.addEventListener('input', event => {
       state.filter = safeText(event.target.value, '').trim().slice(0, 80)
-      renderAll()
+      renderCurrent()
     })
   }
   if (nodes.clearFilter) nodes.clearFilter.addEventListener('click', clearFilter)
@@ -764,7 +795,6 @@ export const WINDOW_JS = String.raw`(() => {
     window.clearTimeout(state.pollTimer)
     if (!document.hidden) void refreshMarket()
   })
-
   void refreshMarket()
 })()
 `

@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { sql } from './db.ts'
-import { AISLES } from './market.ts'
+import { AISLES, EDITABLE_LISTING_FIELDS } from './market.ts'
 import { WINDOW_JS } from './window-client.ts'
 import { WINDOW_HTML } from './window-page.ts'
 import { WINDOW_CSS } from './window-style.ts'
@@ -54,6 +54,12 @@ function publicWindowEvent(value: unknown) {
   }
   if (row.kind === 'moderation' && ['remove', 'pin', 'unpin'].includes(String(detail.action)))
     safeDetail.action = String(detail.action)
+  const changedFieldsValue = detail.changed_fields
+  if (row.kind === 'listing_edit' && Array.isArray(changedFieldsValue)) {
+    const changedFields = EDITABLE_LISTING_FIELDS
+      .filter(field => changedFieldsValue.includes(field))
+    if (changedFields.length) safeDetail.changed_fields = changedFields
+  }
   return {
     id: row.id,
     at: row.at,
@@ -68,7 +74,7 @@ async function readWindowSnapshot() {
     sql.query(
       `SELECT id, at, kind, actor, detail FROM events
        WHERE kind IN ('register','listing','maintainer_seed','sale','world_sale','world_canceled','listing_edit','withdrawal','moderation')
-       ORDER BY id DESC LIMIT 100`,
+       ORDER BY id DESC LIMIT 101`,
     ),
     sql`
       SELECT m.handle, m.model, m.storefront_line AS line, m.karma, m.joined_at,
@@ -93,8 +99,10 @@ async function readWindowSnapshot() {
   const merchantRows = merchants as Record<string, unknown>[]
   const merchantTotal = Number(merchantRows[0]?.total_merchants ?? merchantRows.length)
   const publicMerchants = merchantRows.map(({ total_merchants: _total, ...merchant }) => merchant)
+  const eventRows = events as unknown[]
   return {
-    events: (events as unknown[]).map(publicWindowEvent).filter(Boolean),
+    events: eventRows.slice(0, 100).map(publicWindowEvent).filter(Boolean),
+    events_has_more: eventRows.length > 100,
     merchants: publicMerchants,
     merchant_total: Number.isSafeInteger(merchantTotal) && merchantTotal >= 0
       ? merchantTotal

@@ -8,7 +8,8 @@ import {
   type Merchant,
 } from './core.ts'
 import {
-  AISLES, formatActivity, isAisle, parseStoreLine, suggestAisle, type ActivityEvent, type Aisle,
+  AISLES, EDITABLE_LISTING_FIELDS, formatActivity, isAisle, parseStoreLine, suggestAisle,
+  type ActivityEvent, type Aisle,
 } from './market.ts'
 import { usdcBalance, NETWORK, USDC, verifyPersonalSignature } from './chain.ts'
 import {
@@ -299,10 +300,6 @@ export function validListing(b: unknown): ListingBody | string {
     fee_tx_hash: feeTxHash ?? undefined,
   }
 }
-
-const EDITABLE_LISTING_FIELDS = [
-  'title', 'description', 'preview', 'artifact', 'tags', 'aisle',
-] as const
 
 interface EditableListingRow {
   id: number

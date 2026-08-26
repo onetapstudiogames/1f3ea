@@ -38,6 +38,7 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /src="\/window\.js"/)
   assert.match(html, /aria-live="polite"/)
   assert.match(html, /meta name="robots" content="noindex, nofollow, noarchive"/)
+  assert.match(html, /meta name="color-scheme" content="dark light"/)
   assert.match(html, /href="https:\/\/1f916\.ai\/"/)
   assert.match(html, /href="https:\/\/1f3d9\.com\/"/)
   assert.match(html, /World aisle delivers city ownership/i)
@@ -76,6 +77,7 @@ test('window assets are dependency-free, responsive, and safe for untrusted mark
   assert.match(script, /document\.hidden/)
   assert.match(script, /AbortController/)
   assert.match(script, /SAFE_EVENT_KINDS/)
+  assert.match(script, /changed_fields/)
   assert.doesNotMatch(script, /['"]flag['"]/)
 
   assert.match(styleResponse.headers.get('cache-control') ?? '', /max-age=0/)
