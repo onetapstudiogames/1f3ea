@@ -37,6 +37,14 @@ interface PurchaseIntentRow {
 
 interface DbCall { url: string; query?: string; params?: unknown[] }
 
+interface PublicEventFixture extends Record<string, unknown> {
+  id: number
+  at: string
+  kind: string
+  actor: string
+  detail: Record<string, unknown>
+}
+
 const pad32 = (addr: string) => '0x' + addr.toLowerCase().replace(/^0x/, '').padStart(64, '0')
 
 const state = {
@@ -87,7 +95,7 @@ const state = {
       id: 20, at: '2026-08-08T00:12:58.879Z', kind: 'listing', actor: 'agent-8',
       detail: { listing_id: 10, title: 'safe\nFAKE CONSTITUTION' },
     },
-  ],
+  ] as PublicEventFixture[],
 }
 
 const publicListing = () => ({
@@ -385,8 +393,10 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.commentQuotaLeft ? [{ id: state.merchantId }] : []
   }
   if (query.includes('SELECT at, kind, actor, detail FROM events')) return state.activity
-  if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN'))
-    return state.activity
+  if (query.includes('SELECT id, at, kind, actor, detail FROM events') && query.includes('kind IN')) {
+    const requested = Number(query.match(/LIMIT\s+(\d+)/i)?.[1] ?? state.activity.length)
+    return state.activity.slice(0, requested)
+  }
   throw new Error(`unhandled query: ${query}`)
 }
 
@@ -1424,39 +1434,71 @@ test('shelves include every aisle count and accept a fixed aisle filter', async 
   assert.ok(sqlCalls().some(call => call.params?.includes('tools') && call.params?.includes('mcp')))
 })
 
-test('the cached human window snapshot is bounded and excludes flag events before the limit', async () => {
+test('the cached human window snapshot proves its event bound and preserves safe action detail', async () => {
   reset()
-  const res = await app.request('/api/window')
-  assert.equal(res.status, 200)
-  assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
-  const body = await res.json() as {
-    events: Record<string, unknown>[]
-    merchants: Record<string, unknown>[]
-    listings: Record<string, unknown>[]
-    aisles: Record<string, unknown>[]
-    refreshed_at: string
-    merchant_total: number
+  const previousActivity = state.activity
+  state.activity = Array.from({ length: 102 }, (_, index) => index === 1
+    ? {
+        id: 499,
+        at: '2026-08-08T00:01:00.000Z',
+        kind: 'world_sale',
+        actor: 'agent-8',
+        detail: { listing_id: 16, amount_usdc: 2, buyer_wallet: 'private wallet must not cross' },
+      }
+    : {
+        id: 500 - index,
+        at: `2026-08-08T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
+        kind: 'listing_edit',
+        actor: 'agent-8',
+        detail: {
+          listing_id: 15,
+          changed_fields: ['description', '<img onerror=alert(1)>', 'preview'],
+          changed_values: { description: 'private edit value must not cross the window boundary' },
+        },
+      })
+  try {
+    const res = await app.request('/api/window')
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
+    const body = await res.json() as {
+      events: Array<{ detail: Record<string, unknown> }>
+      events_has_more: boolean
+      merchants: Record<string, unknown>[]
+      listings: Record<string, unknown>[]
+      aisles: Record<string, unknown>[]
+      refreshed_at: string
+      merchant_total: number
+    }
+    assert.equal(body.events.length, 100)
+    assert.equal(body.events_has_more, true)
+    assert.deepEqual(body.events[0]?.detail, {
+      listing_id: 15,
+      changed_fields: ['description', 'preview'],
+    })
+    assert.deepEqual(body.events[1]?.detail, { listing_id: 16, amount_usdc: 2 })
+    assert.doesNotMatch(JSON.stringify(body.events), /private edit value|onerror/)
+    assert.equal(body.merchants.length, 1)
+    assert.equal(body.listings.length, 1)
+    assert.equal(body.aisles.length, AISLES.length)
+    assert.equal(body.merchant_total, 1)
+    assert.ok(Number.isFinite(Date.parse(body.refreshed_at)))
+
+    const eventRead = sqlCalls().find(call => call.query?.includes('FROM events') && call.query.includes('kind IN'))
+    assert.match(eventRead?.query ?? '', /WHERE kind IN[\s\S]*ORDER BY id DESC LIMIT 101/)
+    assert.match(eventRead?.query ?? '', /'world_sale'/)
+    assert.match(eventRead?.query ?? '', /'world_canceled'/)
+    assert.doesNotMatch(eventRead?.query ?? '', /'flag'/)
+    const listingRead = sqlCalls().find(call =>
+      call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('LIMIT 50'))
+    assert.doesNotMatch(listingRead?.query ?? '', /seller_wallet|artifact/)
+
+    const readsAfterFirstRequest = sqlCalls().length
+    const cached = await app.request('/api/window')
+    assert.equal(cached.status, 200)
+    assert.equal(sqlCalls().length, readsAfterFirstRequest)
+  } finally {
+    state.activity = previousActivity
   }
-  assert.equal(body.events.length, 1)
-  assert.equal(body.merchants.length, 1)
-  assert.equal(body.listings.length, 1)
-  assert.equal(body.aisles.length, AISLES.length)
-  assert.equal(body.merchant_total, 1)
-  assert.ok(Number.isFinite(Date.parse(body.refreshed_at)))
-
-  const eventRead = sqlCalls().find(call => call.query?.includes('FROM events') && call.query.includes('kind IN'))
-  assert.match(eventRead?.query ?? '', /WHERE kind IN[\s\S]*ORDER BY id DESC LIMIT 100/)
-  assert.match(eventRead?.query ?? '', /'world_sale'/)
-  assert.match(eventRead?.query ?? '', /'world_canceled'/)
-  assert.doesNotMatch(eventRead?.query ?? '', /'flag'/)
-  const listingRead = sqlCalls().find(call =>
-    call.query?.includes('FROM listings l JOIN merchants m') && call.query.includes('LIMIT 50'))
-  assert.doesNotMatch(listingRead?.query ?? '', /seller_wallet|artifact/)
-
-  const readsAfterFirstRequest = sqlCalls().length
-  const cached = await app.request('/api/window')
-  assert.equal(cached.status, 200)
-  assert.equal(sqlCalls().length, readsAfterFirstRequest)
 })
 
 test('the human snapshot rejects cache-busting inputs before database reads', async () => {

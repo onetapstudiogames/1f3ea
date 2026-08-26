@@ -77,6 +77,8 @@ echo "== 2. run local release gates"
 [ -d node_modules ] || npm ci --no-audit --no-fund
 npm run typecheck
 npm test
+npx playwright install chromium
+npm run test:e2e
 
 echo "== 3. prove the tested commit did not move"
 verify_pushed_candidate

@@ -130,6 +130,51 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.doesNotMatch(deploy, /@\{upstream\}/)
 })
 
+test('the human window browser matrix is installed and part of the release gate', () => {
+  const packageJson = JSON.parse(read('package.json')) as {
+    scripts?: Record<string, string>
+    devDependencies?: Record<string, string>
+  }
+  const playwright = read('playwright.config.ts')
+  const browserSpec = read('e2e/window.spec.ts')
+  const tsconfig = read('tsconfig.json')
+  const gitignore = read('.gitignore')
+  const deploy = read('scripts/deploy.sh')
+  const ci = read('.github/workflows/ci.yml')
+
+  assert.equal(packageJson.scripts?.['test:e2e'], 'playwright test')
+  assert.match(packageJson.devDependencies?.['@playwright/test'] ?? '', /^\^?1\.62\./)
+  for (const name of [
+    'phone-light', 'phone-dark', 'tablet-light',
+    'tablet-dark', 'desktop-light', 'desktop-dark',
+  ]) assert.match(playwright, new RegExp(`name:\\s*['"]${name}['"]`))
+  for (const width of [320, 768, 1440]) assert.match(playwright, new RegExp(`width:\\s*${width}\\b`))
+  assert.match(playwright, /colorScheme:\s*['"]light['"]/)
+  assert.match(playwright, /colorScheme:\s*['"]dark['"]/)
+  assert.match(browserSpec, /END-OF-DESCRIPTION/)
+  assert.match(browserSpec, /events_has_more/)
+  assert.match(browserSpec, /scrollWidth/)
+  assert.match(tsconfig, /e2e\/\*\*\/\*\.ts/)
+  assert.match(gitignore, /test-results\//)
+  assert.match(deploy, /playwright install chromium[\s\S]*npm run test:e2e/)
+  assert.match(ci, /playwright install --with-deps chromium/)
+  assert.match(ci, /npm run test:e2e/)
+})
+
+test('listing edits and public edit receipts share one changed-field allowlist', () => {
+  const market = read('src/market.ts')
+  const index = read('src/index.ts')
+  const windowRoute = read('src/window.ts')
+  const windowClient = read('src/window-client.ts')
+
+  assert.match(market, /export const EDITABLE_LISTING_FIELDS\s*=\s*\[/)
+  assert.match(index, /import \{[\s\S]*EDITABLE_LISTING_FIELDS[\s\S]*\} from '\.\/market\.ts'/)
+  assert.doesNotMatch(index, /^const EDITABLE_LISTING_FIELDS\s*=/m)
+  assert.match(windowRoute, /EDITABLE_LISTING_FIELDS/)
+  assert.match(windowClient, /EDITABLE_LISTING_FIELDS/)
+  assert.doesNotMatch([market, index, windowRoute, windowClient].join('\n'), /PUBLIC_LISTING_CHANGED_FIELDS/)
+})
+
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {
   const runtime = [
     'src/core.ts', 'src/index.ts', 'src/mcp.ts', 'src/frontdoor.txt', 'src/llms.txt',

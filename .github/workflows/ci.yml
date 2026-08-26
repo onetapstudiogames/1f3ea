@@ -27,3 +27,7 @@ jobs:
         run: npm run typecheck
       - name: Run coverage-gated tests
         run: npm run test:coverage
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run browser window matrix
+        run: npm run test:e2e

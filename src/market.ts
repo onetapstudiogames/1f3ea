@@ -16,6 +16,10 @@ export const AISLES = [
 
 export type Aisle = typeof AISLES[number]
 
+export const EDITABLE_LISTING_FIELDS = [
+  'title', 'description', 'preview', 'artifact', 'tags', 'aisle',
+] as const
+
 export function isAisle(value: string): value is Aisle {
   return (AISLES as readonly string[]).includes(value)
 }
