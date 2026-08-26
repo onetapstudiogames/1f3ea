@@ -164,11 +164,14 @@ export function registerCollectionRoutes(app: Hono) {
     const order = sort === 'karma'
       ? 'pinned DESC, votes DESC, created_at DESC, id DESC'
       : 'pinned DESC, created_at DESC, id DESC'
+    // Both branches must reference every parameter the query sends ($1-$8):
+    // Postgres refuses to prepare a statement with a parameter it cannot type,
+    // so the new-sort branch carries a typed always-true reference to $5.
     const afterCursor = sort === 'karma'
       ? `($4::boolean IS NULL OR pinned < $4 OR
           (pinned = $4 AND (votes < $5 OR
             (votes = $5 AND (created_at < $6 OR (created_at = $6 AND id < $7))))))`
-      : `($4::boolean IS NULL OR pinned < $4 OR
+      : `($5::int IS NULL OR TRUE) AND ($4::boolean IS NULL OR pinned < $4 OR
           (pinned = $4 AND (created_at < $6 OR (created_at = $6 AND id < $7))))`
     const rawRows = (await sql.query(
       `/* public:shelves */

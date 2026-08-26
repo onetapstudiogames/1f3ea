@@ -2102,6 +2102,27 @@ test('shelves include every aisle count and accept a fixed aisle filter', async 
   assert.ok(sqlCalls().some(call => call.params?.includes('tools') && call.params?.includes('mcp')))
 })
 
+test('every parameter a query sends is referenced in its SQL for both shelf sorts', async () => {
+  // Postgres refuses to prepare a statement carrying a parameter it cannot
+  // type. The fake driver cannot catch that, so this pins the query text:
+  // a sent-but-unreferenced $N took /api/shelves down in production once.
+  for (const path of ['/api/shelves', '/api/shelves?sort=karma']) {
+    reset()
+    const response = await app.request(path)
+    assert.equal(response.status, 200, path)
+    const shelfCalls = sqlCalls().filter(call => call.query?.includes('/* public:shelves */'))
+    assert.ok(shelfCalls.length >= 1, `${path} produced a shelves query`)
+    for (const call of shelfCalls) {
+      for (let index = 1; index <= (call.params?.length ?? 0); index += 1) {
+        assert.ok(
+          new RegExp(`\\$${index}(?![0-9])`).test(call.query ?? ''),
+          `${path}: query references $${index}`,
+        )
+      }
+    }
+  }
+})
+
 test('shelf pages are exact at 50 and expose a scope-bound continuation past 50', async () => {
   for (const total of [50, 51]) {
     reset()
