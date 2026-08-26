@@ -52,6 +52,15 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   assert.deepEqual(await unknown.json(), {
     jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real' },
   })
+
+  const structuredToolName = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: 12, method: 'tools/call',
+    params: { name: JSON.parse('{"toString":null,"valueOf":null}'), arguments: {} },
+  }))
+  assert.equal(structuredToolName.status, 200)
+  assert.deepEqual(await structuredToolName.json(), {
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
+  })
 })
 
 test('MCP lifecycle replies preserve ids, negotiate protocol versions, and accept notifications', async () => {
@@ -143,15 +152,17 @@ test('public action contracts explain how failure causes cross each door', () =>
   }
 })
 
-test('MCP tool routing handles empty arguments, filters, encoded stores, and each buy shape', async () => {
+test('MCP tool routing handles empty arguments, filters, validated stores, and each buy shape', async () => {
   const seen: Array<{ method: string; path: string; body: unknown }> = []
   const backing = new Hono()
   backing.all('*', async c => {
+    const path = new URL(c.req.url).pathname + new URL(c.req.url).search
     seen.push({
       method: c.req.method,
-      path: new URL(c.req.url).pathname + new URL(c.req.url).search,
+      path,
       body: c.req.method === 'GET' ? null : await c.req.json(),
     })
+    if (path === '/api/store/_') return c.json({ error: 'no such store' }, 404)
     return c.json({ ok: true })
   })
   const app = gateway(backing)
@@ -159,8 +170,7 @@ test('MCP tool routing handles empty arguments, filters, encoded stores, and eac
   const calls = [
     { name: 'browse', arguments: ['ignored'] },
     { name: 'browse', arguments: { q: 'signed tools', tag: 'mcp', aisle: 'tools', sort: 'karma' } },
-    { name: 'visit_store', arguments: {} },
-    { name: 'visit_store', arguments: { handle: 'a/b' } },
+    { name: 'visit_store', arguments: { handle: 'agent-8' } },
     { name: 'buy', arguments: { id: 3 } },
     { name: 'buy', arguments: { id: 4, payer_wallet: '0x1111111111111111111111111111111111111111' } },
     { name: 'buy', arguments: { id: 5, intent_id: 8, tx_hash: 'proof' } },
@@ -176,8 +186,7 @@ test('MCP tool routing handles empty arguments, filters, encoded stores, and eac
   assert.deepEqual(seen, [
     { method: 'GET', path: '/api/shelves', body: null },
     { method: 'GET', path: '/api/shelves?q=signed+tools&tag=mcp&aisle=tools&sort=karma', body: null },
-    { method: 'GET', path: '/api/store/', body: null },
-    { method: 'GET', path: '/api/store/a%2Fb', body: null },
+    { method: 'GET', path: '/api/store/agent-8', body: null },
     { method: 'POST', path: '/api/buy/3', body: {} },
     {
       method: 'POST', path: '/api/purchase-intent/4',
@@ -186,18 +195,20 @@ test('MCP tool routing handles empty arguments, filters, encoded stores, and eac
     { method: 'POST', path: '/api/claim/5', body: { intent_id: 8, tx_hash: 'proof' } },
   ])
 
-  const internal = await app.request('/mcp', jsonRequest({
-    jsonrpc: '2.0', id: 'bad-route', method: 'tools/call',
-    params: { name: 'visit_store', arguments: { handle: '\ud800' } },
-  }))
-  assert.equal(internal.status, 200)
-  const internalBody = await internal.json() as {
-    result: { isError: boolean; content: Array<{ text: string }> }
+  for (const handle of [undefined, 'a/b', '\ud800']) {
+    const invalidStore = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'invalid-store', method: 'tools/call',
+      params: { name: 'visit_store', arguments: handle === undefined ? {} : { handle } },
+    }))
+    assert.equal(invalidStore.status, 200)
+    const invalidStoreBody = await invalidStore.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(invalidStoreBody.result.isError, true)
+    assert.deepEqual(JSON.parse(invalidStoreBody.result.content[0]!.text), {
+      error: 'no such store',
+    })
   }
-  assert.equal(internalBody.result.isError, true)
-  assert.deepEqual(JSON.parse(internalBody.result.content[0]!.text), {
-    error: 'internal connector failure; retry later',
-  })
 
   const unknownTool = await app.request('/mcp', jsonRequest({
     jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
@@ -205,6 +216,62 @@ test('MCP tool routing handles empty arguments, filters, encoded stores, and eac
   assert.deepEqual(await unknownTool.json(), {
     jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
   })
+})
+
+test('MCP route builders leave structured invalid ids to backing validation', async () => {
+  const paths: string[] = []
+  const backing = new Hono()
+  backing.all('*', c => {
+    const path = new URL(c.req.url).pathname
+    paths.push(path)
+    return c.json({
+      error: path.startsWith('/api/world/') ? 'listing id must be a positive integer' : 'bad id',
+    }, 400)
+  })
+  const app = gateway(backing)
+  const invalidId = JSON.parse('{"toString":null,"valueOf":null}') as Record<string, null>
+  const calls = [
+    { name: 'read_listing', arguments: { id: invalidId }, error: 'bad id' },
+    {
+      name: 'checkout_world', arguments: { listing_id: invalidId, city_handle: 'agent-8' },
+      error: 'listing id must be a positive integer',
+    },
+    {
+      name: 'sync_world', arguments: { listing_id: invalidId },
+      error: 'listing id must be a positive integer',
+    },
+    { name: 'edit_item', arguments: { id: invalidId }, error: 'bad id' },
+    { name: 'withdraw_item', arguments: { id: invalidId }, error: 'bad id' },
+    { name: 'buy', arguments: { id: invalidId }, error: 'bad id' },
+    {
+      name: 'buy', arguments: { id: invalidId, payer_wallet: '0x1111111111111111111111111111111111111111' },
+      error: 'bad id',
+    },
+    { name: 'buy', arguments: { id: invalidId, intent_id: 1 }, error: 'bad id' },
+  ]
+
+  for (const [index, call] of calls.entries()) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: index, method: 'tools/call', params: call,
+    }))
+    assert.equal(response.status, 200, call.name)
+    const body = await response.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(body.result.isError, true, call.name)
+    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error: call.error }, call.name)
+  }
+
+  assert.deepEqual(paths, [
+    '/api/listing/NaN',
+    '/api/world/checkout/NaN',
+    '/api/world/sync/NaN',
+    '/api/listing/NaN',
+    '/api/listing/NaN/withdraw',
+    '/api/buy/NaN',
+    '/api/purchase-intent/NaN',
+    '/api/claim/NaN',
+  ])
 })
 
 test('ordinary MCP preserves registration failure causes in the tool result', async () => {

@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { AISLES } from './market.ts'
-import { allowOAuthForHostedConnectorRequest, SECRET_PREFIX } from './core.ts'
+import { allowOAuthForHostedConnectorRequest, HANDLE_RE, SECRET_PREFIX } from './core.ts'
 import { MARKET_OAUTH_SCOPE, marketPublicOrigin } from './market-oauth-config.ts'
 
 /**
@@ -49,6 +49,10 @@ function containsCredential(value: unknown): boolean {
 
 function redactCredentials(value: string): string {
   return value.replace(CREDENTIAL_REDACTION, '[redacted 1F3EA credential]')
+}
+
+function routeId(value: unknown): number {
+  return typeof value === 'number' ? value : Number.NaN
 }
 
 function hostedChallenge(): string {
@@ -112,7 +116,10 @@ const TOOLS: ToolDef[] = [
       required: ['handle'],
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'GET', path: `/api/store/${encodeURIComponent(String(a.handle ?? ''))}` }),
+    route: a => {
+      const handle = typeof a.handle === 'string' ? a.handle.toLowerCase() : ''
+      return { method: 'GET', path: `/api/store/${HANDLE_RE.test(handle) ? handle : '_'}` }
+    },
   },
   {
     name: 'set_store',
@@ -130,7 +137,7 @@ const TOOLS: ToolDef[] = [
     description: 'Read the public part of one listing, with its comments. The artifact itself requires purchase.',
     inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'GET', path: `/api/listing/${Number(a.id)}` }),
+    route: a => ({ method: 'GET', path: `/api/listing/${routeId(a.id)}` }),
   },
   {
     name: 'list_item',
@@ -212,7 +219,7 @@ const TOOLS: ToolDef[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     route: a => ({
-      method: 'POST', path: `/api/world/checkout/${Number(a.listing_id)}`,
+      method: 'POST', path: `/api/world/checkout/${routeId(a.listing_id)}`,
       body: { city_handle: a.city_handle },
     }),
   },
@@ -229,7 +236,7 @@ const TOOLS: ToolDef[] = [
       required: ['listing_id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'POST', path: `/api/world/sync/${Number(a.listing_id)}`, body: {} }),
+    route: a => ({ method: 'POST', path: `/api/world/sync/${routeId(a.listing_id)}`, body: {} }),
   },
   {
     name: 'edit_item',
@@ -258,7 +265,7 @@ const TOOLS: ToolDef[] = [
           .filter(key => Object.prototype.hasOwnProperty.call(a, key))
           .map(key => [key, a[key]]),
       )
-      return { method: 'PATCH', path: `/api/listing/${Number(a.id)}`, body }
+      return { method: 'PATCH', path: `/api/listing/${routeId(a.id)}`, body }
     },
   },
   {
@@ -276,7 +283,7 @@ const TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     route: a => ({
       method: 'POST',
-      path: `/api/listing/${Number(a.id)}/withdraw`,
+      path: `/api/listing/${routeId(a.id)}/withdraw`,
       body: {},
     }),
   },
@@ -314,16 +321,16 @@ const TOOLS: ToolDef[] = [
             .filter(key => Object.prototype.hasOwnProperty.call(a, key))
             .map(key => [key, a[key]]),
         )
-        return { method: 'POST', path: `/api/claim/${Number(a.id)}`, body }
+        return { method: 'POST', path: `/api/claim/${routeId(a.id)}`, body }
       }
       if (typeof a.payer_wallet === 'string' && a.payer_wallet) {
         return {
           method: 'POST',
-          path: `/api/purchase-intent/${Number(a.id)}`,
+          path: `/api/purchase-intent/${routeId(a.id)}`,
           body: { payer_wallet: a.payer_wallet },
         }
       }
-      return { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} }
+      return { method: 'POST', path: `/api/buy/${routeId(a.id)}`, body: {} }
     },
   },
   {
@@ -398,7 +405,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
     })
   }
   if (method === 'tools/call') {
-    const name = String(params?.name ?? '')
+    const name = typeof params?.name === 'string' ? params.name : ''
     const rawArguments = params?.arguments
     const args = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
       ? rawArguments as Record<string, unknown>
