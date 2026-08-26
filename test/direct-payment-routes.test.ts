@@ -36,6 +36,12 @@ interface IntentRow {
 
 interface DbCall { query: string; params: unknown[] }
 
+interface PostgresErrorFixture {
+  code: string
+  constraint?: string
+  nested?: boolean
+}
+
 const state = {
   nextIntentId: 100,
   requestNow: new Date(),
@@ -51,7 +57,8 @@ const state = {
   transferAmount: 1_500_000n,
   transferBlockTime: new Date(),
   recoveredSigner: BUYER,
-  failPurchaseCode: null as string | null,
+  intentInsertError: null as PostgresErrorFixture | null,
+  purchaseInsertError: null as PostgresErrorFixture | null,
   calls: [] as DbCall[],
   rpcMethods: [] as string[],
 }
@@ -60,6 +67,14 @@ const pad32 = (value: string) => '0x' + value.toLowerCase().replace(/^0x/, '').p
 const listingIdFrom = (params: unknown[]) => {
   const value = params.find(candidate => Number.isInteger(Number(candidate)) && state.listings.has(Number(candidate)))
   return value === undefined ? undefined : Number(value)
+}
+
+function postgresError(fixture: PostgresErrorFixture, message: string): Error {
+  const detail = Object.assign(new Error(message), {
+    code: fixture.code,
+    constraint: fixture.constraint,
+  })
+  return fixture.nested ? Object.assign(new Error(`wrapped ${message}`), { sourceError: detail }) : detail
 }
 
 function listingRow(id: number) {
@@ -119,6 +134,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   }
   if (query.includes('SELECT id FROM purchases')) return []
   if (query.includes('INSERT INTO direct_purchase_intents')) {
+    if (state.intentInsertError) throw postgresError(state.intentInsertError, 'intent insert failed')
     const next = intentFromParams(params)
     const existing = state.intents.find(intent =>
       intent.listing_id === next.listing_id && intent.merchant_id === next.merchant_id)
@@ -150,9 +166,10 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return found ? [{ ...found }] : []
   }
   if (query.includes('INSERT INTO purchases')) {
-    if (state.failPurchaseCode) throw Object.assign(new Error('purchase failed'), { code: state.failPurchaseCode })
+    if (state.purchaseInsertError) throw postgresError(state.purchaseInsertError, 'purchase failed')
     const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value))) ?? '').toLowerCase()
-    if (state.paymentHashes.has(txHash)) throw Object.assign(new Error('payment already used'), { code: '23505' })
+    if (state.paymentHashes.has(txHash))
+      throw Object.assign(new Error('payment already used'), { code: '23505', constraint: 'payment_uses_pkey' })
     const intentId = Number(params.find(value => Number(value) >= 100))
     const intent = state.intents.find(candidate => candidate.id === intentId)
     if (!intent || intent.claimed_at || intent.superseded_at) return []
@@ -217,7 +234,7 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
         logs: [{
           address: state.transferToken,
           topics: [TRANSFER_TOPIC, pad32(state.transferFrom), pad32(state.transferTo)],
-          data: `0x${state.transferAmount.toString(16)}`,
+          data: pad32(`0x${state.transferAmount.toString(16)}`),
         }],
       },
     })
@@ -243,7 +260,8 @@ const reset = () => {
   state.transferAmount = 1_500_000n
   state.transferBlockTime = new Date(state.requestNow.getTime() + 1_000)
   state.recoveredSigner = BUYER
-  state.failPurchaseCode = null
+  state.intentInsertError = null
+  state.purchaseInsertError = null
   state.calls = []
   state.rpcMethods = []
 }
@@ -310,6 +328,33 @@ test('concurrent intent retries return one stable challenge and cannot switch it
   const switchedPayer = await openIntent(1, OTHER_PAYER)
   assert.equal(switchedPayer.status, 409)
   assert.equal(state.intents.length, 1)
+})
+
+test('intent retries recover only from the two committed open-intent constraints', async () => {
+  for (const constraint of [
+    'direct_purchase_intents_open_unique',
+    'direct_purchase_intents_buyer_listing_unique',
+  ]) {
+    reset()
+    const first = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+    state.intentInsertError = { code: '23505', constraint, nested: true }
+    const replay = await openIntent()
+    assert.equal(replay.status, 200)
+    assert.equal(((await replay.json()) as { purchase_intent: IntentRow }).purchase_intent.id, first.id)
+  }
+
+  reset()
+  await openIntent()
+  state.intentInsertError = { code: '23505', constraint: 'direct_purchase_intents_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const unrelated = await openIntent()
+    assert.equal(unrelated.status, 500)
+    assert.deepEqual(await unrelated.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('an expired unused intent refreshes in place instead of accumulating proof rows', async () => {
@@ -428,7 +473,7 @@ test('a transaction already used for a listing fee cannot satisfy a direct purch
 test('intent claim and purchase are atomic across a database failure and safe retry', async () => {
   reset()
   const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
-  state.failPurchaseCode = '08006'
+  state.purchaseInsertError = { code: '08006' }
   const originalConsoleError = console.error
   console.error = () => undefined
   try {
@@ -440,10 +485,35 @@ test('intent claim and purchase are atomic across a database failure and safe re
   assert.equal(state.intents.find(row => row.id === intent.id)?.claimed_at, null)
   assert.equal(state.paymentHashes.size, 0)
 
-  state.failPurchaseCode = null
+  state.purchaseInsertError = null
   const retried = await claim(1, intent.id)
   assert.equal(retried.status, 200)
   assert.ok(state.intents.find(row => row.id === intent.id)?.claimed_at)
+})
+
+test('direct claim names only committed purchase, intent replay, and used payment constraints', async () => {
+  const cases = [
+    { constraint: 'purchases_listing_id_merchant_id_key', reason: /already purchased/i, status: 409 },
+    { constraint: 'purchases_direct_intent_unique', reason: /purchase intent was already used/i, status: 409 },
+    { constraint: 'purchases_tx_hash_key', reason: /transaction hash was already used/i, status: 409 },
+    { constraint: 'purchases_tx_hash_lower_unique', reason: /transaction hash was already used/i, status: 409 },
+    { constraint: 'payment_uses_pkey', reason: /transaction hash was already used/i, status: 409 },
+    { constraint: 'purchases_pkey', reason: /^internal$/i, status: 500 },
+  ]
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    for (const expected of cases) {
+      reset()
+      const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+      state.purchaseInsertError = { code: '23505', constraint: expected.constraint }
+      const response = await claim(1, intent.id)
+      assert.equal(response.status, expected.status)
+      assert.match(((await response.json()) as { error: string }).error, expected.reason)
+    }
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('direct intent and claim bodies reject every unsupported or missing field before payment work', async () => {

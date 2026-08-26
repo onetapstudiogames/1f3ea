@@ -8,6 +8,7 @@ const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 const HASH = `0x${'aa'.repeat(32)}`
 const TX = `0x${'bb'.repeat(32)}`
+const word = (hex: string) => `0x${hex.replace(/^0x/, '').padStart(64, '0')}`
 const r = '01'.padStart(64, '0')
 const s = '02'.padStart(64, '0')
 const signature = `0x${r}${s}1b`
@@ -27,6 +28,7 @@ globalThis.fetch = (async (_input: unknown, init?: { body?: string }) => {
 const {
   recoverPersonalSigner,
   verifyPersonalSignature,
+  verifyPersonalSignatureProof,
   verifyUsdcTransfer,
   usdcBalance,
 } = await import('../src/chain.ts')
@@ -35,6 +37,7 @@ const result = (value: unknown) => () => new Response(JSON.stringify({ result: v
   headers: { 'content-type': 'application/json' },
 })
 const failedHttp = () => new Response('unavailable', { status: 503 })
+const invalidJson = () => new Response('not json', { headers: { 'content-type': 'application/json' } })
 const throws = () => { throw new Error('offline') }
 
 function queue(...next: FetchStep[]) {
@@ -73,34 +76,77 @@ test('personal-sign recovery fails closed for every RPC and precompile failure s
   assert.equal(steps.length, 0)
 })
 
-test('USDC proof rejects failed receipts, mismatched logs, and missing blocks', async () => {
+test('personal-sign proof separates an invalid signature from an unavailable Base RPC', async () => {
+  for (const unavailable of [failedHttp, invalidJson, throws]) {
+    queue(unavailable)
+    const proof = await verifyPersonalSignatureProof('intent', signature, RECOVERED)
+    assert.equal(proof.status, 'unavailable')
+    assert.match(proof.reason, /Base RPC.*payer_signature.*retry.*same proof/i)
+  }
+
+  queue(result(HASH), result(`0x${'00'.repeat(32)}`))
+  assert.deepEqual(await verifyPersonalSignatureProof('intent', signature, RECOVERED), {
+    status: 'invalid',
+    reason: 'payer_signature does not prove control of the expected payer wallet',
+  })
+  assert.equal(steps.length, 0)
+})
+
+test('USDC proof names caller-invalid receipts and transfer requirements', async () => {
   queue(result(null))
-  assert.equal(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), null)
+  assert.deepEqual(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), {
+    status: 'invalid',
+    reason: 'transaction was not found on Base; wait for it to finalize or check tx_hash',
+  })
 
   queue(result({ status: '0x0', blockHash: HASH, logs: [] }))
-  assert.equal(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), null)
+  assert.deepEqual(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), {
+    status: 'invalid',
+    reason: 'transaction failed on Base',
+  })
 
   const toTopic = `0x${RECOVERED.slice(2).padStart(64, '0')}`
   queue(result({
     status: '0x1', blockHash: HASH,
     logs: [
-      { address: RECOVERED, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: '0xf4240' },
-      { address: USDC, topics: ['0xwrong', toTopic, toTopic], data: '0xf4240' },
-      { address: USDC, topics: [TRANSFER_TOPIC], data: '0xf4240' },
-      { address: USDC, topics: [TRANSFER_TOPIC, toTopic, `0x${'22'.repeat(32)}`], data: '0xf4240' },
-      { address: USDC, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: '0x1' },
+      { address: RECOVERED, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: word('f4240') },
+      { address: USDC, topics: [`0x${'99'.repeat(32)}`, toTopic, toTopic], data: word('f4240') },
+      { address: USDC, topics: [TRANSFER_TOPIC, toTopic, `0x${'22'.repeat(32)}`], data: word('f4240') },
+      { address: USDC, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: word('1') },
     ],
   }))
-  assert.equal(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), null)
+  assert.deepEqual(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), {
+    status: 'invalid',
+    reason: `transaction did not transfer at least 1.000000 USDC on Base to ${RECOVERED}`,
+  })
 
+  assert.equal(steps.length, 0)
+})
+
+test('USDC proof reports RPC transport, HTTP, JSON, shape, and block failures as retryable', async () => {
+  for (const unavailable of [throws, failedHttp, invalidJson]) {
+    queue(unavailable)
+    const proof = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
+    assert.equal(proof.status, 'unavailable')
+    assert.match(proof.reason, /Base RPC.*retry.*same proof/i)
+  }
+
+  queue(result({ status: '0x1', blockHash: HASH, logs: 'not-an-array' }))
+  const malformedReceipt = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
+  assert.equal(malformedReceipt.status, 'unavailable')
+  assert.match(malformedReceipt.reason, /unreadable transaction receipt.*retry.*same proof/i)
+
+  const toTopic = `0x${RECOVERED.slice(2).padStart(64, '0')}`
   queue(
     result({
       status: '0x1', blockHash: HASH,
-      logs: [{ address: USDC, topics: [TRANSFER_TOPIC, '', toTopic], data: '0xf4240' }],
+      logs: [{ address: USDC, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: word('f4240') }],
     }),
     result(null),
   )
-  assert.equal(await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n), null)
+  const missingBlock = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
+  assert.equal(missingBlock.status, 'unavailable')
+  assert.match(missingBlock.reason, /Base RPC.*payment block.*retry.*same proof/i)
   assert.equal(steps.length, 0)
 })
 
@@ -109,16 +155,19 @@ test('USDC proof and treasury balance return normalized public facts on valid RP
   queue(
     result({
       status: '0x1', blockHash: HASH,
-      logs: [{ address: USDC, topics: [TRANSFER_TOPIC, '', toTopic], data: '0x1e8480' }],
+      logs: [{ address: USDC, topics: [TRANSFER_TOPIC, toTopic, toTopic], data: word('1e8480') }],
     }),
     result({ timestamp: '0x64' }),
   )
   const transfer = await verifyUsdcTransfer(TX, RECOVERED, 1_000_000n)
   assert.deepEqual(transfer, {
-    from: '0x',
-    to: RECOVERED,
-    amount: 2_000_000n,
-    blockTime: new Date(100_000),
+    status: 'verified',
+    transfer: {
+      from: RECOVERED,
+      to: RECOVERED,
+      amount: 2_000_000n,
+      blockTime: new Date(100_000),
+    },
   })
 
   queue(result(null))

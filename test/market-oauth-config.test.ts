@@ -9,6 +9,7 @@ import {
   MARKET_OAUTH_REFRESH_TOKEN_PREFIX,
   MARKET_OAUTH_RESOURCE,
   MARKET_OAUTH_SCOPE,
+  MarketOAuthClientError,
   hostedMarketSigninEnabled,
   marketOAuthResource,
   marketPublicOrigin,
@@ -53,6 +54,16 @@ function jsonResponse(body: string, init: ResponseInit = {}): Response {
     ...init,
     headers: { 'content-type': 'application/json', ...init.headers },
   })
+}
+
+async function clientError(pending: Promise<unknown>): Promise<MarketOAuthClientError> {
+  try {
+    await pending
+    assert.fail('expected OAuth client resolution to fail')
+  } catch (error) {
+    assert.ok(error instanceof MarketOAuthClientError)
+    return error
+  }
 }
 
 function validRequest(resource = MARKET_OAUTH_RESOURCE): Record<string, unknown> {
@@ -255,8 +266,50 @@ test('CIMD metadata fetch is aborted after four seconds', async t => {
   t.mock.timers.tick(3_999)
   assert.equal(requestSignal?.aborted, false)
   t.mock.timers.tick(1)
-  await assert.rejects(pending, /could not be verified/i)
+  const error = await clientError(pending)
+  assert.equal(error.status, 503)
+  assert.match(error.message, /metadata.*unavailable.*try again/i)
   assert.equal(requestSignal?.aborted, true)
+})
+
+test('CIMD classifies fetch, HTTP, and unreadable responses as upstream unavailable', async () => {
+  const upstreams = [
+    (async () => { throw new Error('private network detail') }) as typeof fetch,
+    (async () => new Response('down', { status: 503 })) as typeof fetch,
+    (async () => new Response('not json', {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch,
+    (async () => jsonResponse('[]')) as typeof fetch,
+  ]
+
+  for (const fetcher of upstreams) {
+    const error = await clientError(resolveMarketOAuthClient(CLIENT_ID, [], [CLIENT_ORIGIN], fetcher))
+    assert.equal(error.status, 503)
+    assert.match(error.message, /metadata.*(?:unavailable|unreadable).*try again/i)
+    assert.doesNotMatch(error.message, /private network detail/i)
+  }
+})
+
+test('CIMD keeps unapproved IDs and readable but invalid metadata as caller errors', async () => {
+  const unapproved = await clientError(resolveMarketOAuthClient(
+    'https://outside.example/client.json',
+    [],
+    [CLIENT_ORIGIN],
+    (async () => assert.fail('unapproved client must not fetch')) as typeof fetch,
+  ))
+  assert.equal(unapproved.status, 400)
+  assert.match(unapproved.message, /unknown OAuth client/i)
+
+  const invalidMetadata = await clientError(resolveMarketOAuthClient(
+    CLIENT_ID,
+    [],
+    [CLIENT_ORIGIN],
+    (async () => jsonResponse(metadata({
+      client_id: `${CLIENT_ORIGIN}/someone-else.json`,
+    }))) as typeof fetch,
+  ))
+  assert.equal(invalidMetadata.status, 400)
+  assert.match(invalidMetadata.message, /identity mismatch/i)
 })
 
 test('unallowlisted, credential-bearing, malformed, and fragment-bearing client IDs never fetch', async () => {

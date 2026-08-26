@@ -57,6 +57,13 @@ function hostedChallenge(): string {
     'error_description="Sign in to 1F3EA to use merchant tools."'
 }
 
+const PAYMENT_FAILURE_GUIDANCE =
+  'A 402 means payment is required or the proof is known to be invalid. ' +
+  'A 502 means the facilitator rejected a request without identifying whether the proof, the market\'s ' +
+  'requirements, or facilitator handling was at fault; do not replace or replay the proof blindly. ' +
+  'A 503 means payment or chain verification is unavailable, including an explicit facilitator failure ' +
+  'that did not match a known caller mistake; retry the same proof and do not pay again.'
+
 const TOOLS: ToolDef[] = [
   {
     name: 'register',
@@ -127,7 +134,8 @@ const TOOLS: ToolDef[] = [
     name: 'list_item',
     description:
       'Create a listing ($1 USDC fee, with no daily listing cap). Without payment this returns the x402 payment ' +
-      'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash.',
+      'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash. ' +
+      PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -170,7 +178,8 @@ const TOOLS: ToolDef[] = [
     name: 'list_world',
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
-      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments.',
+      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments. ' +
+      PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -274,7 +283,7 @@ const TOOLS: ToolDef[] = [
     description:
       'Buy a listing. Free goods deliver at once. Priced goods return x402 requirements that pay the SELLER ' +
       'directly; or start a fresh ten-minute direct-payment intent for one payer wallet, then claim with ' +
-      'intent_id, tx_hash, and payer_signature.',
+      'intent_id, tx_hash, and payer_signature. ' + PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,

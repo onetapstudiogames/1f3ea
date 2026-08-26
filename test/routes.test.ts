@@ -37,6 +37,12 @@ interface PurchaseIntentRow {
 
 interface DbCall { url: string; query?: string; params?: unknown[] }
 
+interface PostgresErrorFixture {
+  code: string
+  constraint?: string
+  nested?: boolean
+}
+
 interface PublicEventFixture extends Record<string, unknown> {
   id: number
   at: string
@@ -73,16 +79,28 @@ const state = {
   duplicateWithdrawn: false,
   seedCount: 10,
   nextListingId: 42,
+  registrationInsertError: null as PostgresErrorFixture | null,
+  registrationEventError: null as PostgresErrorFixture | null,
+  voteInsertErrorCode: null as string | null,
+  voteInsertErrorConstraint: null as string | null,
   failFeeInsert: false,
   feeInsertErrorCode: '23505',
+  feeInsertErrorConstraint: 'fees_tx_hash_lower_unique',
   paymentHashes: new Set<string>(),
   nextIntentId: 100,
   purchaseIntents: [] as PurchaseIntentRow[],
   failPurchaseInsert: false,
   purchaseInsertErrorCode: '23505',
+  purchaseInsertErrorConstraint: 'purchases_listing_id_merchant_id_key',
   facilitatorVerify: false,
+  facilitatorVerifyUnavailable: false,
+  facilitatorVerifyHttpStatus: 200,
+  facilitatorVerifyBody: null as Record<string, unknown> | null,
   facilitatorSettle: false,
+  facilitatorSettleHttpStatus: 200,
+  facilitatorSettleReason: 'settlement failed (test)',
   facilitatorTransaction: TX_CASE_UPPER,
+  rpcUnavailableMethod: null as string | null,
   mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
@@ -199,7 +217,31 @@ function applyListingEdit(query: string, params: unknown[]) {
   if (Array.isArray(tags)) state.listingTags = tags.map(String)
 }
 
+function postgresError(fixture: PostgresErrorFixture, message: string): Error {
+  const detail = Object.assign(new Error(message), {
+    code: fixture.code,
+    constraint: fixture.constraint,
+  })
+  return fixture.nested ? Object.assign(new Error(`wrapped ${message}`), { sourceError: detail }) : detail
+}
+
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
+  if (query.includes('DELETE FROM reg_log')) return []
+  if (query.includes('FROM reg_log')) return [{ ip: 0, all: 0 }]
+  if (query.includes('INSERT INTO merchants')) {
+    if (state.registrationInsertError)
+      throw postgresError(state.registrationInsertError, 'merchant insert failed')
+    return [{ id: 77 }]
+  }
+  if (query.includes('INSERT INTO reg_log')) return []
+  if (query.includes('INSERT INTO votes')) {
+    if (state.voteInsertErrorCode)
+      throw Object.assign(new Error('vote insert failed'), {
+        code: state.voteInsertErrorCode,
+        constraint: state.voteInsertErrorConstraint,
+      })
+    return []
+  }
   if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE secret_hash')) {
     if (!state.authValid) return []
     if (state.quotaDayStale) {
@@ -227,21 +269,27 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     const id = state.nextListingId++
     if (query.includes('INSERT INTO fees')) {
       if (state.failFeeInsert)
-        throw Object.assign(new Error('fee insert failed'), { code: state.feeInsertErrorCode })
+        throw Object.assign(new Error('fee insert failed'), {
+          code: state.feeInsertErrorCode,
+          constraint: state.feeInsertErrorConstraint,
+        })
       const rawHash = params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))
       const hash = String(rawHash ?? '').toLowerCase()
       if (state.paymentHashes.has(hash))
-        throw Object.assign(new Error('duplicate fee'), { code: '23505' })
+        throw Object.assign(new Error('duplicate fee'), { code: '23505', constraint: 'payment_uses_pkey' })
       state.paymentHashes.add(hash)
     }
     return [{ id }]
   }
   if (query.includes('INSERT INTO fees')) {
     if (state.failFeeInsert)
-      throw Object.assign(new Error('fee insert failed'), { code: state.feeInsertErrorCode })
+      throw Object.assign(new Error('fee insert failed'), {
+        code: state.feeInsertErrorCode,
+        constraint: state.feeInsertErrorConstraint,
+      })
     const hash = String(params[3] ?? '').toLowerCase()
     if (state.paymentHashes.has(hash))
-      throw Object.assign(new Error('duplicate fee'), { code: '23505' })
+      throw Object.assign(new Error('duplicate fee'), { code: '23505', constraint: 'payment_uses_pkey' })
     state.paymentHashes.add(hash)
     return []
   }
@@ -272,7 +320,11 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return [editableListing()]
   }
   if (query.includes('DELETE FROM listings')) return []
-  if (query.includes('INSERT INTO events') && !query.includes('INSERT INTO purchases')) return []
+  if (query.includes('INSERT INTO events') && !query.includes('INSERT INTO purchases')) {
+    if (state.registrationEventError && params[0] === 'register')
+      throw postgresError(state.registrationEventError, 'registration event insert failed')
+    return []
+  }
   if (query.includes('UPDATE merchants SET storefront_line')) {
     state.storeLine = String(params[0] ?? '')
     return [{ line: state.storeLine }]
@@ -350,12 +402,15 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM comments c JOIN merchants m')) return []
   if (query.includes('INSERT INTO purchases')) {
     if (state.failPurchaseInsert)
-      throw Object.assign(new Error('purchase insert failed'), { code: state.purchaseInsertErrorCode })
+      throw Object.assign(new Error('purchase insert failed'), {
+        code: state.purchaseInsertErrorCode,
+        constraint: state.purchaseInsertErrorConstraint,
+      })
     const rawHash = params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))
     if (rawHash) {
       const hash = String(rawHash).toLowerCase()
       if (state.paymentHashes.has(hash))
-        throw Object.assign(new Error('duplicate payment use'), { code: '23505' })
+        throw Object.assign(new Error('duplicate payment use'), { code: '23505', constraint: 'payment_uses_pkey' })
       state.paymentHashes.add(hash)
     }
     const intentId = Number(params.find(value =>
@@ -410,7 +465,7 @@ function chainRespond(method: string): unknown {
       logs: [{
         address: USDC,
         topics: [TRANSFER_TOPIC, pad32(state.feeFrom), pad32(TREASURY)],
-        data: '0x0f4240',
+        data: pad32('0x0f4240'),
       }],
     }
   }
@@ -461,13 +516,19 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
     return jsonRes(neonEncode(dbRespond(body.query, body.params ?? [])))
   }
   if (url.includes('mainnet.base.org'))
-    return jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method) })
-  if (url.includes('/verify')) return jsonRes(state.facilitatorVerify
-    ? { isValid: true }
-    : { isValid: false, invalidReason: 'facilitator says no (test)' })
+    return state.rpcUnavailableMethod === body.method
+      ? new Response('Base RPC unavailable', { status: 503 })
+      : jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method) })
+  if (url.includes('/verify')) return state.facilitatorVerifyUnavailable
+    ? new Response('facilitator unavailable', { status: 503 })
+    : jsonRes(state.facilitatorVerifyBody ?? (state.facilitatorVerify
+      ? { isValid: true }
+      : { isValid: false, invalidReason: 'facilitator says no (test)' }),
+    state.facilitatorVerifyHttpStatus)
   if (url.includes('/settle')) {
     if (!state.facilitatorSettle)
-      return jsonRes({ success: false, errorReason: 'settlement failed (test)' })
+      return jsonRes({ success: false, errorReason: state.facilitatorSettleReason },
+        state.facilitatorSettleHttpStatus)
     const terminalAt = new Date(Date.now() + 500).toISOString()
     if (state.mutateDuringSettle === 'edit') state.listingDescription = 'edited after settlement'
     if (state.mutateDuringSettle === 'withdraw') {
@@ -533,16 +594,28 @@ function reset() {
   state.duplicateWithdrawn = false
   state.seedCount = 10
   state.nextListingId = 42
+  state.registrationInsertError = null
+  state.registrationEventError = null
+  state.voteInsertErrorCode = null
+  state.voteInsertErrorConstraint = null
   state.failFeeInsert = false
   state.feeInsertErrorCode = '23505'
+  state.feeInsertErrorConstraint = 'fees_tx_hash_lower_unique'
   state.paymentHashes = new Set()
   state.nextIntentId = 100
   state.purchaseIntents = []
   state.failPurchaseInsert = false
   state.purchaseInsertErrorCode = '23505'
+  state.purchaseInsertErrorConstraint = 'purchases_listing_id_merchant_id_key'
   state.facilitatorVerify = false
+  state.facilitatorVerifyUnavailable = false
+  state.facilitatorVerifyHttpStatus = 200
+  state.facilitatorVerifyBody = null
   state.facilitatorSettle = false
+  state.facilitatorSettleHttpStatus = 200
+  state.facilitatorSettleReason = 'settlement failed (test)'
   state.facilitatorTransaction = TX_CASE_UPPER
+  state.rpcUnavailableMethod = null
   state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
@@ -567,6 +640,157 @@ async function openDirectIntent() {
 function directClaimBody(intentId: number, txHash: string) {
   return JSON.stringify({ intent_id: intentId, tx_hash: txHash, payer_signature: SIGNATURE })
 }
+
+test('registration reports only a nested merchants_handle_key violation as a taken handle', async () => {
+  reset()
+  state.registrationInsertError = {
+    code: '23505', constraint: 'merchants_handle_key', nested: true,
+  }
+  const res = await app.request('/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ handle: 'taken-handle', model: 'test-model' }),
+  })
+  assert.equal(res.status, 409)
+  assert.deepEqual(await res.json(), { error: 'handle taken' })
+})
+
+test('registration does not misreport another merchant unique violation as a taken handle', async () => {
+  reset()
+  state.registrationInsertError = { code: '23505', constraint: 'merchants_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('registration reports a non-conflict database failure as internal', async () => {
+  reset()
+  state.registrationInsertError = { code: '08006' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('registration reports a late event unique violation as internal', async () => {
+  reset()
+  state.registrationEventError = { code: '23505', constraint: 'events_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('voting reports a unique vote conflict as a caller-correctable refusal', async () => {
+  reset()
+  state.listingOwner = 8
+  state.voteInsertErrorCode = '23505'
+  state.voteInsertErrorConstraint = 'votes_pkey'
+  const res = await app.request('/api/vote', {
+    method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
+  })
+  assert.equal(res.status, 409)
+  assert.deepEqual(await res.json(), { error: 'already voted for that listing' })
+})
+
+test('voting reports an unrelated unique violation as internal', async () => {
+  reset()
+  state.listingOwner = 8
+  state.voteInsertErrorCode = '23505'
+  state.voteInsertErrorConstraint = 'votes_created_at_key'
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/vote', {
+      method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('voting reports a non-conflict database failure as internal', async () => {
+  reset()
+  state.listingOwner = 8
+  state.voteInsertErrorCode = '08006'
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/vote', {
+      method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('every market action route returns a caller-facing cause when it refuses a request', async () => {
+  const cases = [
+    ['register', '/api/register', 'POST', { handle: 'x' }, /handle must match/iu],
+    ['rotate key', '/api/rotate', 'POST', {}, /bad or missing bearer secret/iu],
+    ['set store', '/api/store', 'POST', {}, /bad or missing bearer secret/iu],
+    ['list item', '/api/listing', 'POST', {}, /bad or missing bearer secret/iu],
+    ['edit item', '/api/listing/1', 'PATCH', {}, /bad or missing bearer secret/iu],
+    ['withdraw item', '/api/listing/1/withdraw', 'POST', {}, /bad or missing bearer secret/iu],
+    ['create purchase intent', '/api/purchase-intent/1', 'POST', {}, /register first/iu],
+    ['buy item', '/api/buy/1', 'POST', {}, /register first/iu],
+    ['claim purchase', '/api/claim/1', 'POST', {}, /register first/iu],
+    ['comment', '/api/comment', 'POST', {}, /bad or missing bearer secret/iu],
+    ['vote', '/api/vote', 'POST', {}, /bad or missing bearer secret/iu],
+    ['flag', '/api/flag', 'POST', {}, /need target_type.*target_id.*reason/iu],
+    ['remove listing', '/api/mod/remove', 'POST', {}, /bad or missing bearer secret/iu],
+    ['pin listing', '/api/mod/pin', 'POST', {}, /bad or missing bearer secret/iu],
+    ['draft world item', '/api/world/draft', 'POST', {}, /bad or missing bearer secret/iu],
+    ['list world item', '/api/world/listing', 'POST', {}, /bad or missing bearer secret/iu],
+    ['checkout world item', '/api/world/checkout/1', 'POST', {}, /register in the market first/iu],
+    ['sync world item', '/api/world/sync/1', 'POST', {}, /bad or missing bearer secret/iu],
+  ] as const
+
+  for (const [verb, path, method, body, cause] of cases) {
+    reset()
+    const response = await app.request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    assert.ok(response.status >= 400, verb)
+    const refusal = await response.json() as { error?: unknown }
+    assert.equal(typeof refusal.error, 'string', verb)
+    assert.match(String(refusal.error), cause, verb)
+  }
+})
 
 test('a seller cannot buy its own listing', async () => {
   reset()
@@ -1135,7 +1359,8 @@ test('an old direct fee is rejected without writes', async () => {
   state.feeAgeSeconds = 2 * 3600
   const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody(TX1) })
   assert.equal(res.status, 402)
-  assert.match(((await res.json()) as { error: string }).error, /within the last hour/)
+  assert.equal(((await res.json()) as { error: string }).error,
+    'transaction was paid before this payment window opened')
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
@@ -1165,11 +1390,44 @@ test('a reused listing fee rolls back one atomic listing write without cleanup m
     method: 'POST', headers: authed, body: listingBody(TX1),
   })
   assert.equal(res.status, 409)
-  assert.match(((await res.json()) as { error: string }).error, /fee tx was already used/)
+  assert.match(((await res.json()) as { error: string }).error, /fee transaction was already used/)
   const write = sqlCalls().find(call => call.query?.includes('INSERT INTO listings'))
   assert.match(write?.query ?? '', /INSERT INTO fees/)
   assert.match(write?.query ?? '', /INSERT INTO events/)
   assert.equal(sqlCalls().filter(call => call.query?.includes('DELETE FROM listings')).length, 0)
+})
+
+test('paid listing reports only fee transaction unique constraints as already used', async () => {
+  const accepted = [
+    'fees_tx_hash_key',
+    'fees_tx_hash_lower_unique',
+    'payment_uses_pkey',
+  ]
+  for (const constraint of accepted) {
+    reset()
+    state.failFeeInsert = true
+    state.feeInsertErrorConstraint = constraint
+    const res = await app.request('/api/listing', {
+      method: 'POST', headers: authed, body: listingBody(TX1),
+    })
+    assert.equal(res.status, 409)
+    assert.match(((await res.json()) as { error: string }).error, /fee transaction was already used/i)
+  }
+
+  reset()
+  state.failFeeInsert = true
+  state.feeInsertErrorConstraint = 'listings_pkey'
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const res = await app.request('/api/listing', {
+      method: 'POST', headers: authed, body: listingBody(TX1),
+    })
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('a database outage is not misreported as a reused payment', async () => {
@@ -1221,7 +1479,7 @@ test('one treasury tx cannot be a listing fee and then a keeper purchase', async
     method: 'POST', headers: authed, body: directClaimBody(intent.id, TX_CASE_LOWER),
   })
   assert.equal(claimed.status, 409)
-  assert.match(((await claimed.json()) as { error: string }).error, /already purchased|tx already used/)
+  assert.match(((await claimed.json()) as { error: string }).error, /transaction hash was already used/)
 })
 
 test('one treasury tx cannot be a keeper purchase and then a listing fee', async () => {
@@ -1241,7 +1499,7 @@ test('one treasury tx cannot be a keeper purchase and then a listing fee', async
     body: listingBody(TX_CASE_LOWER, { title: 'Another paid item', artifact: 'new goods' }),
   })
   assert.equal(listed.status, 409)
-  assert.match(((await listed.json()) as { error: string }).error, /fee tx was already used/)
+  assert.match(((await listed.json()) as { error: string }).error, /fee transaction was already used/)
 })
 
 test('a purchase database outage is not misreported as a reused payment', async () => {
@@ -1255,6 +1513,31 @@ test('a purchase database outage is not misreported as a reused payment', async 
     const res = await app.request('/api/buy/1', { method: 'POST', headers: authed })
     assert.equal(res.status, 500)
     assert.deepEqual(await res.json(), { error: 'internal' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('buy distinguishes purchase replay, used payment proof, and unrelated unique faults', async () => {
+  const cases = [
+    { constraint: 'purchases_listing_id_merchant_id_key', status: 409, reason: /already purchased/i },
+    { constraint: 'purchases_tx_hash_key', status: 409, reason: /transaction hash was already used/i },
+    { constraint: 'purchases_tx_hash_lower_unique', status: 409, reason: /transaction hash was already used/i },
+    { constraint: 'payment_uses_pkey', status: 409, reason: /transaction hash was already used/i },
+    { constraint: 'purchases_pkey', status: 500, reason: /^internal$/i },
+  ]
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    for (const expected of cases) {
+      reset()
+      state.listingOwner = 8
+      state.failPurchaseInsert = true
+      state.purchaseInsertErrorConstraint = expected.constraint
+      const res = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+      assert.equal(res.status, expected.status)
+      assert.match(((await res.json()) as { error: string }).error, expected.reason)
+    }
   } finally {
     console.error = originalConsoleError
   }
@@ -1285,10 +1568,43 @@ test('x402 verification success followed by settlement failure writes nothing', 
     headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
     body: listingBody(),
   })
-  assert.equal(res.status, 402)
+  assert.equal(res.status, 503)
+  assert.deepEqual(await res.json(), {
+    error: 'payment facilitator did not confirm settlement: settlement failed (test); ' +
+      'retry this request with the same X-PAYMENT proof later; do not pay again',
+  })
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
+})
+
+test('x402 settlement distinguishes a known caller failure from an unexpected facilitator failure', async () => {
+  reset()
+  state.facilitatorVerify = true
+  state.facilitatorSettleHttpStatus = 400
+  state.facilitatorSettleReason = 'insufficient_funds'
+  const invalid = await app.request('/api/listing', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    body: listingBody(),
+  })
+  assert.equal(invalid.status, 402)
+  assert.equal((await invalid.json() as { error: string }).error,
+    'payer wallet does not have enough USDC for this payment')
+
+  reset()
+  state.facilitatorVerify = true
+  state.facilitatorSettleReason = 'unexpected_settle_error'
+  const unavailable = await app.request('/api/listing', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    body: listingBody(),
+  })
+  assert.equal(unavailable.status, 503)
+  assert.match((await unavailable.json() as { error: string }).error,
+    /did not confirm settlement.*retry.*same X-PAYMENT proof.*do not pay again/i)
+  assert.equal(inserted('listings'), 0)
+  assert.equal(inserted('fees'), 0)
 })
 
 test('missing payment returns 402 even when a legacy row says one listing today', async () => {
@@ -1306,11 +1622,145 @@ test('facilitator rejection writes nothing and runs no listing quota SQL', async
     headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
     body: listingBody(),
   })
-  assert.equal(res.status, 402)
+  assert.equal(res.status, 503)
+  assert.deepEqual(await res.json(), {
+    error: 'payment facilitator could not classify X-PAYMENT verification: facilitator says no (test); ' +
+      'retry this request with the same X-PAYMENT proof later',
+  })
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
   assert.equal(hasSql(/listings_today/), false)
+})
+
+test('listing and buying distinguish an invalid x402 proof from an unavailable facilitator', async () => {
+  for (const action of ['listing', 'buy'] as const) {
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    const path = action === 'listing' ? '/api/listing' : '/api/buy/1'
+    const body = action === 'listing' ? listingBody() : '{}'
+    const invalid = await app.request(path, {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': 'not-json' }, body,
+    })
+    assert.equal(invalid.status, 402, action)
+    const invalidBody = await invalid.json() as {
+      x402Version: number; error: string; accepts: unknown[]
+    }
+    assert.equal(invalidBody.x402Version, 1, action)
+    assert.equal(invalidBody.error, 'X-PAYMENT header is not valid base64 JSON', action)
+    assert.equal(invalidBody.accepts.length, 1, action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyHttpStatus = 400
+    const rejected = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(rejected.status, 503, action)
+    assert.equal((await rejected.json() as { error: string }).error,
+      'payment facilitator could not classify X-PAYMENT verification: facilitator says no (test); ' +
+      'retry this request with the same X-PAYMENT proof later', action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyHttpStatus = 400
+    state.facilitatorVerifyBody = { error: 'invalid_payment_requirements' }
+    const ambiguous = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(ambiguous.status, 502, action)
+    const ambiguousReason = (await ambiguous.json() as { error: string }).error
+    assert.match(ambiguousReason, /invalid payment requirements/i, action)
+    assert.match(ambiguousReason,
+      /X-PAYMENT proof, the market's payment requirements, or facilitator request handling was at fault/i,
+      action)
+    assert.doesNotMatch(ambiguousReason, /retry.*same|fresh payment proof/i, action)
+
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerifyUnavailable = true
+    const unavailable = await app.request(path, {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      body,
+    })
+    assert.equal(unavailable.status, 503, action)
+    assert.deepEqual(await unavailable.json(), {
+      error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
+    }, action)
+  }
+})
+
+test('direct fee and purchase proofs report an unavailable Base RPC as retryable', async () => {
+  reset()
+  state.rpcUnavailableMethod = 'eth_getTransactionReceipt'
+  const fee = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(fee.status, 503)
+  assert.deepEqual(await fee.json(), {
+    error: 'Base RPC could not verify this payment; retry the same proof later',
+  })
+
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  state.listingWallet = TREASURY
+  const signatureIntent = await openDirectIntent()
+  state.rpcUnavailableMethod = 'web3_sha3'
+  const signature = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: directClaimBody(signatureIntent.id, TX1),
+  })
+  assert.equal(signature.status, 503)
+  assert.deepEqual(await signature.json(), {
+    error: 'Base RPC could not verify payer_signature; retry the same proof later',
+  })
+
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  state.listingWallet = TREASURY
+  const paymentIntent = await openDirectIntent()
+  state.rpcUnavailableMethod = 'eth_getTransactionReceipt'
+  const payment = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: directClaimBody(paymentIntent.id, TX1),
+  })
+  assert.equal(payment.status, 503)
+  assert.deepEqual(await payment.json(), {
+    error: 'Base RPC could not verify this payment; retry the same proof later',
+  })
+})
+
+test('a signature that proves another wallet remains a caller-invalid 402 refusal', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  state.listingWallet = TREASURY
+  const intent = await openDirectIntent()
+  state.feeFrom = STRANGER
+  const response = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: directClaimBody(intent.id, TX1),
+  })
+  assert.equal(response.status, 402)
+  assert.deepEqual(await response.json(), {
+    error: 'payer_signature does not prove control of the expected payer wallet',
+  })
 })
 
 test('a recent copycat is rejected before payment', async () => {

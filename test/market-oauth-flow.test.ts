@@ -540,6 +540,55 @@ test('OAuth revocation disconnects the full token family and keeps its response 
   assert.deepEqual(await refreshAfterRevoke.json(), { error: 'invalid_grant' })
 })
 
+test('OAuth revocation names retryable operational failures without revealing token state', async () => {
+  const { app: issuer, store } = fixture()
+  const approved = await approve(issuer)
+  const exchanged = await exchange(issuer, approved.code)
+  const access = String(exchanged.body.access_token)
+
+  const limitedApp = new Hono()
+  mountMarketOAuthRoutes(limitedApp, {
+    environment,
+    store: { ...store.api, consumeOAuthRateLimit: async () => false },
+  })
+  const limited = await limitedApp.request('/oauth/revoke', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: access, client_id: CLIENT_ID }),
+  })
+  assert.equal(limited.status, 429)
+  assert.equal(limited.headers.get('retry-after'), '3600')
+  assert.match(limited.headers.get('cache-control') ?? '', /no-store/i)
+  assert.deepEqual(await limited.json(), {
+    error: 'temporarily_unavailable',
+    error_description: 'revocation allows 120 attempts per UTC hour for each IP and each client; ' +
+      'retry after the next UTC hour begins',
+  })
+  assert.deepEqual(await merchantByOAuthAccessToken(access, environment, store.api), merchant())
+
+  const failingApp = new Hono()
+  mountMarketOAuthRoutes(failingApp, {
+    environment,
+    store: {
+      ...store.api,
+      revokeTokenFamilyByToken: async () => { throw new Error('database unavailable') },
+    },
+  })
+  const failed = await failingApp.request('/oauth/revoke', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: access, client_id: CLIENT_ID }),
+  })
+  assert.equal(failed.status, 503)
+  assert.equal(failed.headers.get('retry-after'), '1')
+  assert.match(failed.headers.get('cache-control') ?? '', /no-store/i)
+  assert.deepEqual(await failed.json(), {
+    error: 'temporarily_unavailable',
+    error_description: 'revocation could not be completed; retry later',
+  })
+  assert.deepEqual(await merchantByOAuthAccessToken(access, environment, store.api), merchant())
+})
+
 test('authorization throttles before any remote ChatGPT metadata fetch', async () => {
   const store = new MemoryOAuthStore()
   let fetchCount = 0
@@ -612,4 +661,59 @@ test('an invalid authorization request cannot spend the shared ChatGPT client bu
   const response = await app.request(`/oauth/authorize?${query}`)
   assert.equal(response.status, 400)
   assert.deepEqual(rateBuckets, [sha256('market-oauth:metadata-ip:unknown')])
+})
+
+test('authorization distinguishes unreadable client metadata from an unapproved client', async () => {
+  const metadataEnvironment = {
+    ...environment,
+    HOSTED_MARKET_OAUTH_CLIENTS: '[]',
+    HOSTED_MARKET_CIMD_ORIGINS: JSON.stringify(['https://chatgpt.com']),
+  }
+  const query = new URLSearchParams({
+    response_type: 'code', client_id: CHATGPT_OAUTH_CLIENT_ID,
+    redirect_uri: CHATGPT_OAUTH_REDIRECT_URI, resource: RESOURCE,
+    scope: 'market:merchant', state: STATE, code_challenge: CHALLENGE,
+    code_challenge_method: 'S256',
+  })
+  const unavailableFetchers = [
+    (async () => { throw new Error('private network detail') }) as typeof fetch,
+    (async () => new Response('down', { status: 503 })) as typeof fetch,
+    (async () => new Response('not json', {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch,
+    (async () => new Response('[]', {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch,
+  ]
+
+  for (const fetcher of unavailableFetchers) {
+    const app = new Hono()
+    mountMarketOAuthRoutes(app, {
+      environment: metadataEnvironment,
+      store: new MemoryOAuthStore().api,
+      fetcher,
+    })
+    const response = await app.request(`/oauth/authorize?${query}`)
+    assert.equal(response.status, 503)
+    assert.equal(response.headers.get('retry-after'), '1')
+    const body = await response.text()
+    assert.match(body, /could not read the requesting chat app(?:'|&#39;)s client metadata.*try again/i)
+    assert.doesNotMatch(body, /private network detail/i)
+  }
+
+  let fetchCount = 0
+  const app = new Hono()
+  mountMarketOAuthRoutes(app, {
+    environment: metadataEnvironment,
+    store: new MemoryOAuthStore().api,
+    fetcher: (async () => {
+      fetchCount += 1
+      return new Response('{}', { headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch,
+  })
+  query.set('client_id', 'https://outside.example/client.json')
+  const unapproved = await app.request(`/oauth/authorize?${query}`)
+  assert.equal(unapproved.status, 400)
+  assert.match(await unapproved.text(), /requesting chat app is not approved/i)
+  assert.equal(fetchCount, 0)
 })

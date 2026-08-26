@@ -31,6 +31,16 @@ export interface MarketOAuthClient {
   tokenEndpointAuthMethod: 'none'
 }
 
+export class MarketOAuthClientError extends Error {
+  readonly status: 400 | 503
+
+  constructor(status: 400 | 503, message: string) {
+    super(message)
+    this.name = 'MarketOAuthClientError'
+    this.status = status
+  }
+}
+
 export interface ValidMarketAuthorizationRequest {
   clientId: string
   clientName: string
@@ -363,12 +373,20 @@ export async function resolveMarketOAuthClient(
     Buffer.byteLength(clientId, 'utf8') > MAX_CLIENT_ID_BYTES ||
     marketTokenLooksSensitive(clientId)
   ) {
-    throw new Error('unknown OAuth client')
+    throw new MarketOAuthClientError(400, 'unknown OAuth client')
   }
   const configured = staticClients.find(client => client.clientId === clientId)
   if (configured) return configured
 
-  const metadataUrl = validateCimdClientId(clientId, cimdOrigins)
+  let metadataUrl: URL
+  try {
+    metadataUrl = validateCimdClientId(clientId, cimdOrigins)
+  } catch (error) {
+    throw new MarketOAuthClientError(
+      400,
+      error instanceof Error ? error.message : 'unknown OAuth client',
+    )
+  }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), CIMD_TIMEOUT_MS)
 
@@ -382,51 +400,75 @@ export async function resolveMarketOAuthClient(
         headers: { accept: 'application/json' },
       })
     } catch {
-      throw new Error('OAuth client metadata could not be verified')
+      throw new MarketOAuthClientError(
+        503,
+        'OAuth client metadata is unavailable; try again in a moment',
+      )
     }
     if (!response.ok || response.status >= 300) {
-      throw new Error('OAuth client metadata was rejected')
+      throw new MarketOAuthClientError(
+        503,
+        'OAuth client metadata is unavailable because its fetch was rejected; try again in a moment',
+      )
     }
 
     const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
     if (!contentType || !/^application\/(?:[a-z0-9.+-]+\+)?json$/i.test(contentType)) {
-      throw new Error('OAuth client metadata must be JSON')
+      throw new MarketOAuthClientError(
+        503,
+        'OAuth client metadata is unreadable because it was not JSON; try again in a moment',
+      )
     }
 
     let body: string
     try {
       body = await boundedResponseText(response)
     } catch (error) {
-      if (error instanceof Error && /too large/i.test(error.message)) throw error
-      throw new Error('OAuth client metadata could not be verified')
+      const detail = error instanceof Error && /too large/i.test(error.message)
+        ? ' because it is too large'
+        : ''
+      throw new MarketOAuthClientError(
+        503,
+        `OAuth client metadata is unreadable${detail}; try again in a moment`,
+      )
     }
     if (marketTokenLooksSensitive(body)) {
-      throw new Error('OAuth client metadata contains a credential')
+      throw new MarketOAuthClientError(400, 'OAuth client metadata contains a credential')
     }
 
     let decoded: CimdDocument
     try {
       decoded = record(JSON.parse(body), 'OAuth client metadata') as CimdDocument
     } catch {
-      throw new Error('OAuth client metadata is invalid')
+      throw new MarketOAuthClientError(
+        503,
+        'OAuth client metadata is unreadable; try again in a moment',
+      )
     }
     if (decoded.client_id !== clientId) {
-      throw new Error('OAuth client metadata identity mismatch')
+      throw new MarketOAuthClientError(400, 'OAuth client metadata identity mismatch')
     }
 
-    const tokenEndpointAuthMethod = selectedPublicAuthMethod(clientId, metadataUrl, decoded)
-    const clientName = safeText(decoded.client_name, 'client_name', MAX_CLIENT_NAME_BYTES)
-    const redirectUris = [...new Set(
-      safeStringArray(decoded.redirect_uris, 'redirect_uris').map(exactHttpsRedirect),
-    )]
-    if (
-      clientId === CHATGPT_OAUTH_CLIENT_ID &&
-      (redirectUris.length !== 1 || redirectUris[0] !== CHATGPT_OAUTH_REDIRECT_URI)
-    ) {
-      throw new Error('ChatGPT OAuth client metadata has an unexpected redirect URI')
-    }
+    try {
+      const tokenEndpointAuthMethod = selectedPublicAuthMethod(clientId, metadataUrl, decoded)
+      const clientName = safeText(decoded.client_name, 'client_name', MAX_CLIENT_NAME_BYTES)
+      const redirectUris = [...new Set(
+        safeStringArray(decoded.redirect_uris, 'redirect_uris').map(exactHttpsRedirect),
+      )]
+      if (
+        clientId === CHATGPT_OAUTH_CLIENT_ID &&
+        (redirectUris.length !== 1 || redirectUris[0] !== CHATGPT_OAUTH_REDIRECT_URI)
+      ) {
+        throw new Error('ChatGPT OAuth client metadata has an unexpected redirect URI')
+      }
 
-    return { clientId, clientName, redirectUris, tokenEndpointAuthMethod }
+      return { clientId, clientName, redirectUris, tokenEndpointAuthMethod }
+    } catch (error) {
+      throw new MarketOAuthClientError(
+        400,
+        error instanceof Error ? error.message : 'OAuth client metadata is invalid',
+      )
+    }
   } finally {
     clearTimeout(timeout)
   }

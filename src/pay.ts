@@ -1,5 +1,11 @@
 import type { Context } from 'hono'
-import { NETWORK, USDC, toUnits, verifyUsdcTransfer } from './chain.ts'
+import {
+  NETWORK,
+  USDC,
+  toUnits,
+  verifyUsdcTransfer,
+  type VerificationFailure,
+} from './chain.ts'
 
 /**
  * x402 v1 "exact" scheme on Base, spoken directly — no SDK; the protocol is small
@@ -74,46 +80,207 @@ export function challenge402(c: Context, reqs: PaymentRequirements, note: string
 }
 
 export interface Settled {
+  status: 'verified'
   transaction: string
   payer: string
   raw: Record<string, unknown>
 }
 
+interface UnclassifiedFacilitatorFailure {
+  status: 'unclassified'
+  reason: string
+}
+
+export type X402Settlement = Settled | VerificationFailure | UnclassifiedFacilitatorFailure
+
+type FacilitatorResponse =
+  | { status: 'ok'; value: Record<string, unknown> }
+  | VerificationFailure
+  | UnclassifiedFacilitatorFailure
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function invalid(reason: string): VerificationFailure {
+  return { status: 'invalid', reason }
+}
+
+const X402_CALLER_FAILURE_REASONS: Readonly<Record<string, string>> = Object.freeze({
+  insufficient_funds: 'payer wallet does not have enough USDC for this payment',
+  invalid_exact_evm_payload_authorization_valid_after: 'X-PAYMENT authorization is not valid yet',
+  invalid_exact_evm_payload_authorization_valid_before: 'X-PAYMENT authorization expired',
+  invalid_exact_evm_payload_authorization_value: 'X-PAYMENT amount is below the required payment',
+  invalid_exact_evm_payload_signature: 'X-PAYMENT signature is invalid',
+  invalid_exact_evm_payload_recipient_mismatch: 'X-PAYMENT recipient does not match this payment',
+  invalid_network: 'X-PAYMENT uses the wrong or unsupported network',
+  invalid_payload: 'X-PAYMENT payload is malformed or missing required fields',
+  invalid_scheme: 'X-PAYMENT uses the wrong payment scheme',
+  unsupported_scheme: 'X-PAYMENT uses a payment scheme the facilitator does not support',
+  invalid_x402_version: 'X-PAYMENT uses an unsupported x402 version',
+  invalid_transaction_state: 'X-PAYMENT transaction failed or was rejected',
+})
+
+const X402_UPSTREAM_FAILURE_REASONS = new Set([
+  'invalid_payment_requirements',
+  'unexpected_verify_error',
+  'unexpected_settle_error',
+])
+
+function facilitatorUnavailable(stage: 'verification' | 'settlement'): VerificationFailure {
+  return {
+    status: 'unavailable',
+    reason: `payment facilitator ${stage} is unavailable; retry this request with the same X-PAYMENT proof later`,
+  }
+}
+
+function facilitatorUnreadable(stage: 'verification' | 'settlement'): VerificationFailure {
+  return {
+    status: 'unavailable',
+    reason: `payment facilitator returned an unreadable ${stage} response; retry this request with the same X-PAYMENT proof later`,
+  }
+}
+
+function safeFacilitatorReason(value: unknown, fallback: string): string {
+  const candidate = typeof value === 'string' ? value.trim() : ''
+  if (
+    candidate.length === 0 || candidate.length > 500 ||
+    /[\u0000-\u001f\u007f]/u.test(candidate) ||
+    /(?:1f3ea_(?:sk|at|rt|ac)_[0-9a-f]{8,}|0x[0-9a-f]{130})/i.test(candidate)
+  ) return fallback
+  return candidate
+}
+
+function facilitatorReasonCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const code = value.trim().toLowerCase()
+  return /^[a-z][a-z0-9_]*$/.test(code) ? code : null
+}
+
+function callerFailureReason(value: unknown): string | null {
+  const code = facilitatorReasonCode(value)
+  return code ? X402_CALLER_FAILURE_REASONS[code] ?? null : null
+}
+
+function readableFacilitatorDetail(value: unknown, fallback: string): string {
+  const safe = safeFacilitatorReason(value, fallback)
+  return facilitatorReasonCode(safe)?.replaceAll('_', ' ') ?? safe
+}
+
+function rejectedFacilitatorRequest(
+  stage: 'verification' | 'settlement',
+  response: Readonly<Record<string, unknown>>,
+): UnclassifiedFacilitatorFailure {
+  const fields = stage === 'verification'
+    ? ['invalidReason', 'errorReason', 'error', 'message']
+    : ['errorReason', 'invalidReason', 'error', 'message']
+  const detail = fields
+    .map(field => readableFacilitatorDetail(response[field], ''))
+    .find(candidate => candidate.length > 0)
+  return {
+    status: 'unclassified',
+    reason: `payment facilitator rejected the ${stage} request${detail ? `: ${detail}` : ''}; ` +
+      "it did not identify whether the X-PAYMENT proof, the market's payment requirements, " +
+      'or facilitator request handling was at fault',
+  }
+}
+
+async function facilitatorResponse(
+  path: '/verify' | '/settle',
+  opts: RequestInit,
+): Promise<FacilitatorResponse> {
+  const stage = path === '/verify' ? 'verification' : 'settlement'
+  let response: Response
+  try {
+    response = await fetch(`${FACILITATOR}${path}`, opts)
+  } catch {
+    return facilitatorUnavailable(stage)
+  }
+  let decoded: unknown
+  try {
+    decoded = await response.json()
+  } catch {
+    return response.ok ? facilitatorUnreadable(stage) : facilitatorUnavailable(stage)
+  }
+  if (!isRecord(decoded)) {
+    return response.ok ? facilitatorUnreadable(stage) : facilitatorUnavailable(stage)
+  }
+  if (!response.ok) {
+    const requestRejected = response.status >= 400 && response.status < 500
+    const explicitProtocolFailure = requestRejected && (
+      (path === '/verify' && decoded.isValid === false) ||
+      (path === '/settle' && decoded.success === false)
+    )
+    if (explicitProtocolFailure) return { status: 'ok', value: decoded }
+    return requestRejected ? rejectedFacilitatorRequest(stage, decoded) : facilitatorUnavailable(stage)
+  }
+  return { status: 'ok', value: decoded }
+}
+
 /**
  * Verify then settle an X-PAYMENT header against the facilitator. Settle happens
  * BEFORE anything is delivered — verify alone is raceable (the buyer could move
- * the balance away). Returns { error } on failure with the facilitator's reason.
+ * the balance away). Every result distinguishes verified, caller-invalid, and
+ * unclassified facilitator rejections, and retryable upstream-unavailable outcomes.
  */
-export async function settleX402(paymentHeader: string, reqs: PaymentRequirements): Promise<Settled | { error: string }> {
+export async function settleX402(paymentHeader: string, reqs: PaymentRequirements): Promise<X402Settlement> {
   let paymentPayload: unknown
   try {
     paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString('utf8'))
   } catch {
-    return { error: 'X-PAYMENT header is not base64 JSON' }
+    return invalid('X-PAYMENT header is not valid base64 JSON')
   }
+  if (!isRecord(paymentPayload)) return invalid('X-PAYMENT header must contain one payment proof object')
   const body = JSON.stringify({ x402Version: 1, paymentPayload, paymentRequirements: reqs })
   const opts = { method: 'POST', headers: { 'content-type': 'application/json' }, body }
 
-  try {
-    const vr = await fetch(`${FACILITATOR}/verify`, opts)
-    const verdict = (await vr.json().catch(() => null)) as { isValid?: boolean; invalidReason?: string } | null
-    if (!vr.ok || !verdict?.isValid) return { error: verdict?.invalidReason ?? 'facilitator rejected the payment' }
-
-    const sr = await fetch(`${FACILITATOR}/settle`, opts)
-    const settlement = (await sr.json().catch(() => null)) as
-      | { success?: boolean; transaction?: string; payer?: string; errorReason?: string }
-      | null
-    if (!sr.ok || !settlement?.success || !settlement.transaction)
-      return { error: settlement?.errorReason ?? 'settlement failed' }
-    const transaction = canonicalTxHash(settlement.transaction)
-    if (!transaction) return { error: 'settlement returned an invalid transaction hash' }
-
-    const payer = settlement.payer
-      ?? String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
-    return { transaction, payer, raw: settlement as Record<string, unknown> }
-  } catch {
-    return { error: 'facilitator unreachable — start a fresh signed direct-payment intent before paying' }
+  const verification = await facilitatorResponse('/verify', opts)
+  if (verification.status !== 'ok') return verification
+  if (typeof verification.value.isValid !== 'boolean') return facilitatorUnreadable('verification')
+  if (!verification.value.isValid) {
+    const callerReason = callerFailureReason(verification.value.invalidReason)
+    if (callerReason) return invalid(callerReason)
+    const code = facilitatorReasonCode(verification.value.invalidReason)
+    if (code && X402_UPSTREAM_FAILURE_REASONS.has(code)) {
+      return {
+        status: 'unavailable',
+        reason: `payment facilitator could not verify X-PAYMENT: ${code.replaceAll('_', ' ')}; ` +
+          'retry this request with the same X-PAYMENT proof later',
+      }
+    }
+    const detail = readableFacilitatorDetail(
+      verification.value.invalidReason,
+      'unrecognized verification failure',
+    )
+    return {
+      status: 'unavailable',
+      reason: `payment facilitator could not classify X-PAYMENT verification: ${detail}; ` +
+        'retry this request with the same X-PAYMENT proof later',
+    }
   }
+
+  const settlementResult = await facilitatorResponse('/settle', opts)
+  if (settlementResult.status !== 'ok') return settlementResult
+  const settlement = settlementResult.value
+  if (typeof settlement.success !== 'boolean') return facilitatorUnreadable('settlement')
+  if (!settlement.success) {
+    const callerReason = callerFailureReason(settlement.errorReason)
+    if (callerReason) return invalid(callerReason)
+    const detail = readableFacilitatorDetail(settlement.errorReason, 'settlement outcome was not confirmed')
+    return {
+      status: 'unavailable',
+      reason: `payment facilitator did not confirm settlement: ${detail}; ` +
+        'retry this request with the same X-PAYMENT proof later; do not pay again',
+    }
+  }
+  const transaction = canonicalTxHash(settlement.transaction)
+  if (!transaction || (settlement.payer !== undefined && typeof settlement.payer !== 'string')) {
+    return facilitatorUnreadable('settlement')
+  }
+
+  const payer = settlement.payer
+    ?? String((paymentPayload as { payload?: { authorization?: { from?: string } } })?.payload?.authorization?.from ?? '')
+  return { status: 'verified', transaction, payer, raw: settlement }
 }
 
 export function paymentResponseHeader(settled: Settled): string {
@@ -130,11 +297,24 @@ export async function verifyDirectPayment(
   to: string,
   usdc: number,
   notBefore: Date,
-): Promise<{ from: string; amount: string; blockTime: Date } | null> {
+): Promise<
+  | { status: 'verified'; from: string; amount: string; blockTime: Date }
+  | VerificationFailure
+> {
   const canonical = canonicalTxHash(txHash)
-  if (!canonical) return null
-  const v = await verifyUsdcTransfer(canonical, to, toUnits(usdc))
-  if (!v) return null
-  if (v.blockTime < notBefore) return null
-  return { from: v.from, amount: (Number(v.amount) / 1e6).toFixed(6), blockTime: v.blockTime }
+  if (!canonical) {
+    return { status: 'invalid', reason: 'tx_hash must be a 0x-prefixed 32-byte transaction hash' }
+  }
+  const proof = await verifyUsdcTransfer(canonical, to, toUnits(usdc))
+  if (proof.status !== 'verified') return proof
+  const transfer = proof.transfer
+  if (transfer.blockTime < notBefore) {
+    return { status: 'invalid', reason: 'transaction was paid before this payment window opened' }
+  }
+  return {
+    status: 'verified',
+    from: transfer.from,
+    amount: (Number(transfer.amount) / 1e6).toFixed(6),
+    blockTime: transfer.blockTime,
+  }
 }
