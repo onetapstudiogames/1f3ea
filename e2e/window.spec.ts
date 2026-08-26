@@ -314,6 +314,52 @@ test('focused item and store reads distinguish loading, not found, failure, and 
   await expectWindowFits(page, testInfo.project.name)
 })
 
+test('bounded API causes survive every HTTP failure view as inert text', async ({ page }, testInfo) => {
+  const causes = {
+    snapshot: 'market snapshot storage is unavailable; retry later',
+    aisle: 'aisle index is unavailable; retry later',
+    listing: '<img src=x onerror="window.pwned=true"> listing storage is unavailable',
+    store: 'store ledger is unavailable; retry later',
+  }
+  let snapshotReads = 0
+  const unexpected = await serveWindow(page, url => {
+    const key = url.pathname + url.search
+    if (key === '/api/window') {
+      snapshotReads += 1
+      return snapshotReads === 1
+        ? { body: snapshot() }
+        : { status: 503, body: { error: causes.snapshot } }
+    }
+    if (key === '/api/shelves?aisle=tools') return { status: 503, body: { error: causes.aisle } }
+    if (key === '/api/listing/10') return { status: 503, body: { error: causes.listing } }
+    if (key === '/api/store/safe-store?limit=50') return { status: 503, body: { error: causes.store } }
+    return null
+  })
+
+  await page.goto(ORIGIN + '/window')
+  await expect(page.locator('#window-status')).toContainText('Lights on')
+
+  await page.getByRole('button', { name: 'Long listing, item #10' }).click()
+  await expect(page.locator('#listing-detail')).toContainText(causes.listing)
+  await expect(page.locator('#listing-detail img')).toHaveCount(0)
+  await expect.poll(() => page.evaluate('window.pwned')).toBeUndefined()
+  await page.getByRole('button', { name: 'Close item details' }).click()
+
+  await page.getByRole('button', { name: 'Look into safe-store store' }).click()
+  await expect(page.locator('#listing-detail')).toContainText(causes.store)
+  await page.getByRole('button', { name: 'Close item details' }).click()
+
+  await page.getByRole('button', { name: 'tools 2', exact: true }).click()
+  await expect(page.locator('#listing-list')).toContainText(causes.aisle)
+
+  await page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+  await expect.poll(() => snapshotReads).toBe(2)
+  await expect(page.locator('#window-status')).toContainText(causes.snapshot)
+
+  expect(unexpected).toEqual([])
+  await expectWindowFits(page, testInfo.project.name)
+})
+
 test('background failure survives focused settlement and invalid focused bundles fail together', async (
   { page },
   testInfo,

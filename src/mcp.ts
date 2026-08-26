@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { AISLES } from './market.ts'
-import { allowOAuthForHostedConnectorRequest, SECRET_PREFIX } from './core.ts'
+import { allowOAuthForHostedConnectorRequest, HANDLE_RE, SECRET_PREFIX } from './core.ts'
 import { MARKET_OAUTH_SCOPE, marketPublicOrigin } from './market-oauth-config.ts'
 
 /**
@@ -51,11 +51,24 @@ function redactCredentials(value: string): string {
   return value.replace(CREDENTIAL_REDACTION, '[redacted 1F3EA credential]')
 }
 
+function routeId(value: unknown): number {
+  return typeof value === 'number' ? value : Number.NaN
+}
+
 function hostedChallenge(): string {
   return `Bearer resource_metadata="${marketPublicOrigin()}/.well-known/oauth-protected-resource/mcp/connect", ` +
     `scope="${MARKET_OAUTH_SCOPE}", error="invalid_token", ` +
     'error_description="Sign in to 1F3EA to use merchant tools."'
 }
+
+const PAYMENT_FAILURE_GUIDANCE =
+  'A 402 means payment is required or the proof is known to be invalid. ' +
+  'A 502 means the facilitator rejected a request without identifying whether the proof, the market\'s ' +
+  'requirements, or facilitator handling was at fault; do not replace or replay the proof blindly. ' +
+  'A terminal refusal with an unrecognized caller-correctable cause is 502; do not retry or replay that proof blindly. ' +
+  'A 503 means payment or chain verification is unavailable, including an explicit facilitator failure ' +
+  'that did not match a known caller mistake; retry the same proof and do not pay again. ' +
+  'A pending or duplicate settlement is 503; retry the same proof and do not pay again.'
 
 const TOOLS: ToolDef[] = [
   {
@@ -103,7 +116,10 @@ const TOOLS: ToolDef[] = [
       required: ['handle'],
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'GET', path: `/api/store/${encodeURIComponent(String(a.handle ?? ''))}` }),
+    route: a => {
+      const handle = typeof a.handle === 'string' ? a.handle.toLowerCase() : ''
+      return { method: 'GET', path: `/api/store/${HANDLE_RE.test(handle) ? handle : '_'}` }
+    },
   },
   {
     name: 'set_store',
@@ -121,13 +137,14 @@ const TOOLS: ToolDef[] = [
     description: 'Read the public part of one listing, with its comments. The artifact itself requires purchase.',
     inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'GET', path: `/api/listing/${Number(a.id)}` }),
+    route: a => ({ method: 'GET', path: `/api/listing/${routeId(a.id)}` }),
   },
   {
     name: 'list_item',
     description:
       'Create a listing ($1 USDC fee, with no daily listing cap). Without payment this returns the x402 payment ' +
-      'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash.',
+      'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash. ' +
+      PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -170,7 +187,8 @@ const TOOLS: ToolDef[] = [
     name: 'list_world',
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
-      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments.',
+      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments. ' +
+      PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -201,7 +219,7 @@ const TOOLS: ToolDef[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     route: a => ({
-      method: 'POST', path: `/api/world/checkout/${Number(a.listing_id)}`,
+      method: 'POST', path: `/api/world/checkout/${routeId(a.listing_id)}`,
       body: { city_handle: a.city_handle },
     }),
   },
@@ -218,7 +236,7 @@ const TOOLS: ToolDef[] = [
       required: ['listing_id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'POST', path: `/api/world/sync/${Number(a.listing_id)}`, body: {} }),
+    route: a => ({ method: 'POST', path: `/api/world/sync/${routeId(a.listing_id)}`, body: {} }),
   },
   {
     name: 'edit_item',
@@ -247,7 +265,7 @@ const TOOLS: ToolDef[] = [
           .filter(key => Object.prototype.hasOwnProperty.call(a, key))
           .map(key => [key, a[key]]),
       )
-      return { method: 'PATCH', path: `/api/listing/${Number(a.id)}`, body }
+      return { method: 'PATCH', path: `/api/listing/${routeId(a.id)}`, body }
     },
   },
   {
@@ -265,7 +283,7 @@ const TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     route: a => ({
       method: 'POST',
-      path: `/api/listing/${Number(a.id)}/withdraw`,
+      path: `/api/listing/${routeId(a.id)}/withdraw`,
       body: {},
     }),
   },
@@ -274,7 +292,7 @@ const TOOLS: ToolDef[] = [
     description:
       'Buy a listing. Free goods deliver at once. Priced goods return x402 requirements that pay the SELLER ' +
       'directly; or start a fresh ten-minute direct-payment intent for one payer wallet, then claim with ' +
-      'intent_id, tx_hash, and payer_signature.',
+      'intent_id, tx_hash, and payer_signature. ' + PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -303,16 +321,16 @@ const TOOLS: ToolDef[] = [
             .filter(key => Object.prototype.hasOwnProperty.call(a, key))
             .map(key => [key, a[key]]),
         )
-        return { method: 'POST', path: `/api/claim/${Number(a.id)}`, body }
+        return { method: 'POST', path: `/api/claim/${routeId(a.id)}`, body }
       }
       if (typeof a.payer_wallet === 'string' && a.payer_wallet) {
         return {
           method: 'POST',
-          path: `/api/purchase-intent/${Number(a.id)}`,
+          path: `/api/purchase-intent/${routeId(a.id)}`,
           body: { payer_wallet: a.payer_wallet },
         }
       }
-      return { method: 'POST', path: `/api/buy/${Number(a.id)}`, body: {} }
+      return { method: 'POST', path: `/api/buy/${routeId(a.id)}`, body: {} }
     },
   },
   {
@@ -387,7 +405,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
     })
   }
   if (method === 'tools/call') {
-    const name = String(params?.name ?? '')
+    const name = typeof params?.name === 'string' ? params.name : ''
     const rawArguments = params?.arguments
     const args = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
       ? rawArguments as Record<string, unknown>
@@ -450,37 +468,51 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
     }
 
-    const { method: m, path, body } = tool.route(args)
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (headerAuth) headers.authorization = headerAuth
-    const backingRequest = new Request(new URL(path, c.req.url), {
-      method: m,
-      headers,
-      body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
-    })
-    if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
-      allowOAuthForHostedConnectorRequest(backingRequest)
-    }
-    const res = await app.request(backingRequest)
-    const rawText = await res.text()
-    const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
-    if (hostedChat && res.status === 401) {
-      const challenge = hostedChallenge()
-      c.header('WWW-Authenticate', challenge)
-      const response = {
+    try {
+      const { method: m, path, body } = tool.route(args)
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      if (headerAuth) headers.authorization = headerAuth
+      const backingRequest = new Request(new URL(path, c.req.url), {
+        method: m,
+        headers,
+        body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
+      })
+      if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
+        allowOAuthForHostedConnectorRequest(backingRequest)
+      }
+      const res = await app.request(backingRequest)
+      const rawText = await res.text()
+      const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
+      if (hostedChat && res.status === 401) {
+        const challenge = hostedChallenge()
+        c.header('WWW-Authenticate', challenge)
+        const response = {
+          jsonrpc: '2.0', id: id ?? null,
+          result: {
+            content: [{ type: 'text', text }],
+            isError: true,
+            _meta: { 'mcp/www_authenticate': [challenge] },
+          },
+        }
+        return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+      }
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: { content: [{ type: 'text', text }], isError: res.status >= 400 },
+      })
+    } catch (error) {
+      console.error(error)
+      return c.json({
         jsonrpc: '2.0', id: id ?? null,
         result: {
-          content: [{ type: 'text', text }],
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'internal connector failure; retry later' }),
+          }],
           isError: true,
-          _meta: { 'mcp/www_authenticate': [challenge] },
         },
-      }
-      return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+      })
     }
-    return c.json({
-      jsonrpc: '2.0', id: id ?? null,
-      result: { content: [{ type: 'text', text }], isError: res.status >= 400 },
-    })
   }
   return rpcError(c, id, -32601, `method not found: ${method}`)
 }

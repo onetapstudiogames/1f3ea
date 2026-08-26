@@ -30,6 +30,7 @@ import {
   type PublicRecordResult,
   type WorldDraftInput,
 } from './world.ts'
+import { postgresErrorDetails } from './postgres-error.ts'
 
 interface WorldRouteConfig {
   marketOrigin: string
@@ -85,13 +86,6 @@ interface WorldPurchaseRow {
   tx_hash: string
   world_receipt: Record<string, unknown> | string
   created_at: string
-}
-
-function postgresErrorCode(error: unknown, depth = 0): string | null {
-  if (!error || typeof error !== 'object' || depth > 3) return null
-  const candidate = error as { code?: unknown; sourceError?: unknown }
-  if (typeof candidate.code === 'string') return candidate.code
-  return postgresErrorCode(candidate.sourceError, depth + 1)
 }
 
 function positiveId(value: string): number | null {
@@ -191,30 +185,66 @@ async function readCheckout(id: number): Promise<WorldCheckoutRow | null> {
   return rows[0] ?? null
 }
 
-function parseReceipt(value: unknown): Record<string, unknown> {
+function parseReceipt(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-    } catch { /* a malformed stored record is exposed only as empty evidence */ }
+    } catch { /* validation below reports one safe internal failure */ }
   }
-  return {}
+  return null
+}
+
+export function requireValidWorldReceipt(value: unknown): Record<string, unknown> {
+  const receipt = parseReceipt(value)
+  const offerId = receipt?.city_offer_id
+  const assetId = receipt?.city_asset_id
+  const cityHandle = receipt?.city_handle
+  const marketBuyer = receipt?.market_buyer
+  const buyerWallet = receipt?.buyer_wallet
+  const verifiedVia = receipt?.city_verified_via
+  const blockTime = receipt?.city_block_time
+  const paymentFrom = receipt?.payment_from
+  const paymentTo = receipt?.payment_to
+  const receiptUrl = receipt?.city_receipt_url
+  if (!receipt || receipt.city_origin !== CITY_ORIGIN ||
+      !Number.isSafeInteger(offerId) || Number(offerId) <= 0 ||
+      !Number.isSafeInteger(assetId) || Number(assetId) <= 0 ||
+      typeof cityHandle !== 'string' || !HANDLE_RE.test(cityHandle) ||
+      typeof marketBuyer !== 'string' || !HANDLE_RE.test(marketBuyer) ||
+      typeof buyerWallet !== 'string' || !WALLET_RE.test(buyerWallet) ||
+      !['x402', 'claim'].includes(String(verifiedVia)) ||
+      typeof blockTime !== 'string' || Number.isNaN(new Date(blockTime).getTime()) ||
+      typeof paymentFrom !== 'string' || !WALLET_RE.test(paymentFrom) ||
+      paymentFrom.toLowerCase() !== buyerWallet.toLowerCase() ||
+      typeof paymentTo !== 'string' || !WALLET_RE.test(paymentTo) ||
+      receiptUrl !== cityOfferUrl(Number(offerId)))
+    throw new Error('stored world purchase receipt is incomplete or invalid')
+  return receipt
 }
 
 function receiptEnvelope(row: WorldPurchaseRow) {
-  const city = parseReceipt(row.world_receipt)
+  const city = requireValidWorldReceipt(row.world_receipt)
+  const purchaseId = Number(row.purchase_id)
+  const listingId = Number(row.listing_id)
+  const checkoutId = Number(row.world_checkout_id)
+  const amount = Number(row.amount_usdc)
+  const txHash = canonicalTxHash(row.tx_hash)
+  if (![purchaseId, listingId, checkoutId].every(id => Number.isSafeInteger(id) && id > 0) ||
+      !Number.isFinite(amount) || amount < 0 || !txHash || Number.isNaN(new Date(row.created_at).getTime()))
+    throw new Error('stored world purchase row is incomplete or invalid')
   return {
-    purchase_id: Number(row.purchase_id),
-    listing_id: Number(row.listing_id),
-    checkout_id: Number(row.world_checkout_id),
+    purchase_id: purchaseId,
+    listing_id: listingId,
+    checkout_id: checkoutId,
     delivery_kind: 'city_ownership' as const,
     city_origin: CITY_ORIGIN,
     city_offer_id: Number(city.city_offer_id),
     city_asset_id: Number(city.city_asset_id),
     city_handle: String(city.city_handle ?? ''),
-    amount_usdc: Number(row.amount_usdc),
-    tx_hash: row.tx_hash,
+    amount_usdc: amount,
+    tx_hash: txHash,
     verified_via: 'world' as const,
     city_verified_via: String(city.city_verified_via ?? ''),
     city_receipt_url: cityOfferUrl(Number(city.city_offer_id)),
@@ -284,7 +314,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
         next: 'Authenticate separately to the city and POST its world listing route with this public draft id.',
       }, 201)
     } catch (error) {
-      if (postgresErrorCode(error) === '23505')
+      const details = postgresErrorDetails(error)
+      if (details.code === '23505' && details.constraint === 'world_drafts_one_pending_per_merchant')
         return err(c, 409, 'you already have a live pending draft; activate it, cancel it, or wait for expiry')
       throw error
     }
@@ -331,15 +362,19 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
         return challenge402(c, feeRequirements, 'world listing costs $1 USDC — pay via x402 or include fee_tx_hash')
       if (paymentHeader) {
         const settled = await settleX402(paymentHeader, feeRequirements)
-        if ('error' in settled) return challenge402(c, feeRequirements, settled.error)
+        if (settled.status !== 'verified') {
+          return settled.status === 'invalid'
+            ? challenge402(c, feeRequirements, settled.reason)
+            : err(c, settled.status === 'unclassified' ? 502 : 503, settled.reason)
+        }
         feeTx = settled.transaction
         responseHeader = paymentResponseHeader(settled)
       } else {
         const direct = await verifyDirectPayment(
           parsed.fee_tx_hash!, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 3600e3),
         )
-        if (!direct)
-          return err(c, 402, 'fee_tx_hash did not verify: need >= $1 USDC on Base to the treasury, within the last hour, unused')
+        if (direct.status !== 'verified')
+          return err(c, direct.status === 'invalid' ? 402 : 503, direct.reason)
         if (direct.from.toLowerCase() !== draft.seller_wallet.toLowerCase())
           return err(c, 402, 'the fee must be paid from the same wallet as the world draft seller_wallet')
         feeTx = parsed.fee_tx_hash!
@@ -421,9 +456,20 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
         fee_tx: feeTx,
       }, 201)
     } catch (error) {
-      if (postgresErrorCode(error) === '23505')
-        return err(c, 409, 'that fee transaction, city offer, or world draft was already used')
-      throw error
+      const details = postgresErrorDetails(error)
+      if (details.code !== '23505') throw error
+      switch (details.constraint) {
+        case 'listings_world_offer_unique':
+          return err(c, 409, 'that city offer was already used by another market listing')
+        case 'listings_world_draft_unique':
+          return err(c, 409, 'that world draft was already used by another market listing')
+        case 'fees_tx_hash_key':
+        case 'fees_tx_hash_lower_unique':
+        case 'payment_uses_pkey':
+          return err(c, 409, 'that fee transaction was already used')
+        default:
+          throw error
+      }
     }
   })
 
@@ -483,7 +529,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
           'Authenticate to the city with your city bearer; the first city reservation wins before payment.',
       }, 201)
     } catch (error) {
-      if (postgresErrorCode(error) === '23505')
+      const details = postgresErrorDetails(error)
+      if (details.code === '23505' && details.constraint === 'world_checkouts_one_active_per_buyer')
         return err(c, 409, 'you already have an active checkout for this listing; wait for its ten-minute expiry')
       throw error
     }
@@ -688,10 +735,22 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
       }
       return c.json({ receipt: receiptEnvelope(rows[0]!) })
     } catch (error) {
-      if (postgresErrorCode(error) !== '23505') throw error
-      const raced = await priorWorldPurchase(listing.id)
-      if (raced) return c.json({ receipt: receiptEnvelope(raced) })
-      return err(c, 409, 'city payment transaction was already used by the market')
+      const details = postgresErrorDetails(error)
+      if (details.code !== '23505') throw error
+      switch (details.constraint) {
+        case 'purchases_listing_id_merchant_id_key':
+        case 'purchases_world_checkout_unique': {
+          const raced = await priorWorldPurchase(listing.id)
+          if (raced) return c.json({ receipt: receiptEnvelope(raced) })
+          return err(c, 409, 'that world purchase or checkout was already recorded; retry sync to read its receipt')
+        }
+        case 'purchases_tx_hash_key':
+        case 'purchases_tx_hash_lower_unique':
+        case 'payment_uses_pkey':
+          return err(c, 409, 'city payment transaction was already used by the market')
+        default:
+          throw error
+      }
     }
   })
 }

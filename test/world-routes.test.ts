@@ -17,11 +17,18 @@ const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a
 
 interface DbCall { query: string; params: unknown[] }
 
+interface PostgresErrorFixture {
+  code: string
+  constraint?: string
+  nested?: boolean
+}
+
 const state = {
   merchantId: 7,
   authValid: true,
   seedCount: 10,
-  pendingConflict: false,
+  draftInsertError: null as PostgresErrorFixture | null,
+  activationInsertError: null as PostgresErrorFixture | null,
   draftExists: true,
   draftState: 'pending',
   draftExpiresAt: '2099-08-12T01:00:00.000Z',
@@ -34,7 +41,9 @@ const state = {
   listingWithdrawnReason: null as string | null,
   listingWithdrawn: false,
   listingWithdrawnAt: null as string | null,
-  activeCheckoutConflict: false,
+  checkoutInsertError: null as PostgresErrorFixture | null,
+  purchaseInsertError: null as PostgresErrorFixture | null,
+  purchaseConflictWritesReceipt: false,
   checkoutStatus: 'active',
   checkoutExpiresAt: '2099-08-12T00:10:00.000Z',
   checkoutMerchantId: 9,
@@ -53,6 +62,10 @@ const state = {
   dbCalls: [] as DbCall[],
   cityCalls: [] as string[],
   rpcCalls: 0,
+  rpcUnavailable: false,
+  rpcReceiptMissing: false,
+  facilitatorUnavailable: false,
+  facilitatorRejectedRequest: false,
 }
 
 function merchantRow(id = state.merchantId) {
@@ -137,6 +150,35 @@ function checkoutRow() {
   }
 }
 
+function storedWorldReceipt(overrides: Record<string, unknown> = {}) {
+  return {
+    city_origin: 'https://1f3d9.com',
+    city_offer_id: 33,
+    city_asset_id: 41,
+    city_handle: state.checkoutCityHandle,
+    market_buyer: state.checkoutMarketBuyer,
+    buyer_wallet: BUYER_WALLET,
+    city_verified_via: 'x402',
+    city_block_time: state.cityBlockTime,
+    payment_from: BUYER_WALLET,
+    payment_to: SELLER,
+    city_receipt_url: 'https://1f3d9.com/api/world/offer/33',
+    ...overrides,
+  }
+}
+
+function purchaseRow(worldReceipt: Record<string, unknown> | string = storedWorldReceipt()) {
+  return {
+    purchase_id: 81,
+    listing_id: 70,
+    world_checkout_id: 60,
+    amount_usdc: 2,
+    tx_hash: TX,
+    world_receipt: worldReceipt,
+    created_at: '2026-08-12T00:06:00.000Z',
+  }
+}
+
 function cityOffer() {
   const base = {
     id: 33,
@@ -183,10 +225,18 @@ function cityOffer() {
   return base
 }
 
+function postgresError(fixture: PostgresErrorFixture, message: string): Error {
+  const detail = Object.assign(new Error(message), {
+    code: fixture.code,
+    constraint: fixture.constraint,
+  })
+  return fixture.nested ? Object.assign(new Error(`wrapped ${message}`), { sourceError: detail }) : detail
+}
+
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
   if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow()] : []
   if (query.includes('INSERT INTO world_drafts')) {
-    if (state.pendingConflict) throw Object.assign(new Error('pending draft exists'), { code: '23505' })
+    if (state.draftInsertError) throw postgresError(state.draftInsertError, 'world draft insert failed')
     return [{ id: 12, expires_at: state.draftExpiresAt }]
   }
   if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
@@ -194,6 +244,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.draftExists ? [draftRow()] : []
   if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id')) return [{ n: state.seedCount }]
   if (query.includes('INSERT INTO listings') && query.includes('world_draft')) {
+    if (state.activationInsertError)
+      throw postgresError(state.activationInsertError, 'world listing activation failed')
     state.draftState = 'active'
     state.draftListingId = 70
     return [{ id: 70 }]
@@ -201,7 +253,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM listings') && query.includes('world_offer_id'))
     return state.listingExists ? [listingRow()] : []
   if (query.includes('INSERT INTO world_checkouts')) {
-    if (state.activeCheckoutConflict) throw Object.assign(new Error('active checkout exists'), { code: '23505' })
+    if (state.checkoutInsertError) throw postgresError(state.checkoutInsertError, 'world checkout insert failed')
     return [{ id: 60, expires_at: state.checkoutExpiresAt }]
   }
   if (query.includes('FROM world_checkouts c')) return [checkoutRow()]
@@ -217,23 +269,20 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       created_at: '2026-08-12T00:06:00.000Z',
       delivery_kind: 'city_ownership',
       artifact: null,
-      world_receipt: { city_offer_id: 33, city_handle: state.checkoutCityHandle },
+      world_receipt: state.priorReceipt.world_receipt,
       city_receipt_url: 'https://1f3d9.com/api/world/offer/33',
     }] : []
   }
   if (query.includes('INSERT INTO purchases') && query.includes("'world'")) {
+    if (state.purchaseInsertError) {
+      if (state.purchaseConflictWritesReceipt) state.priorReceipt = purchaseRow()
+      throw postgresError(state.purchaseInsertError, 'world purchase insert failed')
+    }
     state.listingWorldState = 'sold'
     state.draftState = 'sold'
     state.checkoutStatus = 'completed'
-    state.priorReceipt = {
-      purchase_id: 81,
-      listing_id: 70,
-      world_checkout_id: 60,
-      amount_usdc: 2,
-      tx_hash: TX,
-      world_receipt: params.find(value => typeof value === 'string' && String(value).includes('city_handle')) ?? {},
-      created_at: '2026-08-12T00:06:00.000Z',
-    }
+    const storedReceipt = params.find(value => typeof value === 'string' && value.includes('city_handle'))
+    state.priorReceipt = purchaseRow(typeof storedReceipt === 'string' ? storedReceipt : {})
     return [state.priorReceipt]
   }
   if (query.includes('WITH removed_listing AS') && query.includes('world_checkouts')) {
@@ -293,7 +342,16 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
             : state.listingWithdrawn ? 'withdrawn' : 'live',
   }]
   if (query.includes('JOIN merchants b ON b.id = p.merchant_id')) return []
-  if (query.includes('FROM purchases p JOIN listings l') && query.includes('WHERE p.merchant_id')) return []
+  if (query.includes('FROM purchases p JOIN listings l') && query.includes('WHERE p.merchant_id')) {
+    if (!state.priorReceipt) return []
+    return [{
+      listing_id: 70,
+      title: 'Pocket observatory',
+      delivery_kind: 'city_ownership',
+      world_receipt: state.priorReceipt.world_receipt,
+      created_at: '2026-08-12T00:06:00.000Z',
+    }]
+  }
   if (query.includes('FROM comments c JOIN listings l')) return []
   throw new Error(`unhandled world test query: ${query}`)
 }
@@ -360,17 +418,24 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   }
   if (url.includes('mainnet.base.org')) {
     state.rpcCalls++
+    if (state.rpcUnavailable) return new Response('Base RPC unavailable', { status: 503 })
     const body = JSON.parse(String(init?.body ?? '{}'))
     if (body.method === 'eth_getTransactionReceipt') return json({
-      jsonrpc: '2.0', id: body.id, result: {
+      jsonrpc: '2.0', id: body.id, result: state.rpcReceiptMissing ? null : {
         status: '0x1', blockHash: '0x' + 'bb'.repeat(32),
-        logs: [{ address: USDC, topics: [TRANSFER_TOPIC, pad32(SELLER), pad32(TREASURY)], data: '0x0f4240' }],
+        logs: [{ address: USDC, topics: [TRANSFER_TOPIC, pad32(SELLER), pad32(TREASURY)], data: pad32('0x0f4240') }],
       },
     })
     if (body.method === 'eth_getBlockByHash') return json({
       jsonrpc: '2.0', id: body.id,
       result: { timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16) },
     })
+  }
+  if (url.includes('/verify')) {
+    if (state.facilitatorUnavailable) return new Response('facilitator unavailable', { status: 503 })
+    if (state.facilitatorRejectedRequest) {
+      return json({ error: 'invalid_payment_requirements' }, 400)
+    }
   }
   throw new Error(`unexpected world test fetch: ${url}`)
 }) as typeof fetch
@@ -388,7 +453,8 @@ function reset() {
   state.merchantId = 7
   state.authValid = true
   state.seedCount = 10
-  state.pendingConflict = false
+  state.draftInsertError = null
+  state.activationInsertError = null
   state.draftExists = true
   state.draftState = 'pending'
   state.draftExpiresAt = '2099-08-12T01:00:00.000Z'
@@ -401,7 +467,9 @@ function reset() {
   state.listingWithdrawnReason = null
   state.listingWithdrawn = false
   state.listingWithdrawnAt = null
-  state.activeCheckoutConflict = false
+  state.checkoutInsertError = null
+  state.purchaseInsertError = null
+  state.purchaseConflictWritesReceipt = false
   state.checkoutStatus = 'active'
   state.checkoutExpiresAt = '2099-08-12T00:10:00.000Z'
   state.checkoutMerchantId = 9
@@ -420,6 +488,10 @@ function reset() {
   state.dbCalls = []
   state.cityCalls = []
   state.rpcCalls = 0
+  state.rpcUnavailable = false
+  state.rpcReceiptMissing = false
+  state.facilitatorUnavailable = false
+  state.facilitatorRejectedRequest = false
 }
 
 const writes = () => state.dbCalls.filter(call => /INSERT|UPDATE\s+(?!merchants SET\s+comments_today)/i.test(call.query))
@@ -441,10 +513,38 @@ test('world draft creation is exact, free, expiring, and bounded to one pending 
   assert.equal(result.url, 'https://1f3ea.com/api/world/draft/12')
   assert.equal(state.rpcCalls, 0)
 
-  state.pendingConflict = true
+  state.draftInsertError = { code: '23505', constraint: 'world_drafts_one_pending_per_merchant' }
   const conflict = await app.request('/api/world/draft', { method: 'POST', headers: auth, body: draftBody() })
   assert.equal(conflict.status, 409)
   assert.match((await conflict.json() as { error: string }).error, /pending draft/i)
+})
+
+test('world draft reports only the live-pending-draft constraint as a caller conflict', async () => {
+  reset()
+  state.draftInsertError = {
+    code: '23505', constraint: 'world_drafts_one_pending_per_merchant', nested: true,
+  }
+  const conflict = await app.request('/api/world/draft', {
+    method: 'POST', headers: auth, body: draftBody(),
+  })
+  assert.equal(conflict.status, 409)
+  assert.deepEqual(await conflict.json(), {
+    error: 'you already have a live pending draft; activate it, cancel it, or wait for expiry',
+  })
+
+  reset()
+  state.draftInsertError = { code: '23505', constraint: 'world_drafts_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const internal = await app.request('/api/world/draft', {
+      method: 'POST', headers: auth, body: draftBody(),
+    })
+    assert.equal(internal.status, 500)
+    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('public draft records derive expiry and expose no bearer data', async () => {
@@ -523,6 +623,102 @@ test('a proved city lock still needs the normal fee and activates atomically aft
   assert.match(atomic, /world_state/)
 })
 
+test('world activation distinguishes unavailable x402 and Base verification from invalid payment proof', async () => {
+  reset()
+  const invalid = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': 'not-json' },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(invalid.status, 402)
+  assert.equal((await invalid.json() as { error: string }).error,
+    'X-PAYMENT header is not valid base64 JSON')
+
+  reset()
+  state.facilitatorUnavailable = true
+  const facilitator = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(facilitator.status, 503)
+  assert.deepEqual(await facilitator.json(), {
+    error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
+  })
+
+  reset()
+  state.facilitatorRejectedRequest = true
+  const unclassified = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(unclassified.status, 502)
+  const unclassifiedReason = (await unclassified.json() as { error: string }).error
+  assert.match(unclassifiedReason, /invalid payment requirements/i)
+  assert.match(unclassifiedReason,
+    /X-PAYMENT proof, the market's payment requirements, or facilitator request handling was at fault/i)
+  assert.doesNotMatch(unclassifiedReason, /retry.*same|fresh payment proof/i)
+
+  reset()
+  state.rpcUnavailable = true
+  const chain = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(chain.status, 503)
+  assert.deepEqual(await chain.json(), {
+    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
+  })
+
+  reset()
+  state.rpcReceiptMissing = true
+  const pendingChain = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(pendingChain.status, 503)
+  assert.deepEqual(await pendingChain.json(), {
+    error: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
+  })
+})
+
+test('world activation names only the exact offer, draft, and fee transaction conflicts', async () => {
+  const cases = [
+    ['listings_world_offer_unique', 'that city offer was already used by another market listing'],
+    ['listings_world_draft_unique', 'that world draft was already used by another market listing'],
+    ['fees_tx_hash_key', 'that fee transaction was already used'],
+    ['fees_tx_hash_lower_unique', 'that fee transaction was already used'],
+    ['payment_uses_pkey', 'that fee transaction was already used'],
+  ] as const
+
+  for (const [constraint, expected] of cases) {
+    reset()
+    state.activationInsertError = { code: '23505', constraint, nested: constraint === 'payment_uses_pkey' }
+    const response = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+    })
+    assert.equal(response.status, 409, constraint)
+    assert.deepEqual(await response.json(), { error: expected }, constraint)
+  }
+
+  reset()
+  state.activationInsertError = { code: '23505', constraint: 'listings_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const internal = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+    })
+    assert.equal(internal.status, 500)
+    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
 test('a nonresident buyer stops before checkout and is told to choose their own city name', async () => {
   reset()
   state.merchantId = 9
@@ -549,11 +745,43 @@ test('checkout binds one market buyer to one city resident and closes the race',
   assert.equal(body.checkout_id, 60)
   assert.equal(body.city_claim_url, 'https://1f3d9.com/api/world/offer/33/claim')
 
-  state.activeCheckoutConflict = true
+  state.checkoutInsertError = { code: '23505', constraint: 'world_checkouts_one_active_per_buyer' }
   const raced = await app.request('/api/world/checkout/70', {
     method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
   })
   assert.equal(raced.status, 409)
+})
+
+test('world checkout reports only its active-checkout constraint as a caller conflict', async () => {
+  reset()
+  state.merchantId = 9
+  state.draftListingId = 70
+  state.checkoutInsertError = {
+    code: '23505', constraint: 'world_checkouts_one_active_per_buyer', nested: true,
+  }
+  const conflict = await app.request('/api/world/checkout/70', {
+    method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
+  })
+  assert.equal(conflict.status, 409)
+  assert.deepEqual(await conflict.json(), {
+    error: 'you already have an active checkout for this listing; wait for its ten-minute expiry',
+  })
+
+  reset()
+  state.merchantId = 9
+  state.draftListingId = 70
+  state.checkoutInsertError = { code: '23505', constraint: 'world_checkouts_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const internal = await app.request('/api/world/checkout/70', {
+      method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
+    })
+    assert.equal(internal.status, 500)
+    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('normal buy and direct claim reject world delivery before any payment work', async () => {
@@ -605,6 +833,60 @@ test('claimed city ownership becomes one idempotent market receipt and verified 
   const second = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(second.status, 200)
   assert.equal(state.dbCalls.filter(call => call.query.includes('INSERT INTO purchases')).length, 1)
+})
+
+test('world sync distinguishes committed replays, used payment transactions, and internal unique failures', async () => {
+  for (const constraint of ['purchases_listing_id_merchant_id_key', 'purchases_world_checkout_unique']) {
+    reset()
+    state.merchantId = 10
+    state.draftListingId = 70
+    state.cityMode = 'claimed'
+    state.purchaseInsertError = { code: '23505', constraint, nested: constraint === 'purchases_world_checkout_unique' }
+    const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(response.status, 409, constraint)
+    assert.deepEqual(await response.json(), {
+      error: 'that world purchase or checkout was already recorded; retry sync to read its receipt',
+    }, constraint)
+  }
+
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.purchaseInsertError = { code: '23505', constraint: 'purchases_world_checkout_unique' }
+  state.purchaseConflictWritesReceipt = true
+  const replay = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(replay.status, 200)
+  assert.equal((await replay.json() as { receipt: { purchase_id: number } }).receipt.purchase_id, 81)
+
+  for (const constraint of ['purchases_tx_hash_key', 'purchases_tx_hash_lower_unique', 'payment_uses_pkey']) {
+    reset()
+    state.merchantId = 10
+    state.draftListingId = 70
+    state.cityMode = 'claimed'
+    state.purchaseInsertError = { code: '23505', constraint, nested: constraint === 'payment_uses_pkey' }
+    const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(response.status, 409, constraint)
+    assert.deepEqual(await response.json(), {
+      error: 'city payment transaction was already used by the market',
+    }, constraint)
+  }
+
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.purchaseInsertError = { code: '23505', constraint: 'purchases_pkey' }
+  state.purchaseConflictWritesReceipt = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const internal = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(internal.status, 500)
+    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('world withdrawal is market-first and truthfully requires a separate city unlock', async () => {
@@ -771,17 +1053,51 @@ test('world listing public reads describe city ownership and never advertise a d
 test('world receipts replace downloadable artifacts in purchase history', async () => {
   reset()
   state.merchantId = 9
-  state.priorReceipt = {
-    purchase_id: 81, listing_id: 70, world_checkout_id: 60, amount_usdc: 2,
-    tx_hash: TX, world_receipt: {}, created_at: '2026-08-12T00:06:00.000Z',
-  }
+  state.priorReceipt = purchaseRow()
   const response = await app.request('/api/purchases', { headers: auth })
   assert.equal(response.status, 200)
   const payload = await response.json() as { purchases: Record<string, unknown>[] }
   assert.equal(payload.purchases.length, 1)
   assert.equal(payload.purchases[0]!.delivery_kind, 'city_ownership')
   assert.equal(Object.prototype.hasOwnProperty.call(payload.purchases[0], 'artifact'), false)
-  assert.deepEqual(payload.purchases[0]!.world_receipt, { city_offer_id: 33, city_handle: 'new-neighbor' })
+  assert.deepEqual(payload.purchases[0]!.world_receipt, storedWorldReceipt())
+})
+
+test('corrupt stored world receipts report an internal failure through every read door', async () => {
+  reset()
+  state.merchantId = 9
+  state.priorReceipt = purchaseRow({})
+  const expected = { error: 'internal market failure; retry later' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const sync = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(sync.status, 500)
+    assert.deepEqual(await sync.json(), expected)
+
+    const mcpResponse = await app.request('/mcp', {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'sync_world', arguments: { listing_id: 70 } },
+      }),
+    })
+    const mcpBody = await mcpResponse.json() as {
+      result: { content: Array<{ text: string }>; isError: boolean }
+    }
+    assert.equal(mcpBody.result.isError, true)
+    assert.deepEqual(JSON.parse(mcpBody.result.content[0]!.text), expected)
+
+    const purchases = await app.request('/api/purchases', { headers: auth })
+    assert.equal(purchases.status, 500)
+    assert.deepEqual(await purchases.json(), expected)
+
+    const me = await app.request('/api/me', { headers: auth })
+    assert.equal(me.status, 500)
+    assert.deepEqual(await me.json(), expected)
+  } finally {
+    console.error = originalConsoleError
+  }
 })
 
 test('public checkout status expires by time without mutating the public record', async () => {

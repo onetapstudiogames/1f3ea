@@ -6,6 +6,7 @@ import {
   MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX,
   MARKET_OAUTH_REFRESH_TOKEN_PREFIX,
   MARKET_OAUTH_SCOPE,
+  MarketOAuthClientError,
   hostedMarketSigninEnabled,
   marketOAuthResource,
   marketPublicOrigin,
@@ -27,6 +28,9 @@ const SESSION_COOKIE = '__Host-1f3ea_oauth'
 const MAX_FORM_BYTES = 8_192
 const ACCESS_TOKEN_SECONDS = 10 * 60
 const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
+const TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR = 120
+const REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR = 120
+const OAUTH_RATE_RETRY_AFTER_SECONDS = 60 * 60
 const AUTHORIZATION_FIELDS = new Set([
   'response_type', 'client_id', 'redirect_uri', 'resource', 'scope', 'state',
   'code_challenge', 'code_challenge_method', 'ui_locales',
@@ -237,6 +241,20 @@ function tokenError(c: Context, error: 'invalid_request' | 'invalid_client' | 'i
   return c.json({ error }, 400)
 }
 
+function oauthUnavailable(
+  c: Context,
+  status: 429 | 503,
+  description: string,
+  retryAfter = 1,
+) {
+  privateHeaders(c)
+  c.header('Retry-After', String(retryAfter))
+  return c.json({
+    error: 'temporarily_unavailable',
+    error_description: description,
+  }, status)
+}
+
 function tokenResponse(c: Context, accessToken: string, refreshToken: string) {
   privateHeaders(c)
   return c.json({
@@ -313,8 +331,16 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       client = await resolveMarketOAuthClient(
         rawClientId, oauth.staticClients, oauth.cimdOrigins, oauth.fetcher,
       )
-    } catch {
-      return browserError(c, 400, 'The requesting chat app is not approved.')
+    } catch (error) {
+      if (error instanceof MarketOAuthClientError && error.status === 400) {
+        return browserError(c, 400, 'The requesting chat app is not approved.')
+      }
+      c.header('Retry-After', '1')
+      return browserError(
+        c,
+        503,
+        "1F3EA could not read the requesting chat app's client metadata. Try again in a moment.",
+      )
     }
     let request
     try {
@@ -425,9 +451,17 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         oauth,
         [`ip:${clientAddress(c, oauth.environment)}`, `client:${clientId}`],
         grantType === 'refresh_token' ? 'refresh' : 'token',
-        120,
+        TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR,
       )
-      if (!allowed) return tokenError(c, 'invalid_grant')
+      if (!allowed) {
+        return oauthUnavailable(
+          c,
+          429,
+          `token requests allow ${TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
+            'for each IP and each client; retry after the next UTC hour begins',
+          OAUTH_RATE_RETRY_AFTER_SECONDS,
+        )
+      }
 
       if (grantType === 'authorization_code') {
         const code = one(values, 'code', 100)
@@ -466,35 +500,57 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       if (rotated !== 'rotated') return tokenError(c, 'invalid_grant')
       return tokenResponse(c, accessToken, refreshToken)
     } catch {
-      privateHeaders(c)
-      c.header('Retry-After', '1')
-      return c.json({ error: 'temporarily_unavailable' }, 503)
+      return oauthUnavailable(c, 503, 'token request could not be completed; retry later')
     }
   })
 
   app.post('/oauth/revoke', async c => {
-    try {
-      const values = await form(c)
-      const clientId = values ? one(values, 'client_id', 2_048) : null
-      const token = values ? one(values, 'token', 100) : null
-      const validToken = Boolean(
-        token && (/^1f3ea_(?:at|rt)_[0-9a-f]{64}$/.test(token)),
-      )
-      if (
-        values && !c.req.header('authorization') && !values.has('client_secret') &&
-        exactFields(values, ['token', 'client_id', 'token_type_hint']) && clientId && validToken &&
-        await admitted(
-          oauth,
-          [`ip:${clientAddress(c, oauth.environment)}`, `client:${clientId}`],
-          'revoke',
-          120,
-        )
-      ) await oauth.store.revokeTokenFamilyByToken({ tokenHash: sha256(token!), clientId })
-    } catch {
-      // RFC 7009 revocation is intentionally idempotent and does not reveal token state.
+    const opaqueSuccess = () => {
+      privateHeaders(c)
+      return c.body(null, 200)
     }
-    privateHeaders(c)
-    return c.body(null, 200)
+    let values: URLSearchParams | null
+    try {
+      values = await form(c)
+    } catch {
+      return oauthUnavailable(c, 503, 'revocation request could not be read; retry later')
+    }
+    const clientId = values ? one(values, 'client_id', 2_048) : null
+    const token = values ? one(values, 'token', 100) : null
+    const validToken = Boolean(token && /^1f3ea_(?:at|rt)_[0-9a-f]{64}$/.test(token))
+    const eligible = Boolean(
+      values && !c.req.header('authorization') && !values.has('client_secret') &&
+      exactFields(values, ['token', 'client_id', 'token_type_hint']) && clientId && validToken
+    )
+    if (!eligible) return opaqueSuccess()
+
+    let allowed: boolean
+    try {
+      allowed = await admitted(
+          oauth,
+          [`ip:${clientAddress(c, oauth.environment)}`, `client:${clientId!}`],
+          'revoke',
+          REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR,
+        )
+    } catch {
+      return oauthUnavailable(c, 503, 'revocation could not be completed; retry later')
+    }
+    if (!allowed) {
+      return oauthUnavailable(
+        c,
+        429,
+        `revocation allows ${REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
+          'for each IP and each client; retry after the next UTC hour begins',
+        OAUTH_RATE_RETRY_AFTER_SECONDS,
+      )
+    }
+
+    try {
+      await oauth.store.revokeTokenFamilyByToken({ tokenHash: sha256(token!), clientId: clientId! })
+    } catch {
+      return oauthUnavailable(c, 503, 'revocation could not be completed; retry later')
+    }
+    return opaqueSuccess()
   })
 }
 

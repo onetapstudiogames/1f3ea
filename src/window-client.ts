@@ -5,6 +5,13 @@ export const WINDOW_JS = String.raw`(() => {
   const BASE_REFRESH_MS = 60_000
   const MAX_REFRESH_MS = 300_000
   const REQUEST_TIMEOUT_MS = 10_000
+  const MAX_ERROR_RESPONSE_BYTES = 4_096
+  const MAX_ERROR_CAUSE_BYTES = 500
+  const INCONSISTENT_PUBLIC_DATA = 'the market returned incomplete or inconsistent public data'
+  const UNREADABLE_PUBLIC_JSON = 'the market returned unreadable JSON'
+  const UNREADABLE_HTTP_FAILURE = 'the market returned an unreadable HTTP failure response'
+  const PUBLIC_MARKET_UNREACHABLE = 'the public market could not be reached'
+  const PUBLIC_MARKET_TIMEOUT = 'the public market request took too long'
   const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
   const SAFE_AISLES = new Set(['skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other'])
   const SAFE_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal', 'moderation'])
@@ -13,8 +20,8 @@ export const WINDOW_JS = String.raw`(() => {
   const state = {
     events: [], eventsHaveMore: false, merchants: [], merchantTotal: 0,
     listings: [], aisleListings: new Map(), snapshotCounts: new Map(), aisleCounts: new Map(),
-    aisle: 'all', aislePhase: 'ready', filter: '',
-    refreshing: false, failures: 0, hasSnapshot: false, snapshotFailed: false,
+    aisle: 'all', aislePhase: 'ready', aisleFailureCause: null, filter: '',
+    refreshing: false, failures: 0, hasSnapshot: false, snapshotFailed: false, snapshotFailureCause: null,
     pollTimer: 0, detailController: null, aisleController: null,
   }
   const nodes = {
@@ -60,23 +67,85 @@ export const WINDOW_JS = String.raw`(() => {
   }
   function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
   function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
+  function publicFailure(cause) {
+    const error = new Error('public market read failed')
+    error.publicCause = cause
+    return error
+  }
+  function contractFailure() { return publicFailure(INCONSISTENT_PUBLIC_DATA) }
+  async function readPublicError(response) {
+    const contentType = response.headers.get('content-type') || ''
+    if (!/(?:^|\s|;)application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(contentType)) return null
+    const declaredLength = response.headers.get('content-length')
+    if (declaredLength !== null && Number(declaredLength) > MAX_ERROR_RESPONSE_BYTES) {
+      try { await response.body?.cancel() } catch {}
+      return null
+    }
+    if (!response.body) return null
+    const reader = response.body.getReader()
+    const chunks = []
+    let received = 0
+    try {
+      while (true) {
+        const result = await reader.read()
+        if (result.done) break
+        if (!(result.value instanceof Uint8Array)) { await reader.cancel(); return null }
+        received += result.value.byteLength
+        if (received > MAX_ERROR_RESPONSE_BYTES) { await reader.cancel(); return null }
+        chunks.push(result.value)
+      }
+    } catch {
+      try { await reader.cancel() } catch {}
+      return null
+    }
+    const bytes = new Uint8Array(received)
+    let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+    let decoded
+    try { decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { return null }
+    if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded) || typeof decoded.error !== 'string') return null
+    const cause = decoded.error.trim()
+    if (!cause || new TextEncoder().encode(cause).byteLength > MAX_ERROR_CAUSE_BYTES || /[\u0000-\u001f\u007f]/u.test(cause)) return null
+    return cause
+  }
   async function getJson(path, signal) {
     const url = new URL(path, window.location.origin)
-    if (url.origin !== window.location.origin) throw new Error('cross-origin request refused')
-    const response = await fetch(url, {
-      credentials: 'omit', cache: 'default', headers: { Accept: 'application/json' }, signal,
-    })
+    if (url.origin !== window.location.origin) throw publicFailure('the window refused a cross-origin public-data request')
+    let response
+    try {
+      response = await fetch(url, {
+        credentials: 'omit', cache: 'default', headers: { Accept: 'application/json' }, signal,
+      })
+    } catch {
+      throw publicFailure(signal && signal.aborted ? PUBLIC_MARKET_TIMEOUT : PUBLIC_MARKET_UNREACHABLE)
+    }
     if (!response.ok) {
-      const error = new Error('request failed with ' + String(response.status)); error.status = response.status
+      const publicCause = await readPublicError(response) || UNREADABLE_HTTP_FAILURE
+      const error = new Error('request failed with ' + String(response.status))
+      error.status = response.status
+      error.publicCause = publicCause
       throw error
     }
-    return response.json()
+    try { return await response.json() } catch { throw publicFailure(UNREADABLE_PUBLIC_JSON) }
+  }
+  function publicFailureCause(value) {
+    return value && typeof value === 'object' && typeof value.publicCause === 'string'
+      ? value.publicCause : typeof value === 'string' ? value : null
+  }
+  function failureDetail(fallback, causeOrError) {
+    const cause = publicFailureCause(causeOrError)
+    return cause ? fallback + ' Cause: ' + cause : fallback
   }
   function setStatus(message, mode) { if (nodes.status) { nodes.status.textContent = message; nodes.status.dataset.mode = mode || 'quiet' } }
   function setStatusFailure(message, retry) {
     setStatus(message, 'error'); if (nodes.status) nodes.status.append(element('span', '', ' · '), button('text-button', 'Try again', retry))
   }
-  function setSnapshotFailureStatus() { setStatusFailure('The latest market read failed · showing the last completed snapshot.', refreshMarket) }
+  function setSnapshotFailureStatus() {
+    setStatusFailure(failureDetail(
+      'The latest market read failed · showing the last completed snapshot.',
+      state.snapshotFailureCause,
+    ), refreshMarket)
+  }
   function setSettledStatus() {
     if (state.snapshotFailed) setSnapshotFailureStatus()
     else if (state.refreshing) setStatus('Checking the street…', 'working')
@@ -209,24 +278,24 @@ export const WINDOW_JS = String.raw`(() => {
   function readAisleCounts(payload) {
     const counts = new Map()
     const aisles = Array.isArray(payload && payload.aisles) ? payload.aisles : []
-    if (aisles.length !== SAFE_AISLES.size) throw new Error('incomplete aisle counts')
+    if (aisles.length !== SAFE_AISLES.size) throw contractFailure()
     for (const row of aisles) {
       const count = row && row.count
       if (!row || !SAFE_AISLES.has(row.name) || counts.has(row.name)
-        || !Number.isSafeInteger(count) || count < 0) throw new Error('invalid aisle counts')
+        || !Number.isSafeInteger(count) || count < 0) throw contractFailure()
       counts.set(row.name, count)
     }
     return counts
   }
   function readListings(value, expectedAisle) {
-    if (!Array.isArray(value) || value.length > 50) throw new Error('invalid listing rows')
+    if (!Array.isArray(value) || value.length > 50) throw contractFailure()
     const listings = []
     for (const listing of value) {
       const valid = listing && typeof listing === 'object' && safeId(listing.id)
         && SAFE_AISLES.has(listing.aisle)
-      if (!valid) throw new Error(expectedAisle ? 'invalid focused listing row' : 'invalid listing row')
+      if (!valid) throw contractFailure()
       if (expectedAisle && listing.aisle !== expectedAisle)
-        throw new Error('focused listing came from another aisle')
+        throw contractFailure()
       listings.push(listing)
     }
     return listings
@@ -236,10 +305,10 @@ export const WINDOW_JS = String.raw`(() => {
     for (const listing of listings)
       visibleByAisle.set(listing.aisle, (visibleByAisle.get(listing.aisle) || 0) + 1)
     for (const [aisle, visible] of visibleByAisle)
-      if (safeNumber(counts.get(aisle)) < visible) throw new Error('aisle count contradicts its rows')
+      if (safeNumber(counts.get(aisle)) < visible) throw contractFailure()
   }
-  function requireBoundedRows(total, rows, bound, label) {
-    if (!Number.isSafeInteger(total) || total < 0 || rows.length !== Math.min(total, bound)) throw new Error(label + ' count contradicts its bounded rows')
+  function requireBoundedRows(total, rows, bound) {
+    if (!Number.isSafeInteger(total) || total < 0 || rows.length !== Math.min(total, bound)) throw contractFailure()
   }
   function renderAisles() {
     if (!nodes.aisles) return
@@ -266,7 +335,8 @@ export const WINDOW_JS = String.raw`(() => {
       if (state.aislePhase === 'loading')
         renderLoading(nodes.listings, 'Reading the ' + state.aisle + ' aisle…')
       else renderError(
-        nodes.listings, 'This aisle read failed.', 'The focused shelf could not be read.',
+        nodes.listings, 'This aisle read failed.',
+        failureDetail('The focused shelf could not be read.', state.aisleFailureCause),
         () => selectAisle(state.aisle),
       )
       return
@@ -329,11 +399,13 @@ export const WINDOW_JS = String.raw`(() => {
     if (name === 'all') {
       state.aisleCounts = state.snapshotCounts
       state.aislePhase = 'ready'
+      state.aisleFailureCause = null
       renderAll()
       setSettledStatus()
       return
     }
     state.aislePhase = 'loading'
+    state.aisleFailureCause = null
     setStatus('Reading the ' + name + ' aisle…', 'working')
     renderAll()
     const controller = new AbortController()
@@ -342,24 +414,28 @@ export const WINDOW_JS = String.raw`(() => {
     try {
       const payload = await getJson('/api/shelves?aisle=' + encodeURIComponent(name), controller.signal)
       if (state.aisleController !== controller) return
-      if (!payload || typeof payload !== 'object') throw new Error('invalid aisle response')
+      if (!payload || typeof payload !== 'object') throw contractFailure()
       const counts = readAisleCounts(payload)
       const listings = readListings(payload.listings, name)
       requireCountsCoverListings(counts, listings)
-      requireBoundedRows(counts.get(name), listings, 50, 'focused aisle')
+      requireBoundedRows(counts.get(name), listings, 50)
       state.aisleListings = new Map(state.aisleListings).set(name, listings)
       state.aisleCounts = counts
       state.aislePhase = 'ready'
+      state.aisleFailureCause = null
       if (state.aisle === name) {
         renderAll()
         setSettledStatus()
       }
-    } catch {
+    } catch (error) {
       if (state.aisleController === controller && state.aisle === name) {
         state.aislePhase = 'failed'
+        state.aisleFailureCause = publicFailureCause(error)
         renderListings()
         if (state.snapshotFailed) setSnapshotFailureStatus()
-        else setStatusFailure('The ' + name + ' aisle read failed.', () => selectAisle(name))
+        else setStatusFailure(failureDetail(
+          'The ' + name + ' aisle read failed.', state.aisleFailureCause,
+        ), () => selectAisle(name))
       }
     } finally {
       window.clearTimeout(timeout)
@@ -445,10 +521,12 @@ export const WINDOW_JS = String.raw`(() => {
     ]
     for (const [target, loading, failure] of panels) {
       if (mode === 'loading') renderLoading(target, loading)
-      else renderError(target, failure, 'The public market read failed.', refreshMarket)
+      else renderError(target, failure,
+        failureDetail('The public market read failed.', state.snapshotFailureCause), refreshMarket)
     }
     if (nodes.filterNote) nodes.filterNote.textContent = mode === 'loading'
-      ? 'Reading the public market…' : 'The public market read failed. Try again.'
+      ? 'Reading the public market…'
+      : failureDetail('The public market read failed. Try again.', state.snapshotFailureCause)
     if (nodes.clearFilter) nodes.clearFilter.hidden = true
   }
   function renderCurrent() {
@@ -524,7 +602,8 @@ export const WINDOW_JS = String.raw`(() => {
     const stateName = listing ? safeText(listing.state, '') : ''
     if (!listing || safeId(listing.id) !== id || !SAFE_LISTING_STATES.has(stateName) || !Array.isArray(payload.comments)) {
       nodes.dialogTitle.textContent = 'ITEM READ FAILED'
-      renderError(nodes.detail, 'This shelf label is missing.', 'The item could not be read.', () => openListing(id))
+      renderError(nodes.detail, 'This shelf label is missing.',
+        failureDetail('The item could not be read.', INCONSISTENT_PUBLIC_DATA), () => openListing(id))
       return
     }
     const world = listing.delivery_kind === 'city_ownership'
@@ -603,7 +682,7 @@ export const WINDOW_JS = String.raw`(() => {
           nodes.dialogTitle.textContent = 'ITEM READ FAILED'
           const message = timedOut
             ? 'This item could not be read just now. The request took too long.'
-            : 'This item could not be read just now.'
+            : failureDetail('This item could not be read just now.', error)
           renderError(nodes.detail, 'The glass fogged up.', message, () => openListing(id))
         }
       }
@@ -621,7 +700,8 @@ export const WINDOW_JS = String.raw`(() => {
     const badRows = listings && listings.some(listing => !listing || typeof listing !== 'object' || !safeId(listing.id))
     if (!store || !handle || handle !== requestedHandle || !listings || badRows || listings.length > 50 || !Number.isSafeInteger(totalStock) || totalStock < 0 || listings.length !== Math.min(totalStock, 50)) {
       nodes.dialogTitle.textContent = 'STORE READ FAILED'
-      renderError(nodes.detail, 'This storefront is dark.', 'The store could not be read.', () => openStore(requestedHandle))
+      renderError(nodes.detail, 'This storefront is dark.',
+        failureDetail('The store could not be read.', INCONSISTENT_PUBLIC_DATA), () => openStore(requestedHandle))
       return
     }
     nodes.dialogTitle.textContent = handle.toUpperCase()
@@ -680,7 +760,7 @@ export const WINDOW_JS = String.raw`(() => {
           nodes.dialogTitle.textContent = 'STORE READ FAILED'
           const message = timedOut
             ? 'This store took too long to answer.'
-            : 'This store could not be read just now.'
+            : failureDetail('This store could not be read just now.', error)
           renderError(nodes.detail, 'This storefront is dark.', message, () => openStore(handle))
         }
       }
@@ -691,15 +771,15 @@ export const WINDOW_JS = String.raw`(() => {
   }
   function normalizeSnapshot(payload) {
     if (!payload || !Array.isArray(payload.events) || !Array.isArray(payload.merchants)
-      || !Array.isArray(payload.listings) || !Array.isArray(payload.aisles)) throw new Error('invalid window response')
+      || !Array.isArray(payload.listings) || !Array.isArray(payload.aisles)) throw contractFailure()
     const counts = readAisleCounts(payload)
     const listings = readListings(payload.listings, null)
     requireCountsCoverListings(counts, listings)
-    requireBoundedRows([...counts.values()].reduce((sum, count) => sum + count, 0), listings, 50, 'goods')
+    requireBoundedRows([...counts.values()].reduce((sum, count) => sum + count, 0), listings, 50)
     const merchants = payload.merchants
-    if (merchants.some(merchant => !merchant || typeof merchant !== 'object' || !safeHandle(merchant.handle))) throw new Error('invalid merchant row')
+    if (merchants.some(merchant => !merchant || typeof merchant !== 'object' || !safeHandle(merchant.handle))) throw contractFailure()
     const merchantTotal = payload.merchant_total
-    requireBoundedRows(merchantTotal, merchants, 500, 'merchant')
+    requireBoundedRows(merchantTotal, merchants, 500)
     state.events = Array.isArray(payload && payload.events) ? payload.events.slice(0, 100) : []
     state.eventsHaveMore = payload.events_has_more === true
     state.merchants = merchants
@@ -722,6 +802,7 @@ export const WINDOW_JS = String.raw`(() => {
     if (state.refreshing) return
     state.refreshing = true
     state.snapshotFailed = false
+    state.snapshotFailureCause = null
     if (!state.hasSnapshot) renderSnapshotState('loading')
     if (!(state.aisle !== 'all' && state.aislePhase !== 'ready'))
       setStatus(state.hasSnapshot ? 'Checking the street…' : 'Turning on the window lights…', 'working')
@@ -733,6 +814,7 @@ export const WINDOW_JS = String.raw`(() => {
       normalizeSnapshot(payload)
       state.hasSnapshot = true
       state.snapshotFailed = false
+      state.snapshotFailureCause = null
       state.failures = 0
       const checkedAt = safeDate(payload && payload.refreshed_at) || new Date()
       if (nodes.updated) nodes.updated.textContent = checkedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -742,14 +824,15 @@ export const WINDOW_JS = String.raw`(() => {
         setStatus('Lights on · watching live', 'live')
       }
       openInitialView()
-    } catch {
+    } catch (error) {
       state.failures += 1
+      state.snapshotFailureCause = publicFailureCause(error)
       nextDelay = Math.min(BASE_REFRESH_MS * Math.pow(2, state.failures), MAX_REFRESH_MS)
       if (state.hasSnapshot) {
         state.snapshotFailed = true
         setSnapshotFailureStatus()
       } else {
-        setStatusFailure('The public market read failed.', refreshMarket)
+        setStatusFailure(failureDetail('The public market read failed.', state.snapshotFailureCause), refreshMarket)
         renderSnapshotState('failed')
       }
     } finally {

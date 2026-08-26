@@ -11,7 +11,7 @@ import {
   AISLES, EDITABLE_LISTING_FIELDS, formatActivity, isAisle, parseStoreLine, suggestAisle,
   type ActivityEvent, type Aisle,
 } from './market.ts'
-import { usdcBalance, NETWORK, USDC, verifyPersonalSignature } from './chain.ts'
+import { usdcBalance, NETWORK, USDC, verifyPersonalSignatureProof } from './chain.ts'
 import {
   canonicalTxHash, challenge402, LISTING_FEE_USDC, paymentReadinessResponse,
   paymentResponseHeader, requirements, settleX402, TREASURY, verifyDirectPayment,
@@ -23,12 +23,13 @@ import {
 } from './market-oauth.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
-import { registerWorldRoutes } from './world-routes.ts'
+import { registerWorldRoutes, requireValidWorldReceipt } from './world-routes.ts'
 import { CITY_ORIGIN, cityCancelUrl } from './world.ts'
 import {
   DIRECT_PURCHASE_INTENT_TTL_MS, directPaymentWindowError, purchaseIntentChallenge,
   type DirectPurchaseIntent,
 } from './direct-payments.ts'
+import { postgresUniqueConstraint } from './postgres-error.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -37,13 +38,20 @@ const DUPE_WINDOW_DAYS = 7
 const REG_PER_IP_HOUR = 3
 const REG_GLOBAL_HOUR = 300
 const ROTATIONS_PER_DAY = 5
-
-const postgresErrorCode = (error: unknown, depth = 0): string | null => {
-  if (!error || typeof error !== 'object' || depth > 3) return null
-  const candidate = error as { code?: unknown; sourceError?: unknown }
-  if (typeof candidate.code === 'string') return candidate.code
-  return postgresErrorCode(candidate.sourceError, depth + 1)
-}
+const FEE_TX_CONSTRAINTS: readonly string[] = [
+  'fees_tx_hash_key',
+  'fees_tx_hash_lower_unique',
+  'payment_uses_pkey',
+]
+const PURCHASE_TX_CONSTRAINTS: readonly string[] = [
+  'purchases_tx_hash_key',
+  'purchases_tx_hash_lower_unique',
+  'payment_uses_pkey',
+]
+const OPEN_INTENT_CONSTRAINTS: readonly string[] = [
+  'direct_purchase_intents_open_unique',
+  'direct_purchase_intents_buyer_listing_unique',
+]
 
 const app = new Hono()
 
@@ -53,7 +61,7 @@ mountMarketOAuthRoutes(app)
 configureMarketOAuthMerchantResolver()
 app.onError((e, c) => {
   console.error(e)
-  return c.json({ error: 'internal' }, 500)
+  return c.json({ error: 'internal market failure; retry later' }, 500)
 })
 app.notFound(c => c.json({ error: 'no such shelf. GET / for the front door.' }, 404))
 
@@ -100,21 +108,23 @@ app.post('/api/register', async c => {
   const model = String(b?.model ?? '').slice(0, 120)
   if (!HANDLE_RE.test(handle)) return err(c, 400, 'handle must match ^[a-z0-9][a-z0-9-]{2,31}$')
   const secret = newSecret()
+  let rows: { id: number }[]
   try {
-    const rows = (await sql`
+    rows = (await sql`
       INSERT INTO merchants (handle, model, secret_hash) VALUES (${handle}, ${model}, ${sha256(secret)})
       RETURNING id`) as { id: number }[]
-    await sql`INSERT INTO reg_log (ip_hash) VALUES (${ipHash})`
-    await logEvent('register', handle, { id: rows[0]!.id, model })
-    return c.json({
-      merchant_id: rows[0]!.id,
-      handle,
-      secret,
-      warning: 'Save this secret. It is shown exactly once. There is no recovery. Whoever holds it IS the merchant.',
-    }, 201)
-  } catch {
+  } catch (error) {
+    if (postgresUniqueConstraint(error) !== 'merchants_handle_key') throw error
     return err(c, 409, 'handle taken')
   }
+  await sql`INSERT INTO reg_log (ip_hash) VALUES (${ipHash})`
+  await logEvent('register', handle, { id: rows[0]!.id, model })
+  return c.json({
+    merchant_id: rows[0]!.id,
+    handle,
+    secret,
+    warning: 'Save this secret. It is shown exactly once. There is no recovery. Whoever holds it IS the merchant.',
+  }, 201)
 })
 
 app.post('/api/rotate', async c => {
@@ -380,15 +390,19 @@ app.post('/api/listing', async c => {
 
     if (header) {
       const settled = await settleX402(header, reqs)
-      if ('error' in settled) return challenge402(c, reqs, settled.error)
+      if (settled.status !== 'verified') {
+        return settled.status === 'invalid'
+          ? challenge402(c, reqs, settled.reason)
+          : err(c, settled.status === 'unclassified' ? 502 : 503, settled.reason)
+      }
       feeTx = settled.transaction
       responseHeader = paymentResponseHeader(settled)
     } else {
       // The treasury address is public and takes donations, so a fallback fee only counts
       // if it came from this merchant's own seller_wallet, recently.
       const direct = await verifyDirectPayment(v.fee_tx_hash!, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 3600e3))
-      if (!direct)
-        return err(c, 402, 'fee_tx_hash did not verify: need >= $1 USDC on Base to the treasury, within the last hour, unused')
+      if (direct.status !== 'verified')
+        return err(c, direct.status === 'invalid' ? 402 : 503, direct.reason)
       if (direct.from.toLowerCase() !== v.seller_wallet.toLowerCase())
         return err(c, 402, 'the fee must be paid from the same wallet you list as seller_wallet')
       feeTx = v.fee_tx_hash!
@@ -414,8 +428,9 @@ app.post('/api/listing', async c => {
         )
         SELECT id FROM new_listing`) as { id: number }[]
     } catch (error) {
-      if (postgresErrorCode(error) !== '23505') throw error
-      return err(c, 409, 'that fee tx was already used')
+      const constraint = postgresUniqueConstraint(error)
+      if (!constraint || !FEE_TX_CONSTRAINTS.includes(constraint)) throw error
+      return err(c, 409, 'that fee transaction was already used')
     }
   } else {
     rows = (await sql`
@@ -760,7 +775,8 @@ async function createDirectPurchaseIntent(
     const row = rows[0]
     if (row) return directPurchaseIntentResponse(c, row, merchant.handle, 201)
   } catch (error) {
-    if (postgresErrorCode(error) !== '23505') throw error
+    const constraint = postgresUniqueConstraint(error)
+    if (!constraint || !OPEN_INTENT_CONSTRAINTS.includes(constraint)) throw error
   }
   const existing = (await sql`
     SELECT i.id, i.merchant_id, i.listing_id, i.payer_wallet, i.seller_wallet,
@@ -860,8 +876,12 @@ async function recordPurchase(
     if (!rows.length)
       return err(c, 409, 'listing changed or became unavailable; re-read it before paying')
   } catch (error) {
-    if (postgresErrorCode(error) !== '23505') throw error
-    return err(c, 409, 'already purchased (re-download via GET /api/purchases) or tx already used')
+    const constraint = postgresUniqueConstraint(error)
+    if (constraint === 'purchases_listing_id_merchant_id_key')
+      return err(c, 409, 'already purchased; re-download via GET /api/purchases')
+    if (constraint && PURCHASE_TX_CONSTRAINTS.includes(constraint))
+      return err(c, 409, 'that transaction hash was already used for another market payment')
+    throw error
   }
   return deliver(c, l.id)
 }
@@ -924,8 +944,14 @@ async function recordDirectPurchase(
       SELECT listing_id FROM new_purchase`
     if (!rows.length) return err(c, 409, 'listing or purchase intent changed; start again before paying')
   } catch (error) {
-    if (postgresErrorCode(error) !== '23505') throw error
-    return err(c, 409, 'already purchased, purchase intent used, or transaction hash already used')
+    const constraint = postgresUniqueConstraint(error)
+    if (constraint === 'purchases_listing_id_merchant_id_key')
+      return err(c, 409, 'already purchased; re-download via GET /api/purchases')
+    if (constraint === 'purchases_direct_intent_unique')
+      return err(c, 409, 'that purchase intent was already used')
+    if (constraint && PURCHASE_TX_CONSTRAINTS.includes(constraint))
+      return err(c, 409, 'that transaction hash was already used for another market payment')
+    throw error
   }
   return deliver(c, listing.id)
 }
@@ -975,7 +1001,11 @@ app.post('/api/buy/:id', async c => {
       `or start a signed ten-minute direct-payment intent at POST /api/purchase-intent/${l.id} before paying`,
     )
   const settled = await settleX402(header, reqs)
-  if ('error' in settled) return challenge402(c, reqs, settled.error)
+  if (settled.status !== 'verified') {
+    return settled.status === 'invalid'
+      ? challenge402(c, reqs, settled.reason)
+      : err(c, settled.status === 'unclassified' ? 502 : 503, settled.reason)
+  }
   c.header('X-PAYMENT-RESPONSE', paymentResponseHeader(settled))
   return recordPurchase(c, m, l, 'x402', settled.transaction, l.price_usdc, acceptedAt)
 })
@@ -1013,15 +1043,17 @@ app.post('/api/claim/:id', async c => {
   const intent = directIntentForBuyer(intentRow, m.handle)
   const preflightError = directPaymentWindowError(intent, new Date(intent.created_at), requestStartedAt)
   if (preflightError) return err(c, 409, preflightError)
-  if (!await verifyPersonalSignature(
+  const signatureProof = await verifyPersonalSignatureProof(
     purchaseIntentChallenge(intent), parsed.payer_signature, intent.payer_wallet,
-  )) return err(c, 402, 'payer_signature does not prove control of this intent payer wallet')
+  )
+  if (signatureProof.status !== 'verified')
+    return err(c, signatureProof.status === 'invalid' ? 402 : 503, signatureProof.reason)
 
   const direct = await verifyDirectPayment(
     parsed.tx_hash, intent.seller_wallet, Number(intent.minimum_amount_usdc), new Date(intent.created_at),
   )
-  if (!direct)
-    return err(c, 402, 'transaction must be Base USDC to this intent seller for at least its minimum, after the intent started')
+  if (direct.status !== 'verified')
+    return err(c, direct.status === 'invalid' ? 402 : 503, direct.reason)
   if (direct.from.toLowerCase() !== intent.payer_wallet)
     return err(c, 402, 'transaction payer does not match the signed purchase intent')
   const windowError = directPaymentWindowError(intent, direct.blockTime, requestStartedAt)
@@ -1059,7 +1091,7 @@ app.get('/api/purchases', async c => {
       return artifactPurchase
     }
     const { artifact: _artifact, ...worldPurchase } = row
-    return worldPurchase
+    return { ...worldPurchase, world_receipt: requireValidWorldReceipt(row.world_receipt) }
   })
   return c.json({ purchases })
 })
@@ -1105,7 +1137,8 @@ app.post('/api/vote', async c => {
   if (!(await spendQuota(m.id, 'votes'))) return err(c, 429, `${QUOTAS.votes} votes per UTC day`)
   try {
     await sql`INSERT INTO votes (merchant_id, listing_id) VALUES (${m.id}, ${listingId})`
-  } catch {
+  } catch (error) {
+    if (postgresUniqueConstraint(error) !== 'votes_pkey') throw error
     return err(c, 409, 'already voted for that listing')
   }
   await sql`UPDATE listings SET votes = votes + 1 WHERE id = ${listingId}`
@@ -1155,10 +1188,13 @@ app.get('/api/me', async c => {
     SELECT p.listing_id, l.title, b.handle AS buyer, p.amount_usdc::float8 AS amount_usdc, p.verified_via, p.created_at
     FROM purchases p JOIN listings l ON l.id = p.listing_id JOIN merchants b ON b.id = p.merchant_id
     WHERE l.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
-  const purchases = await sql`
+  const purchases = ((await sql`
     SELECT p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at
     FROM purchases p JOIN listings l ON l.id = p.listing_id
-    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`
+    WHERE p.merchant_id = ${m.id} ORDER BY p.created_at DESC LIMIT 50`) as Record<string, unknown>[])
+    .map(row => row.delivery_kind === 'city_ownership'
+      ? { ...row, world_receipt: requireValidWorldReceipt(row.world_receipt) }
+      : row)
   const replies = await sql`
     SELECT c.listing_id, l.title, mm.handle, c.body, c.verified_buyer, c.created_at
     FROM comments c JOIN listings l ON l.id = c.listing_id JOIN merchants mm ON mm.id = c.merchant_id
