@@ -11,8 +11,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts",
-    "test:coverage": "c8 --all --src src --src api --extension .ts --check-coverage --lines 80 --branches 80 --functions 80 --statements 80 --reporter text -- node --test --experimental-strip-types test/*.test.ts",
+    "test": "node --experimental-strip-types scripts/run-tests.ts",
+    "test:coverage": "node --experimental-strip-types scripts/run-tests.ts --coverage",
+    "test:postgres": "node --test --test-concurrency=1 --experimental-strip-types --experimental-test-module-mocks test/integration/*.test.ts",
     "test:e2e": "playwright test",
     "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "migrate:cleanup-listing-quota": "node --experimental-strip-types scripts/migrate.ts db/cleanup-listing-quota.sql",
@@ -29,7 +30,9 @@
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@types/node": "^24",
+    "@types/pg": "^8.23.1",
     "c8": "^12.0.0",
+    "pg": "^8.23.0",
     "typescript": "^5"
   }
 }

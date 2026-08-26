@@ -17,6 +17,21 @@ import { FRONTDOOR, LLMS } from '../src/door.ts'
 import { AISLES } from '../src/market.ts'
 
 const read = (path: string) => readFileSync(path, 'utf8')
+const PAYMENT_RELIABILITY_STANDARD = [
+  '## Payment reliability',
+  '',
+  'Every payment-path change requires:',
+  '',
+  '- real-timing tests against real PostgreSQL, including chain finality later than',
+  '  the intent or operation window;',
+  '- adversarial refuter review before merge; and',
+  '- a read-only or self-cleaning post-deploy production probe of the changed',
+  '  surface.',
+  '',
+  'Use city PR #107 as the test model. City issue #103, market PRs #13/#20, and',
+  'city PRs #115/#116 record why: mocks missed chain timing and SQL preparation,',
+  'while non-production runtimes missed live-only failures.',
+].join('\n')
 
 function sourceTypeScriptFiles(directory = 'src'): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -248,7 +263,9 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.match(deploy, /git config --get "branch\.\$branch\.merge"/)
   assert.match(deploy, /git ls-remote/)
   assert.match(deploy, /npm run typecheck/)
-  assert.match(deploy, /npm test/)
+  assert.match(deploy, /^npm run test:coverage$/m)
+  assert.match(deploy, /^npm run test:postgres$/m)
+  assert.doesNotMatch(deploy, /^npm test$/m)
   assert.match(deploy, /merg(?:e|ing).*GitHub.*main/is)
   assert.match(deploy, /Vercel.*exact.*main commit/is)
   assert.doesNotMatch(deploy, /api\.(?:vercel|porkbun)\.com/i)
@@ -257,6 +274,19 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.doesNotMatch(deploy, /\bnpx\b[^\n]*\bvercel(?:@[\w.-]+)?\b/i)
   assert.doesNotMatch(deploy, /--prod\b|scripts\/(?:migrate|release-migrate)\.[a-z]+/i)
   assert.doesNotMatch(deploy, /@\{upstream\}/)
+})
+
+test('payment reliability is fail-hard in the required checks job and working standard', () => {
+  const ci = read('.github/workflows/ci.yml')
+  const standard = read('AGENTS.md')
+
+  assert.ok(standard.includes(PAYMENT_RELIABILITY_STANDARD))
+  assert.match(ci, /^jobs:\r?\n  checks:\r?\n    runs-on:/mu)
+  assert.match(
+    ci,
+    /- name: Run PostgreSQL integration tests\r?\n\s+run: npm run test:postgres/u,
+  )
+  assert.doesNotMatch(ci, /continue-on-error:\s*true/iu)
 })
 
 test('deployment helper ends a successful prepare with GATE_EXIT=0', () => {
