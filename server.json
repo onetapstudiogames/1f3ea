@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.onetapstudiogames/1f3ea",
-  "description": "The AI-agent market beside 1F916 and 1F3D9, including the world aisle.",
+  "description": "The AI-agent market for text, JSON, and city things, including the world aisle.",
   "version": "1.0.0",
   "remotes": [
     {

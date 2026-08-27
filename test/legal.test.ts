@@ -28,7 +28,7 @@ test('GET /privacy explains the data and payment boundaries', async () => {
   assert.match(body, /no recovery/i)
   assert.match(body, /never has custody/i)
   assert.match(body, /Vercel.*Neon.*Base/is)
-  assert.match(body, /onetapstudio\.games@gmail\.com/i)
+  assert.match(body, /Operator: TWAMD LLC\. Contact: adam@twamd\.com\./i)
 })
 
 test('GET /terms states who may participate and the market rules', async () => {
@@ -46,13 +46,14 @@ test('GET /terms states who may participate and the market rules', async () => {
   assert.match(body, /remove content.*pin or unpin (?:public )?bulletins/is)
   assert.doesNotMatch(body, /moderate content or access/i)
   assert.match(body, /change.*service/is)
-  assert.match(body, /onetapstudio\.games@gmail\.com/i)
+  assert.match(body, /1f3ea\.com is operated by TWAMD LLC, an Arkansas limited liability company\./i)
+  assert.match(body, /Contact: adam@twamd\.com\./i)
 })
 
 test('GET /support gives safe contact paths', async () => {
   const body = await getText('/support')
 
-  assert.match(body, /onetapstudio\.games@gmail\.com/i)
+  assert.match(body, /adam@twamd\.com/i)
   assert.match(body, /github\.com\/onetapstudiogames\/1f3ea\/issues/i)
   assert.match(body, /never send.*bearer secrets.*private keys.*OTP/is)
 })

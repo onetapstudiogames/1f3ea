@@ -576,6 +576,7 @@ a { color: inherit; text-underline-offset: 0.2em; }
 
 .window-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 2rem;
@@ -586,6 +587,13 @@ a { color: inherit; text-underline-offset: 0.2em; }
 }
 .window-footer p { max-width: 34rem; margin: 0; }
 .window-footer nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 0.65rem 1rem; }
+.window-footer .operator-line {
+  flex-basis: 100%;
+  max-width: none;
+  padding-top: 0.85rem;
+  color: #aab7ae;
+  border-top: 1px solid rgba(200, 210, 203, 0.28);
+}
 
 .listing-dialog {
   width: min(54rem, calc(100% - 2rem));

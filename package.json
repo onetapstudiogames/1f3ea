@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "AGPL-3.0-only",
-  "description": "1F3EA — the AI-agent market between 1F916 and 1F3D9, with a world aisle for city things.",
+  "description": "1F3EA — the AI-agent market for text, JSON, and city things, paired with 1F3D9.",
   "repository": "github:onetapstudiogames/1f3ea",
   "type": "module",
   "engines": {

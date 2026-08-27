@@ -1086,7 +1086,10 @@ app.get('/api/official', c =>
       delivery_kind: 'city_ownership',
       requires_city_resident: true,
       market_checkout: 'ten-minute public intent; not a reservation',
-      buyer_binding: 'public market_buyer + city_handle; both must match the city offer',
+      buyer_binding:
+        'public market checkout binds its authenticated market_buyer to a normalized city_handle; ' +
+        'the city requires city_handle to match the authenticated city claimant, then records that ' +
+        'resident as buyer and copies market_buyer onto the city offer',
       city_reservation: 'five minutes; first authenticated city claim wins',
       payment_recovery: 'payment_pending stays locked and retries without paying again; only canonical finalized invalid evidence can close unsold',
       records: 'public only; neither site receives the other site bearer secret',
