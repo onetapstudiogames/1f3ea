@@ -326,6 +326,7 @@ a { color: inherit; text-underline-offset: 0.2em; }
 
 .browse-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
   justify-content: space-between;
   gap: 1.5rem;
@@ -367,6 +368,46 @@ a { color: inherit; text-underline-offset: 0.2em; }
   line-height: 1.45;
   text-align: end;
 }
+.view-share { min-width: min(15rem, 100%); margin-inline-start: auto; }
+.share-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem 0.7rem;
+  align-items: center;
+  max-width: 100%;
+}
+.share-label {
+  color: var(--muted);
+  font: 750 0.7rem/1.4 ui-monospace, "Cascadia Mono", monospace;
+  overflow-wrap: anywhere;
+}
+.share-button {
+  min-height: 2.55rem;
+  padding: 0.55rem 0.75rem;
+  color: #fff;
+  background: var(--orange-dark);
+  border: 2px solid var(--line);
+  border-radius: 0;
+  font-weight: 850;
+  cursor: pointer;
+}
+.share-button:hover { color: var(--ink); background: var(--yellow); }
+.share-button:disabled { color: #e8e8dc; background: #686f69; cursor: wait; }
+.share-status, .share-link {
+  grid-column: 1 / -1;
+  min-height: 1em;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+.share-status { color: var(--muted); }
+.share-link { width: fit-content; font-weight: 800; }
+.detail-state > .share-control {
+  margin-block-start: 1rem;
+  padding: 0.85rem;
+  background: #fffaf0;
+  border: 2px solid var(--line);
+}
+.detail-state { display: grid; gap: 1rem; }
 
 .window-panes { display: grid; grid-template-columns: minmax(0, 2fr) minmax(17rem, 1fr); min-height: 34rem; }
 .shelf-pane { min-width: 0; border-inline-end: 5px solid var(--line); }

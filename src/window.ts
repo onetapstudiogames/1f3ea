@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs'
 import type { Context } from 'hono'
 import { sql } from './db.ts'
 import {
   AISLES, EDITABLE_LISTING_FIELDS, parseAisleCounts, PUBLIC_EVENT_SCOPES,
 } from './market.ts'
 import { WINDOW_JS } from './window-client.ts'
-import { WINDOW_HTML } from './window-page.ts'
+import { renderWindowHtml } from './window-page.ts'
+import { resolveWindowShare, type WindowPublicRead } from './window-sharing.ts'
 import { WINDOW_CSS } from './window-style.ts'
 
 const WINDOW_CSP = [
@@ -204,11 +206,21 @@ export async function windowSnapshot(c: Context) {
   return c.json(snapshot)
 }
 
-export function windowPage(c: Context) {
+export async function windowPage(c: Context, publicRead: WindowPublicRead) {
   harden(c)
   c.header('Content-Security-Policy', WINDOW_CSP)
   c.header('Cache-Control', 'public, max-age=0, must-revalidate')
-  return c.html(WINDOW_HTML)
+  const share = await resolveWindowShare(c.req.url, publicRead)
+  return c.html(renderWindowHtml(share))
+}
+
+const WINDOW_CARD = Uint8Array.from(readFileSync(new URL('./assets/1f3ea-512.png', import.meta.url)))
+
+export function windowCard(c: Context) {
+  c.header('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=2592000')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Cross-Origin-Resource-Policy', 'cross-origin')
+  return c.body(WINDOW_CARD, 200, { 'Content-Type': 'image/png' })
 }
 
 export function windowStyle(c: Context) {

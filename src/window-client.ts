@@ -8,6 +8,7 @@ export const WINDOW_JS = String.raw`(() => {
   const MAX_ERROR_RESPONSE_BYTES = 4_096
   const MAX_ERROR_CAUSE_BYTES = 500
   const MAX_FILTER_CHARS = 100
+  const PUBLIC_WINDOW_URL = 'https://1f3ea.com/window'
   const EVENT_PAGE_SIZE = 100
   const LISTING_PAGE_SIZE = 50
   const MERCHANT_PAGE_SIZE = 500
@@ -30,6 +31,7 @@ export const WINDOW_JS = String.raw`(() => {
     aisle: 'all', aislePhase: 'ready', aisleFailureCause: null, filter: '',
     refreshing: false, failures: 0, hasSnapshot: false, snapshotFailed: false, snapshotFailureCause: null,
     pollTimer: 0, detailController: null, detailViewKey: null, aisleController: null,
+    viewShareKey: null, detailShareKey: null, detailBody: null, urlAgent: null,
   }
   const nodes = {
     status: document.getElementById('window-status'), updated: document.getElementById('updated-at'),
@@ -37,6 +39,7 @@ export const WINDOW_JS = String.raw`(() => {
     clearFilter: document.getElementById('clear-filter'), filterNote: document.getElementById('filter-note'),
     activity: document.getElementById('activity-list'), aisles: document.getElementById('aisle-list'),
     listings: document.getElementById('listing-list'), merchants: document.getElementById('merchant-list'),
+    viewShare: document.getElementById('view-share'),
     dialog: document.getElementById('listing-dialog'), dialogClose: document.getElementById('dialog-close'),
     detail: document.getElementById('listing-detail'), dialogTitle: document.getElementById('dialog-title'),
   }
@@ -66,6 +69,11 @@ export const WINDOW_JS = String.raw`(() => {
   function safeText(value, fallback) { return typeof value === 'string' ? value : fallback }
   function safeHandle(value) { const handle = typeof value === 'string' ? value.toLowerCase() : ''; return HANDLE_RE.test(handle) ? handle : null }
   function safeId(value) { const id = Number(value); return Number.isSafeInteger(id) && id > 0 ? id : null }
+  function safeQueryId(value) {
+    if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null
+    const id = Number(value)
+    return Number.isSafeInteger(id) ? id : null
+  }
   function safeNumber(value) { const number = Number(value); return Number.isFinite(number) && number >= 0 ? number : 0 }
   function safeDate(value) {
     if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
@@ -93,11 +101,6 @@ export const WINDOW_JS = String.raw`(() => {
   async function readPublicError(response) {
     const contentType = response.headers.get('content-type') || ''
     if (!/(?:^|\s|;)application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(contentType)) return null
-    const declaredLength = response.headers.get('content-length')
-    if (declaredLength !== null && Number(declaredLength) > MAX_ERROR_RESPONSE_BYTES) {
-      try { await response.body?.cancel() } catch {}
-      return null
-    }
     if (!response.body) return null
     const reader = response.body.getReader()
     const chunks = []
@@ -183,11 +186,105 @@ export const WINDOW_JS = String.raw`(() => {
     else if (state.refreshing) setStatus('Checking the street…', 'working')
     else setStatus('Lights on · watching live', 'live')
   }
+  function viewUrl(origin, kind, value, agent) {
+    const url = new URL('/window', origin)
+    if (kind && value !== null && value !== undefined) url.searchParams.set(kind, String(value))
+    if (agent) url.searchParams.set('agent', agent)
+    return url
+  }
+  function canonicalViewUrl(kind, value) {
+    return viewUrl(new URL(PUBLIC_WINDOW_URL).origin, kind, value, null).href
+  }
+  function replaceViewLocation(kind, value) {
+    const url = viewUrl(window.location.origin, kind, value, state.urlAgent)
+    window.history.replaceState(null, '', url.pathname + url.search)
+  }
   function setViewParam(kind, value) {
-    const url = new URL(window.location.href)
-    url.searchParams.delete('item'); url.searchParams.delete('store')
-    if (kind && value) url.searchParams.set(kind, String(value))
-    window.history.replaceState(null, '', url)
+    if (kind === 'item' || kind === 'store') replaceViewLocation(kind, value)
+    else if (state.aisle !== 'all') replaceViewLocation('aisle', state.aisle)
+    else replaceViewLocation(null, null)
+  }
+  function syncCurrentViewLocation() {
+    if (typeof state.detailViewKey === 'string' && state.detailViewKey.startsWith('item:')) {
+      replaceViewLocation('item', safeId(state.detailViewKey.slice(5)))
+    } else if (typeof state.detailViewKey === 'string' && state.detailViewKey.startsWith('store:')) {
+      replaceViewLocation('store', safeHandle(state.detailViewKey.slice(6)))
+    } else if (state.aisle !== 'all') replaceViewLocation('aisle', state.aisle)
+    else replaceViewLocation(null, null)
+  }
+  function shareControl(url, subject) {
+    const wrapper = element('div', 'share-control')
+    let copying = false
+    const copy = button('share-button', 'Copy public link', async () => {
+      if (copying) return
+      copying = true
+      copy.disabled = true
+      status.textContent = 'Copying…'
+      try {
+        if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function')
+          throw new Error('clipboard unavailable')
+        await navigator.clipboard.writeText(url)
+        status.textContent = 'Link copied.'
+        fallback.hidden = true
+      } catch {
+        status.textContent = 'Copy failed. Open the public link and copy it from the address bar.'
+        fallback.hidden = false
+      } finally {
+        copying = false
+        copy.disabled = false
+      }
+    })
+    copy.setAttribute('aria-label', 'Copy public link for ' + subject)
+    const status = element('span', 'share-status', '')
+    status.setAttribute('role', 'status')
+    status.setAttribute('aria-live', 'polite')
+    const fallback = element('a', 'share-link', 'Open public link')
+    fallback.href = url
+    fallback.hidden = true
+    wrapper.append(element('span', 'share-label', 'Share ' + subject), copy, status, fallback)
+    return wrapper
+  }
+  function renderViewShare() {
+    if (!nodes.viewShare) return
+    const focused = state.aisle !== 'all'
+    const subject = focused ? 'the ' + state.aisle + ' aisle' : 'the full shop window'
+    const url = canonicalViewUrl(focused ? 'aisle' : null, focused ? state.aisle : null)
+    const key = url
+    if (state.viewShareKey === key && nodes.viewShare.childNodes.length) return
+    state.viewShareKey = key
+    nodes.viewShare.replaceChildren(shareControl(url, subject))
+  }
+  function detailShare(kind, value, subject) {
+    return shareControl(canonicalViewUrl(kind, value), subject)
+  }
+  function detailContent(kind, value, subject) {
+    if (!nodes.detail) return null
+    const key = kind + ':' + String(value)
+    if (state.detailShareKey !== key || !state.detailBody) {
+      const shell = element('div', 'detail-state')
+      const body = element('div', 'detail-content')
+      shell.append(detailShare(kind, value, subject), body)
+      nodes.detail.replaceChildren(shell)
+      state.detailShareKey = key
+      state.detailBody = body
+    }
+    return state.detailBody
+  }
+  function renderDetailLoading(kind, value, subject, message) {
+    const body = detailContent(kind, value, subject)
+    if (!body) return
+    const loading = element('div', 'empty-state')
+    loading.append(element('span', 'loading-light', '●'), element('p', '', message))
+    body.replaceChildren(loading)
+  }
+  function renderDetailMessage(kind, value, subject, title, detail, isError, retry) {
+    const body = detailContent(kind, value, subject)
+    if (!body) return
+    const className = 'empty-state' + (isError ? ' empty-state--error' : '')
+    const message = element('div', className)
+    message.append(element('strong', '', title), element('p', '', detail))
+    if (retry) message.append(button('text-button', 'Try again', retry))
+    body.replaceChildren(message)
   }
   function showDialog(title) {
     if (!nodes.dialog || !nodes.detail || !nodes.dialogTitle) return false
@@ -199,6 +296,8 @@ export const WINDOW_JS = String.raw`(() => {
     if (state.detailController) state.detailController.abort()
     state.detailController = null
     state.detailViewKey = null
+    state.detailShareKey = null
+    state.detailBody = null
     if (nodes.dialog && nodes.dialog.open) nodes.dialog.close()
     setViewParam(null, null)
   }
@@ -518,6 +617,8 @@ export const WINDOW_JS = String.raw`(() => {
     if (state.aisleController) state.aisleController.abort()
     state.aisleController = null
     state.aisle = name
+    if (announce && !state.detailViewKey)
+      replaceViewLocation(name === 'all' ? null : 'aisle', name === 'all' ? null : name)
     if (name === 'all') {
       state.aisleCounts = state.snapshotCounts
       state.aislePhase = 'ready'
@@ -651,6 +752,7 @@ export const WINDOW_JS = String.raw`(() => {
     renderActivity()
     renderListings()
     renderMerchants()
+    renderViewShare()
   }
   function renderSnapshotState(mode) {
     const panels = [
@@ -679,6 +781,8 @@ export const WINDOW_JS = String.raw`(() => {
   }
   function clearFilter() {
     state.filter = ''
+    state.urlAgent = null
+    syncCurrentViewLocation()
     if (nodes.filter) nodes.filter.value = ''
     renderCurrent()
     if (nodes.filter) nodes.filter.focus()
@@ -687,6 +791,8 @@ export const WINDOW_JS = String.raw`(() => {
     const safe = safeHandle(handle)
     if (!safe) return
     state.filter = safe
+    state.urlAgent = safe
+    syncCurrentViewLocation()
     if (nodes.filter) nodes.filter.value = safe
     renderCurrent()
     document.getElementById('window-main')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -780,6 +886,8 @@ export const WINDOW_JS = String.raw`(() => {
   }
   function renderListingDetail(detail, id) {
     if (!nodes.detail || !nodes.dialogTitle) return
+    const body = detailContent('item', id, 'item #' + String(id))
+    if (!body) return
     const listing = detail.listing
     const stateName = safeText(listing.state, '')
     const world = listing.delivery_kind === 'city_ownership'
@@ -797,7 +905,11 @@ export const WINDOW_JS = String.raw`(() => {
       button('merchant-link', merchant, () => openStore(merchant)),
       element('span', 'price-ticket', stateName === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF'),
     )
-    article.append(eyebrow, title, byline)
+    article.append(
+      eyebrow,
+      title,
+      byline,
+    )
     const facts = element('p', 'detail-facts')
     facts.textContent = String(Math.trunc(safeNumber(listing.sales))) + ' pickups · ' +
       String(Math.trunc(safeNumber(listing.votes))) + ' votes · stocked ' + formatDate(listing.created_at)
@@ -856,7 +968,7 @@ export const WINDOW_JS = String.raw`(() => {
       reviews.append(more)
     }
     article.append(detailSection('REVIEWS FROM THE AISLE', reviews))
-    nodes.detail.replaceChildren(article)
+    body.replaceChildren(article)
   }
   async function loadMoreComments(detail) {
     const id = detail && safeId(detail.id)
@@ -891,7 +1003,7 @@ export const WINDOW_JS = String.raw`(() => {
     if (!id || !path || !showDialog('Reading item #' + String(id))) return
     state.detailViewKey = 'item:' + String(id)
     setViewParam('item', id)
-    renderLoading(nodes.detail, 'Reading the shelf label and public reviews…')
+    renderDetailLoading('item', id, 'item #' + String(id), 'Reading the shelf label and public reviews…')
     nodes.detail.focus()
     if (state.detailController) state.detailController.abort()
     const controller = new AbortController()
@@ -909,13 +1021,19 @@ export const WINDOW_JS = String.raw`(() => {
       if (state.detailController === controller) {
         if (!timedOut && error && error.status === 404) {
           nodes.dialogTitle.textContent = 'ITEM NOT FOUND'
-          renderEmpty(nodes.detail, 'No item was found.', 'This item is not in the public market.')
+          renderDetailMessage(
+            'item', id, 'item #' + String(id),
+            'No item was found.', 'This item is not in the public market.', false, null,
+          )
         } else {
           nodes.dialogTitle.textContent = 'ITEM READ FAILED'
           const message = timedOut
             ? 'This item could not be read just now. The request took too long.'
             : failureDetail('This item could not be read just now.', error)
-          renderError(nodes.detail, 'The glass fogged up.', message, () => openListing(id))
+          renderDetailMessage(
+            'item', id, 'item #' + String(id),
+            'The glass fogged up.', message, true, () => openListing(id),
+          )
         }
       }
     } finally {
@@ -936,10 +1054,16 @@ export const WINDOW_JS = String.raw`(() => {
       payload.page_size !== listings.length || payload.has_more !== false ||
       payload.next_before_id !== null) {
       nodes.dialogTitle.textContent = 'STORE READ FAILED'
-      renderError(nodes.detail, 'This storefront is dark.',
-        failureDetail('The store could not be read.', INCONSISTENT_PUBLIC_DATA), () => openStore(requestedHandle))
+      renderDetailMessage(
+        'store', requestedHandle, requestedHandle + ' storefront',
+        'This storefront is dark.',
+        failureDetail('The store could not be read.', INCONSISTENT_PUBLIC_DATA),
+        true, () => openStore(requestedHandle),
+      )
       return
     }
+    const body = detailContent('store', handle, handle + ' storefront')
+    if (!body) return
     nodes.dialogTitle.textContent = handle.toUpperCase()
     const article = element('article', 'store-view')
     article.append(
@@ -966,14 +1090,17 @@ export const WINDOW_JS = String.raw`(() => {
     }
     goods.append(element('p', 'collection-summary', 'Showing all ' + String(totalStock) + ' goods.'))
     article.append(detailSection('GOODS ON THE SHELVES', goods))
-    nodes.detail.replaceChildren(article)
+    body.replaceChildren(article)
   }
   async function openStore(value) {
     const handle = safeHandle(value)
     if (!handle || !showDialog('Reading ' + handle + ' storefront')) return
     state.detailViewKey = 'store:' + handle
     setViewParam('store', handle)
-    renderLoading(nodes.detail, 'Reading the newest shelf labels in ' + handle + '…')
+    renderDetailLoading(
+      'store', handle, handle + ' storefront',
+      'Reading the newest shelf labels in ' + handle + '…',
+    )
     nodes.detail.focus()
     if (state.detailController) state.detailController.abort()
     const controller = new AbortController()
@@ -991,13 +1118,19 @@ export const WINDOW_JS = String.raw`(() => {
       if (state.detailController === controller) {
         if (!timedOut && error && error.status === 404) {
           nodes.dialogTitle.textContent = 'STORE NOT FOUND'
-          renderEmpty(nodes.detail, 'No store was found.', 'This storefront is not in the public market.')
+          renderDetailMessage(
+            'store', handle, handle + ' storefront',
+            'No store was found.', 'This storefront is not in the public market.', false, null,
+          )
         } else {
           nodes.dialogTitle.textContent = 'STORE READ FAILED'
           const message = timedOut
             ? 'This store took too long to answer.'
             : failureDetail('This store could not be read just now.', error)
-          renderError(nodes.detail, 'This storefront is dark.', message, () => openStore(handle))
+          renderDetailMessage(
+            'store', handle, handle + ' storefront',
+            'This storefront is dark.', message, true, () => openStore(handle),
+          )
         }
       }
     } finally {
@@ -1107,7 +1240,6 @@ export const WINDOW_JS = String.raw`(() => {
         if (!hadSnapshot || recovering || !background)
           setStatus('Lights on · watching live', 'live')
       }
-      openInitialView()
     } catch (error) {
       state.failures += 1
       state.snapshotFailureCause = publicFailureCause(error)
@@ -1130,20 +1262,41 @@ export const WINDOW_JS = String.raw`(() => {
     if (initialViewOpened) return
     initialViewOpened = true
     const params = new URL(window.location.href).searchParams
-    const item = safeId(params.get('item'))
+    const targetNames = ['aisle', 'item', 'store'].filter(name => params.has(name))
+    const item = safeQueryId(params.get('item'))
     const store = safeHandle(params.get('store'))
+    const aisleValue = safeText(params.get('aisle'), '').toLowerCase()
+    const aisle = SAFE_AISLES.has(aisleValue) ? aisleValue : null
     const agent = safeHandle(params.get('agent'))
+    state.urlAgent = agent
     if (agent) {
       state.filter = agent
       if (nodes.filter) nodes.filter.value = agent
-      renderCurrent()
     }
-    if (item) void openListing(item)
-    else if (store) void openStore(store)
+    const oneTarget = targetNames.length === 1 && params.getAll(targetNames[0]).length === 1
+    if (oneTarget && targetNames[0] === 'item' && item) {
+      renderViewShare()
+      void openListing(item)
+    } else if (oneTarget && targetNames[0] === 'store' && store) {
+      renderViewShare()
+      void openStore(store)
+    } else if (oneTarget && targetNames[0] === 'aisle' && aisle) {
+      state.aisle = aisle
+      state.aislePhase = 'loading'
+      replaceViewLocation('aisle', aisle)
+      renderViewShare()
+    } else {
+      replaceViewLocation(null, null)
+      renderViewShare()
+    }
   }
   if (nodes.filter) {
     nodes.filter.addEventListener('input', event => {
       state.filter = safeText(event.target.value, '').trim().slice(0, MAX_FILTER_CHARS)
+      if (state.urlAgent && state.filter !== state.urlAgent) {
+        state.urlAgent = null
+        syncCurrentViewLocation()
+      }
       renderCurrent()
     })
   }
@@ -1162,6 +1315,7 @@ export const WINDOW_JS = String.raw`(() => {
     window.clearTimeout(state.pollTimer)
     if (!document.hidden) void refreshMarket({ background: true })
   })
+  openInitialView()
   void refreshMarket({ background: false })
 })()
 `

@@ -54,6 +54,7 @@ class FakeElement extends FakeNode {
   className = ''
   dateTime = ''
   hidden = false
+  disabled = false
   focused = false
   open = false
   type = ''
@@ -86,7 +87,7 @@ class FakeDocument {
     for (const id of [
       'window-status', 'updated-at', 'market-counts', 'filter-input', 'clear-filter',
       'filter-note', 'activity-list', 'aisle-list', 'listing-list', 'merchant-list',
-      'listing-dialog', 'dialog-close', 'listing-detail', 'dialog-title', 'window-main',
+      'view-share', 'listing-dialog', 'dialog-close', 'listing-detail', 'dialog-title', 'window-main',
     ]) {
       const tag = id === 'listing-dialog'
         ? 'dialog'
@@ -210,9 +211,17 @@ function focusedShelfPayload(
   }
 }
 
-function startWindowClient(fetch: (input: unknown, init?: Record<string, unknown>) => Promise<unknown>) {
+interface WindowClientOptions {
+  href?: string
+  writeClipboard?: (value: string) => Promise<void>
+}
+
+function startWindowClient(
+  fetch: (input: unknown, init?: Record<string, unknown>) => Promise<unknown>,
+  options: WindowClientOptions = {},
+) {
   const document = new FakeDocument()
-  let currentUrl = new URL('https://window.example/window')
+  let currentUrl = new URL(options.href ?? 'https://window.example/window')
   let timerId = 0
   const timers = new Map<number, { callback: () => void; delay: number }>()
   const fakeWindow = {
@@ -233,10 +242,12 @@ function startWindowClient(fetch: (input: unknown, init?: Record<string, unknown
   }
   const context = vm.createContext({
     AbortController, Date, Intl, Map, Math, Number, Promise, Set, String, TextDecoder, TextEncoder, Uint8Array, URL, console,
-    document, fetch, globalThis: undefined, window: fakeWindow,
+    document, fetch, globalThis: undefined,
+    navigator: options.writeClipboard ? { clipboard: { writeText: options.writeClipboard } } : {},
+    window: fakeWindow,
   })
   vm.runInContext(WINDOW_JS, context, { timeout: 1_000 })
-  return { document, timers }
+  return { document, timers, currentUrl: () => currentUrl }
 }
 
 async function enterFilter(document: FakeDocument, value: string) {
@@ -255,6 +266,251 @@ function assertPanelsMatch(document: FakeDocument, pattern: RegExp) {
     assert.match(panel.textContent, pattern, `${id} must name the same read state`)
   }
 }
+
+function elementsWithClass(root: FakeNode, className: string) {
+  return descendants(root).filter(element => element.className.split(/\s+/u).includes(className))
+}
+
+test('shared aisle tabs restore and copy only the canonical public window URL', async () => {
+  const copied: string[] = []
+  const ready = boundedSnapshot(1, 1, 0, 0)
+  const { document, currentUrl } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    if (url.pathname === '/api/window') return jsonResponse(ready)
+    if (url.pathname === '/api/shelves' && url.search === '?aisle=tools') {
+      return jsonResponse(focusedShelfPayload(aisleVector({ tools: 1 }), [listingFixture(1)], 1))
+    }
+    return jsonResponse({ error: 'unexpected public read' }, 500)
+  }, {
+    href: 'https://preview.example/window?aisle=tools&utm_source=discarded',
+    writeClipboard: async value => { copied.push(value) },
+  })
+  await settle()
+
+  assert.equal(currentUrl().pathname + currentUrl().search, '/window?aisle=tools')
+  const shareRoot = document.getElementById('view-share')!
+  assert.equal(elementsWithClass(shareRoot, 'share-button').length, 1)
+  assert.match(shareRoot.textContent, /Share the tools aisle/i)
+  await elementsWithClass(shareRoot, 'share-button')[0]!.click()
+  assert.deepEqual(copied, ['https://1f3ea.com/window?aisle=tools'])
+  assert.match(shareRoot.textContent, /Link copied/i)
+
+  const allTab = descendants(document.getElementById('aisle-list')!).find(element =>
+    element.className === 'aisle-tab' && /^All goods\b/.test(element.textContent))
+  assert.ok(allTab)
+  await allTab.click()
+  await settle()
+  assert.equal(currentUrl().pathname + currentUrl().search, '/window')
+  const allShareRoot = document.getElementById('view-share')!
+  await elementsWithClass(allShareRoot, 'share-button')[0]!.click()
+  assert.deepEqual(copied, [
+    'https://1f3ea.com/window?aisle=tools',
+    'https://1f3ea.com/window',
+  ])
+})
+
+test('opened item and store details each copy their canonical public URL', async () => {
+  const copied: string[] = []
+  const snapshot = boundedSnapshot(1, 1, 1, 1)
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    if (url.pathname === '/api/window') return jsonResponse(snapshot)
+    if (url.pathname === '/api/listing/1') return jsonResponse({
+      listing: {
+        ...listingFixture(1), state: 'live', preview: 'Public preview',
+        created_at: '2026-08-10T10:00:00Z',
+      },
+      comments: [], comments_total: 0, comments_returned: 0, comments_page_size: 200,
+      comments_has_more: false, comments_next_after_id: null,
+    })
+    if (url.pathname === '/api/store/store-1') return jsonResponse({
+      store: {
+        ...merchantFixture(1), karma: 0, joined_at: '2026-08-10T10:00:00Z', listings: 1,
+      },
+      listings: [listingFixture(1)], total: 1, returned: 1, page_size: 1,
+      has_more: false, next_before_id: null,
+    })
+    return jsonResponse({ error: 'unexpected public read' }, 500)
+  }, { writeClipboard: async value => { copied.push(value) } })
+  await settle()
+
+  const listingButton = elementsWithClass(document.getElementById('listing-list')!, 'listing-row__main')[0]
+  assert.ok(listingButton)
+  await listingButton.click()
+  await settle()
+  const detail = document.getElementById('listing-detail')!
+  assert.equal(elementsWithClass(detail, 'share-button').length, 1)
+  await elementsWithClass(detail, 'share-button')[0]!.click()
+  assert.deepEqual(copied, ['https://1f3ea.com/window?item=1'])
+
+  const merchantButton = elementsWithClass(detail, 'merchant-link')[0]
+  assert.ok(merchantButton)
+  await merchantButton.click()
+  await settle()
+  assert.equal(elementsWithClass(detail, 'share-button').length, 1)
+  await elementsWithClass(detail, 'share-button')[0]!.click()
+  assert.deepEqual(copied, [
+    'https://1f3ea.com/window?item=1',
+    'https://1f3ea.com/window?store=store-1',
+  ])
+})
+
+test('clipboard refusal is named and leaves an ordinary canonical link to copy', async () => {
+  const ready = boundedSnapshot(0, 0, 0, 0)
+  const { document } = startWindowClient(async () => jsonResponse(ready), {
+    writeClipboard: async () => { throw new Error('permission denied') },
+  })
+  await settle()
+
+  const shareRoot = document.getElementById('view-share')!
+  await elementsWithClass(shareRoot, 'share-button')[0]!.click()
+  assert.match(shareRoot.textContent, /Copy failed/i)
+  const fallback = elementsWithClass(shareRoot, 'share-link')[0]
+  assert.ok(fallback)
+  assert.equal(fallback.href, 'https://1f3ea.com/window')
+  assert.equal(fallback.hidden, false)
+})
+
+test('non-canonical item spellings never open a different browser view than the server card', async () => {
+  for (const rawId of ['01', '1.0', '1e0', '+1']) {
+    const paths: string[] = []
+    const { currentUrl } = startWindowClient(async input => {
+      const url = new URL(String(input), 'https://window.example')
+      paths.push(url.pathname + url.search)
+      return jsonResponse(boundedSnapshot(0, 0, 0, 0))
+    }, { href: 'https://preview.example/window?item=' + encodeURIComponent(rawId) })
+    await settle()
+    assert.equal(currentUrl().pathname + currentUrl().search, '/window')
+    assert.deepEqual(paths, ['/api/window'])
+  }
+})
+
+test('known views keep one canonical share control through snapshot and detail failures', async () => {
+  const snapshotFailure = startWindowClient(async () =>
+    jsonResponse({ error: 'window storage is unavailable' }, 503))
+  await settle()
+  assert.equal(
+    elementsWithClass(snapshotFailure.document.getElementById('view-share')!, 'share-button').length,
+    1,
+  )
+
+  for (const [href, failedPath, status, expectedUrl] of [
+    ['https://preview.example/window?item=9', '/api/listing/9', 404, 'https://1f3ea.com/window?item=9'],
+    ['https://preview.example/window?store=tiny-shop', '/api/store/tiny-shop', 503,
+      'https://1f3ea.com/window?store=tiny-shop'],
+  ] as const) {
+    const { document } = startWindowClient(async input => {
+      const url = new URL(String(input), 'https://window.example')
+      return url.pathname === failedPath
+        ? jsonResponse({ error: 'focused view unavailable' }, status)
+        : jsonResponse(boundedSnapshot(0, 0, 0, 0))
+    }, { href })
+    const detail = document.getElementById('listing-detail')!
+    assert.equal(elementsWithClass(detail, 'share-button').length, 1, 'loading keeps a share control')
+    await settle()
+    const controls = elementsWithClass(detail, 'share-button')
+    assert.equal(controls.length, 1, 'failed detail keeps one share control')
+    assert.equal(elementsWithClass(detail, 'share-link')[0]!.href, expectedUrl)
+  }
+})
+
+test('an initial agent filter stays in browser history while copied links remain canonical', async () => {
+  const copied: string[] = []
+  const ready = boundedSnapshot(1, 1, 1, 1)
+  const { document, currentUrl } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    if (url.pathname === '/api/window') return jsonResponse(ready)
+    return jsonResponse({
+      listing: {
+        ...listingFixture(1), state: 'live', preview: 'Public preview',
+        created_at: '2026-08-10T10:00:00Z',
+      },
+      comments: [], comments_total: 0, comments_returned: 0, comments_page_size: 200,
+      comments_has_more: false, comments_next_after_id: null,
+    })
+  }, {
+    href: 'https://preview.example/window?agent=store-1&item=1',
+    writeClipboard: async value => { copied.push(value) },
+  })
+  await settle()
+
+  assert.equal(currentUrl().pathname + currentUrl().search, '/window?item=1&agent=store-1')
+  assert.equal(document.getElementById('filter-input')!.value, 'store-1')
+  const detail = document.getElementById('listing-detail')!
+  await elementsWithClass(detail, 'share-button')[0]!.click()
+  assert.deepEqual(copied, ['https://1f3ea.com/window?item=1'])
+  await document.getElementById('dialog-close')!.click()
+  assert.equal(currentUrl().pathname + currentUrl().search, '/window?agent=store-1')
+  assert.equal(document.getElementById('filter-input')!.value, 'store-1')
+  await document.getElementById('clear-filter')!.click()
+  assert.equal(currentUrl().pathname + currentUrl().search, '/window')
+  assert.equal(document.getElementById('filter-input')!.value, '')
+})
+
+test('routine rerenders preserve focused and pending share controls for the same view', async () => {
+  const clipboard = deferred<void>()
+  const { document } = startWindowClient(async () => jsonResponse(boundedSnapshot(0, 0, 0, 0)), {
+    writeClipboard: async () => clipboard.promise,
+  })
+  await settle()
+
+  const root = document.getElementById('view-share')!
+  const control = elementsWithClass(root, 'share-button')[0]!
+  control.focus()
+  const copying = control.click()
+  await settle()
+  assert.equal(control.disabled, true)
+  assert.match(root.textContent, /Copying/i)
+  await enterFilter(document, 'quiet')
+  assert.equal(elementsWithClass(root, 'share-button')[0], control)
+  assert.equal(control.focused, true)
+  assert.match(root.textContent, /Copying/i)
+
+  clipboard.resolve(undefined)
+  await copying
+  assert.equal(control.disabled, false)
+  assert.match(root.textContent, /Link copied/i)
+})
+
+test('detail settlement preserves its focused share control and pending clipboard result', async () => {
+  const detailRead = deferred<ReturnType<typeof jsonResponse>>()
+  const clipboard = deferred<void>()
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    if (url.pathname === '/api/listing/1') return detailRead.promise
+    return jsonResponse(boundedSnapshot(1, 1, 0, 0))
+  }, {
+    href: 'https://preview.example/window?item=1',
+    writeClipboard: async () => clipboard.promise,
+  })
+
+  const detail = document.getElementById('listing-detail')!
+  const control = elementsWithClass(detail, 'share-button')[0]!
+  control.focus()
+  const copying = control.click()
+  await settle()
+  assert.equal(control.disabled, true)
+  assert.match(detail.textContent, /Copying/i)
+
+  detailRead.resolve(jsonResponse({
+    listing: {
+      ...listingFixture(1), state: 'live', preview: 'Public preview',
+      created_at: '2026-08-10T10:00:00Z',
+    },
+    comments: [], comments_total: 0, comments_returned: 0, comments_page_size: 200,
+    comments_has_more: false, comments_next_after_id: null,
+  }))
+  await settle()
+  assert.equal(elementsWithClass(detail, 'share-button')[0], control)
+  assert.equal(control.focused, true)
+  assert.equal(control.disabled, true)
+  assert.match(detail.textContent, /Copying/i)
+
+  clipboard.resolve(undefined)
+  await copying
+  assert.equal(control.disabled, false)
+  assert.match(detail.textContent, /Link copied/i)
+})
 
 test('the shop window fetches only public data and renders hostile listing detail as text', async () => {
   const document = new FakeDocument()
@@ -663,6 +919,17 @@ test('HTTP failures preserve each bounded API cause as text in the human window'
   await settle()
   assert.match(document.getElementById('listing-list')!.textContent,
     new RegExp(causes.aisle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+})
+
+test('HTTP failure text is read from actual bytes when Content-Length is missing or wrong', async () => {
+  const cause = 'the live body arrived without a trustworthy length'
+  for (const declaredLength of [null, '0', '999999']) {
+    const response = jsonResponse({ error: cause }, 503)
+    if (declaredLength !== null) response.headers.set('content-length', declaredLength)
+    const { document } = startWindowClient(async () => response)
+    await settle()
+    assertPanelsMatch(document, new RegExp(cause, 'i'))
+  }
 })
 
 test('oversized and malformed HTTP error bodies use a fixed public category', async () => {
@@ -1223,6 +1490,9 @@ test('detail reads distinguish completed 404s from malformed successful payloads
   assert.match(document.getElementById('dialog-title')!.textContent, /store read failed/i)
   assert.equal(descendants(detail).some(element => element.className.includes('empty-state--error')), true)
   assert.match(detail.textContent, /try again|retry/i)
+  assert.equal(elementsWithClass(detail, 'share-button').length, 1)
+  assert.equal(elementsWithClass(detail, 'share-link')[0]!.href,
+    'https://1f3ea.com/window?store=safe-store')
 })
 
 test('snapshot and focused counts cannot be lower than their neighboring renderable rows', async () => {

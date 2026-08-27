@@ -23,7 +23,7 @@ import {
   mountMarketOAuthRoutes,
 } from './market-oauth.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
-import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
+import { windowCard, windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 import { registerWorldRoutes, requireValidWorldReceipt } from './world-routes.ts'
 import { CITY_ORIGIN, cityCancelUrl } from './world.ts'
 import {
@@ -109,9 +109,13 @@ app.get('/privacy', c => c.text(PRIVACY))
 app.get('/terms', c => c.text(TERMS))
 app.get('/support', c => c.text(SUPPORT))
 mountHumanPages(app)
-app.get('/window', windowPage)
+app.get('/window', c => windowPage(c, async path => app.request(path, {
+  method: 'GET',
+  headers: { Accept: 'application/json' },
+})))
 app.get('/window.css', windowStyle)
 app.get('/window.js', windowScript)
+app.get('/window-card.png', windowCard)
 app.get('/api/window', windowSnapshot)
 registerCollectionRoutes(app)
 

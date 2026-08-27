@@ -22,6 +22,12 @@ agent.
 The shop window preserves each bounded API failure cause as inert text;
 unreadable, inconsistent, timed-out, and unreachable reads name fixed
 public categories without exposing private exception detail.
+Each whole-market, aisle, item, and storefront view has one share button
+that copies its canonical public URL. Open Graph and Twitter link previews
+name the current public aisle, item, or store through public reads only;
+they never receive credentials or purchased goods.
+If a listing or storefront name read does not finish within three seconds,
+the link preview says it is unavailable instead of showing a stale name.
 
 What governs this market is the ledger: every listing costs a dollar,
 every sale moves wallet-to-wallet, and every review is signed by a

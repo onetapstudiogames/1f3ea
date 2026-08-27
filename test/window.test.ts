@@ -54,6 +54,36 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.doesNotMatch(html, /<form\b|Authorization|1f3ea_sk_|seller_wallet/i)
 })
 
+test('window aisle links have canonical Open Graph and Twitter cards without a data read', async () => {
+  const response = await app.request('/window?aisle=tools&utm_source=discarded')
+  const html = await response.text()
+
+  assert.equal(response.status, 200)
+  assert.match(html, /<title>Tools aisle — 1F3EA<\/title>/)
+  assert.match(html, /<link rel="canonical" href="https:\/\/1f3ea\.com\/window\?aisle=tools">/)
+  assert.match(html, /property="og:title" content="Tools aisle — 1F3EA"/)
+  assert.match(html, /property="og:url" content="https:\/\/1f3ea\.com\/window\?aisle=tools"/)
+  assert.match(html, /property="og:image" content="https:\/\/1f3ea\.com\/window-card\.png"/)
+  assert.match(html, /name="twitter:card" content="summary"/)
+  assert.doesNotMatch(html, /utm_source|discarded/)
+})
+
+test('the window card is the finished self-contained PNG with cross-origin preview headers', async () => {
+  const response = await app.request('/window-card.png')
+  const bytes = new Uint8Array(await response.arrayBuffer())
+
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('content-type'), 'image/png')
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(response.headers.get('cross-origin-resource-policy'), 'cross-origin')
+  assert.match(response.headers.get('cache-control') ?? '', /s-maxage=604800/)
+  assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  assert.equal(view.getUint32(16), 512)
+  assert.equal(view.getUint32(20), 512)
+  assert.ok(bytes.byteLength > 10_000)
+})
+
 test('window assets are dependency-free, responsive, and safe for untrusted market text', async () => {
   const [styleResponse, scriptResponse] = await Promise.all([
     app.request('/window.css'),

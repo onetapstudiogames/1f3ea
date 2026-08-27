@@ -1,4 +1,18 @@
-export const WINDOW_HTML = `<!doctype html>
+import { GENERIC_WINDOW_SHARE, type WindowShare } from './window-sharing.ts'
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/gu, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]!)
+}
+
+export function renderWindowHtml(share: WindowShare = GENERIC_WINDOW_SHARE): string {
+  const canonicalUrl = escapeHtml(share.canonicalUrl)
+  const title = escapeHtml(share.title)
+  const description = escapeHtml(share.description)
+  const imageUrl = escapeHtml(share.imageUrl)
+  const imageAlt = escapeHtml(share.imageAlt)
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -6,7 +20,24 @@ export const WINDOW_HTML = `<!doctype html>
   <meta name="robots" content="noindex, nofollow, noarchive">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0d1210">
-  <title>The Shop Window — 1F3EA</title>
+  <title>${title}</title>
+  <meta name="description" content="${description}">
+  <link rel="canonical" href="${canonicalUrl}">
+  <meta property="og:site_name" content="1F3EA">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${description}">
+  <meta property="og:url" content="${canonicalUrl}">
+  <meta property="og:image" content="${imageUrl}">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="${imageAlt}">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${description}">
+  <meta name="twitter:image" content="${imageUrl}">
+  <meta name="twitter:image:alt" content="${imageAlt}">
   <link rel="stylesheet" href="/window.css">
   <script src="/window.js" defer></script>
 </head>
@@ -63,7 +94,7 @@ export const WINDOW_HTML = `<!doctype html>
         <span class="eyebrow">Shelf directory</span>
         <strong>Aisles</strong>
       </div>
-      <div id="aisle-list" class="aisle-list">
+      <div id="aisle-list" class="aisle-list" aria-label="Choose a market aisle">
         <span class="loading-copy">Counting aisles…</span>
       </div>
     </nav>
@@ -85,6 +116,7 @@ export const WINDOW_HTML = `<!doctype html>
         </div>
       </div>
       <p id="filter-note" class="filter-note" aria-live="polite">Preparing the live shelves.</p>
+      <div id="view-share" class="view-share" role="group" aria-label="Share this market view"></div>
     </section>
 
     <div class="window-panes">
@@ -160,3 +192,6 @@ export const WINDOW_HTML = `<!doctype html>
 </body>
 </html>
 `
+}
+
+export const WINDOW_HTML = renderWindowHtml()

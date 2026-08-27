@@ -171,6 +171,92 @@ async function expectWindowFits(page: Page, projectName: string) {
   expect(headlineContained).toBe(true)
 }
 
+test('aisle, item, and store views copy canonical production links', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText(value: string) {
+          ;(globalThis as typeof globalThis & { __copiedWindowUrl?: string }).__copiedWindowUrl = value
+          return Promise.resolve()
+        },
+      },
+    })
+  })
+  const current = snapshot()
+  const unexpected = await serveWindow(page, url => {
+    const key = url.pathname + url.search
+    if (key === '/api/window') return { body: current }
+    if (key === '/api/shelves?aisle=tools') {
+      return {
+        body: {
+          aisles: aisleVector({ tools: 2 }),
+          listings: current.listings,
+          total: 2,
+          returned: 2,
+          page_size: 50,
+          has_more: false,
+          next_cursor: null,
+        },
+      }
+    }
+    if (key === '/api/listing/10') {
+      return {
+        body: {
+          listing: {
+            id: 10, merchant: 'safe-store', title: 'Long listing',
+            description: LONG_DESCRIPTION, preview: 'public', tags: ['safe'], aisle: 'tools',
+            price_usdc: 0, sales: 1, votes: 2, state: 'live',
+            created_at: '2026-08-10T10:00:00Z',
+          },
+          comments: [], comments_total: 0, comments_returned: 0, comments_page_size: 200,
+          comments_has_more: false, comments_next_after_id: null,
+        },
+      }
+    }
+    if (key === '/api/store/safe-store') {
+      return {
+        body: {
+          store: {
+            handle: 'safe-store', line: LONG_STOREFRONT, model: 'test-model',
+            joined_at: '2026-08-01T10:00:00Z', listings: 2,
+          },
+          listings: [
+            { id: 10, title: 'Long listing', price_usdc: 0 },
+            { id: 9, title: 'Older listing', price_usdc: 1 },
+          ],
+          total: 2, returned: 2, page_size: 2, has_more: false, next_before_id: null,
+        },
+      }
+    }
+    return null
+  })
+
+  await page.goto(ORIGIN + '/window?aisle=tools&utm_source=discarded')
+  await expect(page.locator('#window-status')).toContainText('Lights on')
+  await page.locator('#view-share').getByRole('button', { name: /copy public link/i }).click()
+  await expect(page.locator('#view-share')).toContainText('Link copied')
+  expect(await page.evaluate(
+    () => (globalThis as typeof globalThis & { __copiedWindowUrl?: string }).__copiedWindowUrl,
+  )).toBe('https://1f3ea.com/window?aisle=tools')
+  await expect(page).toHaveURL(ORIGIN + '/window?aisle=tools')
+
+  await page.getByRole('button', { name: 'Long listing, item #10' }).click()
+  await expect(page.locator('#listing-detail .detail-title')).toHaveText('Long listing')
+  await page.locator('#listing-detail').getByRole('button', { name: /copy public link/i }).click()
+  expect(await page.evaluate(
+    () => (globalThis as typeof globalThis & { __copiedWindowUrl?: string }).__copiedWindowUrl,
+  )).toBe('https://1f3ea.com/window?item=10')
+
+  await page.locator('#listing-detail').getByRole('button', { name: 'safe-store' }).click()
+  await expect(page.locator('#listing-detail .detail-title')).toHaveText('safe-store')
+  await page.locator('#listing-detail').getByRole('button', { name: /copy public link/i }).click()
+  expect(await page.evaluate(
+    () => (globalThis as typeof globalThis & { __copiedWindowUrl?: string }).__copiedWindowUrl,
+  )).toBe('https://1f3ea.com/window?store=safe-store')
+  expect(unexpected).toEqual([])
+})
+
 test('focused reads keep counts and complete text with the source that supplied the rows', async (
   { page },
   testInfo,

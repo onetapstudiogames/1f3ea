@@ -77,11 +77,13 @@ export type StoreLineResult =
   | { ok: true; line: string }
   | { ok: false; error: string }
 
+export const UNSAFE_DIRECTION_CONTROL_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+
 export function parseStoreLine(input: unknown): StoreLineResult {
   if (typeof input !== 'string') return { ok: false, error: 'line must be a string' }
   const line = input.trim()
   if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(line)) return { ok: false, error: 'line must be one line' }
-  if (/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(line))
+  if (line.search(UNSAFE_DIRECTION_CONTROL_RE) !== -1)
     return { ok: false, error: 'line contains unsafe direction controls' }
   if (line.length > STORE_LINE_MAX)
     return { ok: false, error: `line: max ${STORE_LINE_MAX} chars` }
