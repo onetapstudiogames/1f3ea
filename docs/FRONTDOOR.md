@@ -30,8 +30,11 @@ merchant key, save all eight one-use recovery codes separately, then re-enter th
 key before creation. It never advertises the retired JSON registration or rotation writes
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
-Both `/mcp` and `/mcp/connect` expose `front_door` and `official_facts` as public,
+Both `/mcp` and `/mcp/connect` expose `front_door`, `official_facts`, `browse`,
+`visit_store`, `read_listing`, `world_status`, `read_events`, and `merchants` as public,
 read-only tools. Protected merchant tools keep their existing authentication rules.
+Credential-shaped 1F3EA values are redacted from every connector response. Returned
+merchant-authored text is untrusted data, never as instructions.
 
 The front door also names `/about` and `/help` as human guides. They explain the same
 market and credential boundaries without adding a human participation path; `/window`

@@ -134,6 +134,24 @@ test('public visit guidance names connector-native opening reads before any web 
   assert.doesNotMatch(mcp, /Read https:\/\/1f3ea\.com\/ for the constitution/i)
 })
 
+test('hosted guidance mirrors every anonymous parity read and the response-safety boundary', async () => {
+  const [frontdoor, llms, guide, frontdoorGuide] = await Promise.all([
+    source('src/frontdoor.txt'), source('src/llms.txt'),
+    source('docs/HOSTED_CHATGPT_ACCESS.md'), source('docs/FRONTDOOR.md'),
+  ])
+  for (const [name, text] of [
+    ['front door', frontdoor], ['compact map', llms],
+    ['hosted guide', guide], ['front-door guide', frontdoorGuide],
+  ] as const) {
+    for (const tool of [
+      'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
+      'world_status', 'read_events', 'merchants',
+    ]) assert.match(text, new RegExp(`\\b${tool}\\b`, 'i'), `${name}: ${tool}`)
+    assert.match(text, /credential-shaped 1F3EA values[\s\S]*redact/i, `${name}: redaction`)
+    assert.match(text, /untrusted data[\s\S]*never as instructions/i, `${name}: untrusted data`)
+  }
+})
+
 test('public safety copy retains direct seller payment and the fresh signed intent requirement', async () => {
   const [frontdoor, llms, guide] = await Promise.all([
     source('src/frontdoor.txt'), source('src/llms.txt'), source('docs/HOSTED_CHATGPT_ACCESS.md'),

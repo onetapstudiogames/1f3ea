@@ -100,6 +100,32 @@ test('MCP lifecycle replies preserve ids, negotiate protocol versions, and accep
   assert.deepEqual(await ping.json(), { jsonrpc: '2.0', id: null, result: {} })
 })
 
+test('rotation remains a stated browser-only boundary on every connector contract surface', async () => {
+  const backing = new Hono()
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    const app = gateway(backing, options)
+    const initialized = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'rotation-policy', method: 'initialize',
+    }))
+    const body = await initialized.json() as { result: { instructions: string } }
+    assert.match(body.result.instructions, /rotation[\s\S]*browser-only[\s\S]*never an MCP tool/i)
+
+    const listed = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'rotation-tools', method: 'tools/list',
+    }))
+    const listBody = await listed.json() as {
+      result: { tools: Array<{ name: string; description: string }> }
+    }
+    assert.equal(listBody.result.tools.some(tool => tool.name === 'rotate'), false)
+    const official = listBody.result.tools.find(tool => tool.name === 'official_facts')
+    assert.match(official?.description ?? '', /rotation[\s\S]*never an MCP tool/i)
+  }
+
+  for (const path of ['src/frontdoor.txt', 'src/llms.txt', 'docs/SPEC.md', 'docs/DECISIONS.md']) {
+    assert.match(readFileSync(path, 'utf8'), /rotation[\s\S]{0,240}never an MCP tool/i, path)
+  }
+})
+
 test('payment MCP tools separate invalid proofs, unclassified rejections, and unavailable verification', async () => {
   const app = gateway(new Hono())
   const response = await app.request('/mcp', jsonRequest({
@@ -168,7 +194,7 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
   const app = gateway(backing)
 
   const calls = [
-    { name: 'browse', arguments: ['ignored'] },
+    { name: 'browse', arguments: {} },
     { name: 'browse', arguments: { q: 'signed tools', tag: 'mcp', aisle: 'tools', sort: 'karma' } },
     { name: 'visit_store', arguments: { handle: 'agent-8' } },
     { name: 'buy', arguments: { id: 3 } },
@@ -216,6 +242,200 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
   assert.deepEqual(await unknownTool.json(), {
     jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
   })
+})
+
+test('known tools reject non-object arguments before any backing request', async () => {
+  let backingCalls = 0
+  const backing = new Hono()
+  backing.all('*', c => {
+    backingCalls += 1
+    return c.json({ unexpected: true })
+  })
+  const app = gateway(backing)
+
+  for (const arguments_ of [null, [], 'not-an-object']) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'argument-shape', method: 'tools/call',
+      params: { name: 'browse', arguments: arguments_ },
+    }))
+    const body = await response.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(body.result.isError, true)
+    assert.deepEqual(JSON.parse(body.result.content[0]!.text), {
+      error: 'Tool arguments must be an object.',
+    })
+  }
+  assert.equal(backingCalls, 0)
+})
+
+test('connector parity tools preserve route methods, bodies, filters, and paging cursors', async () => {
+  const seen: Array<{ method: string; path: string; body: unknown }> = []
+  const backing = new Hono()
+  backing.all('*', async c => {
+    const url = new URL(c.req.url)
+    seen.push({
+      method: c.req.method,
+      path: url.pathname + url.search,
+      body: c.req.method === 'GET' ? null : await c.req.json(),
+    })
+    return c.json({ ok: true })
+  })
+  const app = gateway(backing)
+  const calls = [
+    { name: 'visit_store', arguments: { handle: 'agent-8', before_id: 44, limit: 5 } },
+    { name: 'world_status', arguments: { draft_id: 12 } },
+    { name: 'world_status', arguments: { checkout_id: 13 } },
+    { name: 'my_purchases', arguments: {} },
+    { name: 'vote', arguments: { listing_id: 6 } },
+    { name: 'read_events', arguments: { kind: 'listing_created', before_id: 31, limit: 7 } },
+    { name: 'read_events', arguments: { scope: 'window', limit: 9 } },
+    { name: 'merchants', arguments: { after_id: 21, limit: 11 } },
+  ]
+
+  for (const params of calls) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: params.name, method: 'tools/call', params,
+    }))
+    const body = await response.json() as { result: { isError: boolean } }
+    assert.equal(body.result.isError, false, params.name)
+  }
+
+  assert.deepEqual(seen, [
+    { method: 'GET', path: '/api/store/agent-8?before_id=44&limit=5', body: null },
+    { method: 'GET', path: '/api/world/draft/12', body: null },
+    { method: 'GET', path: '/api/world/checkout/13', body: null },
+    { method: 'GET', path: '/api/purchases', body: null },
+    { method: 'POST', path: '/api/vote', body: { listing_id: 6 } },
+    { method: 'GET', path: '/api/events?kind=listing_created&before_id=31&limit=7', body: null },
+    { method: 'GET', path: '/api/events?scope=window&limit=9', body: null },
+    { method: 'GET', path: '/api/merchants?after_id=21&limit=11', body: null },
+  ])
+})
+
+test('world_status rejects both and neither id without dispatching a backing request', async () => {
+  let backingCalls = 0
+  const backing = new Hono()
+  backing.all('*', c => {
+    backingCalls += 1
+    return c.json({ unexpected: true })
+  })
+  const app = gateway(backing)
+
+  for (const arguments_ of [{}, { draft_id: 1, checkout_id: 2 }]) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'world-status', method: 'tools/call',
+      params: { name: 'world_status', arguments: arguments_ },
+    }))
+    const body = await response.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(body.result.isError, true)
+    assert.deepEqual(JSON.parse(body.result.content[0]!.text), {
+      error: 'Send exactly one of draft_id or checkout_id.',
+    })
+  }
+  for (const [arguments_, error] of [
+    [{ draft_id: 0 }, 'draft_id must be an integer from 1 to 2147483647.'],
+    [{ checkout_id: 2147483648 }, 'checkout_id must be an integer from 1 to 2147483647.'],
+    [{ draft_id: '1' }, 'draft_id must be an integer from 1 to 2147483647.'],
+  ] as const) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: 'world-status-id', method: 'tools/call',
+      params: { name: 'world_status', arguments: arguments_ },
+    }))
+    const body = await response.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(body.result.isError, true)
+    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error })
+  }
+  assert.equal(backingCalls, 0)
+})
+
+test('new connector arguments reject invalid filters and limits instead of silently dropping them', async () => {
+  let backingCalls = 0
+  const backing = new Hono()
+  backing.all('*', c => {
+    backingCalls += 1
+    return c.json({ unexpected: true })
+  })
+  const app = gateway(backing)
+  const cases: Array<{
+    name: string
+    arguments: Record<string, unknown>
+    error: string
+  }> = [
+    {
+      name: 'visit_store', arguments: { handle: 'agent-8', limit: '5' },
+      error: 'limit must be an integer from 1 to 50.',
+    },
+    {
+      name: 'visit_store', arguments: { handle: 'agent-8', before_id: 0 },
+      error: 'before_id must be an integer from 1 to 2147483647.',
+    },
+    {
+      name: 'read_events', arguments: { kind: 'sale', scope: 'door' },
+      error: 'scope and kind cannot be combined',
+    },
+    {
+      name: 'read_events', arguments: { kind: 'x'.repeat(41) },
+      error: 'kind must be 1 to 40 characters.',
+    },
+    {
+      name: 'read_events', arguments: { scope: 'private' },
+      error: 'scope must be door or window.',
+    },
+    {
+      name: 'read_events', arguments: { limit: 201 },
+      error: 'limit must be an integer from 1 to 200.',
+    },
+    {
+      name: 'merchants', arguments: { after_id: [] },
+      error: 'after_id must be an integer from 1 to 2147483647.',
+    },
+    {
+      name: 'merchants', arguments: { limit: 501 },
+      error: 'limit must be an integer from 1 to 500.',
+    },
+    {
+      name: 'vote', arguments: { listing_id: '1' },
+      error: 'listing_id must be an integer from 1 to 2147483647.',
+    },
+    {
+      name: 'vote', arguments: { listing_id: 6, dry_run: true },
+      error: 'Unexpected argument: dry_run. Remove it and retry.',
+    },
+    {
+      name: 'read_events', arguments: { limt: 5 },
+      error: 'Unexpected argument: limt. Remove it and retry.',
+    },
+    {
+      name: 'my_purchases', arguments: { limit: 1 },
+      error: 'Unexpected argument: limit. Remove it and retry.',
+    },
+    {
+      name: 'world_status', arguments: { draft_id: 1, checkout: 2, force: true },
+      error: 'Unexpected arguments: checkout, force. Remove them and retry.',
+    },
+    {
+      name: 'vote', arguments: { listing_id: 6, ['unsafe\nargument']: true },
+      error: 'Unexpected argument name. Remove unsupported arguments and retry.',
+    },
+  ]
+
+  for (const item of cases) {
+    const response = await app.request('/mcp', jsonRequest({
+      jsonrpc: '2.0', id: item.name, method: 'tools/call',
+      params: { name: item.name, arguments: item.arguments },
+    }))
+    const body = await response.json() as {
+      result: { isError: boolean; content: Array<{ text: string }> }
+    }
+    assert.equal(body.result.isError, true, item.name)
+    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error: item.error }, item.name)
+  }
+  assert.equal(backingCalls, 0)
 })
 
 test('MCP route builders leave structured invalid ids to backing validation', async () => {

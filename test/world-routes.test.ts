@@ -1143,7 +1143,7 @@ test('city cancellation makes the world listing terminal without a purchase', as
   assert.equal(terminal?.params.includes('agent-10'), false)
 })
 
-test('MCP exposes and dispatches all four world tools without secret arguments', async () => {
+test('MCP exposes and dispatches all four world write tools without secret arguments', async () => {
   reset()
   const listed = await app.request('/mcp', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

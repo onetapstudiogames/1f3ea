@@ -141,7 +141,7 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
   const names = ((await tools.json() as {
     result: { tools: Array<{ name: string }> }
   }).result.tools).map(tool => tool.name)
-  for (const name of ['draft_world', 'list_world', 'checkout_world', 'sync_world']) {
+  for (const name of ['draft_world', 'list_world', 'checkout_world', 'sync_world', 'world_status']) {
     assert.ok(names.includes(name), name)
   }
 })
