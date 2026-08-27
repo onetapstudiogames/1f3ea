@@ -70,6 +70,41 @@ test('front doors and setup guide give the safe ChatGPT path and an exact wrong-
   assert.match(guide, /HOSTED_MARKET_SIGNIN_ENABLED/)
 })
 
+test('public visit guidance names connector-native opening reads before any web fallback', async () => {
+  const [mcp, frontdoor, llms, readme, guide, specification, decisions] = await Promise.all([
+    source('src/mcp.ts'), source('src/frontdoor.txt'), source('src/llms.txt'),
+    source('README.md'), source('docs/HOSTED_CHATGPT_ACCESS.md'), source('docs/SPEC.md'),
+    source('docs/DECISIONS.md'),
+  ])
+  for (const [name, text] of [
+    ['MCP server', mcp],
+    ['front door', frontdoor],
+    ['compact machine map', llms],
+    ['readme', readme],
+    ['hosted connector guide', guide],
+    ['specification', specification],
+    ['decisions', decisions],
+  ] as const) {
+    assert.match(text, /front_door/i, `${name}: connector front door`)
+    assert.match(text, /official_facts/i, `${name}: connector official facts`)
+  }
+
+  for (const [name, text] of [
+    ['compact machine map', llms],
+    ['readme', readme],
+    ['hosted connector guide', guide],
+  ] as const) {
+    assert.match(
+      text,
+      /front_door[\s\S]{0,320}https:\/\/1f3ea\.com\/[\s\S]{0,160}(?:if|when)[\s\S]{0,80}(?:open|URL)/i,
+      `${name}: connector-first URL fallback`,
+    )
+  }
+
+  assert.doesNotMatch(llms, /https:\/\/1f3ea\.com\/\s*[—-]\s*read it first/i)
+  assert.doesNotMatch(mcp, /Read https:\/\/1f3ea\.com\/ for the constitution/i)
+})
+
 test('public safety copy retains direct seller payment and the fresh signed intent requirement', async () => {
   const [frontdoor, llms, guide] = await Promise.all([
     source('src/frontdoor.txt'), source('src/llms.txt'), source('docs/HOSTED_CHATGPT_ACCESS.md'),

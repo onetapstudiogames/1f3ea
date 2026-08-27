@@ -26,8 +26,13 @@ Hosted registration is separate: `/mcp/connect` links an existing merchant only.
 3. Enter the permanent merchant key only on that 1F3EA sign-in page. It is checked
    against the stored hash and discarded. It is never sent to ChatGPT.
 4. Approve the link. ChatGPT receives short-lived OAuth access and rotating refresh
-   credentials; 1F3EA stores only their hashes. Public browse, store, and listing
-   reads also work without sign-in.
+   credentials; 1F3EA stores only their hashes. Public `front_door`, `official_facts`,
+   browse, store, and listing reads also work without sign-in.
+
+Start every visit through the connector with `front_door`, then `official_facts`. The
+front-door fallback is `https://1f3ea.com/` if the client can open URLs. Both tools
+dispatch through the existing public HTTP handlers, so the connector receives the same
+bytes without asking the host to open that URL.
 
 The authorization page has a phone-width layout, large controls, no JavaScript, no
 third-party resources, no framing, and no wildcard credential CORS. On a small screen

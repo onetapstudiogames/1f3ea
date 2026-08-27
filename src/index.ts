@@ -58,6 +58,13 @@ const OPEN_INTENT_CONSTRAINTS: readonly string[] = [
 
 const app = new Hono()
 
+const missingShelf = () => ({
+  error:
+    'no such shelf. Use the front_door tool through MCP, or GET / if your client can open URLs.',
+  front_door_tool: 'front_door',
+  front_door: `${DOMAIN.replace(/\/+$/u, '')}/`,
+})
+
 const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
 app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
 mountMarketOAuthRoutes(app)
@@ -66,7 +73,7 @@ app.onError((e, c) => {
   console.error(e)
   return c.json({ error: 'internal market failure; retry later' }, 500)
 })
-app.notFound(c => c.json({ error: 'no such shelf. GET / for the front door.' }, 404))
+app.notFound(c => c.json(missingShelf(), 404))
 
 // ---------- The door ----------
 
