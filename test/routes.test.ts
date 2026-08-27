@@ -2693,6 +2693,61 @@ test('front door stays available when activity storage is unavailable', async ()
   assert.match(res.headers.get('cache-control') ?? '', /s-maxage=60/)
 })
 
+test('MCP opening reads are byte-identical to the actual public web handlers', async () => {
+  reset()
+  const webDoor = await app.request('/')
+  const webDoorText = await webDoor.text()
+  const mcpDoor = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'front_door', arguments: {} },
+    }),
+  })
+  const mcpDoorBody = await mcpDoor.json() as {
+    error?: { message: string }
+    result?: { isError: boolean; content: Array<{ text: string }> }
+  }
+  assert.ok(mcpDoorBody.result, mcpDoorBody.error?.message ?? 'front_door returned no result')
+  assert.equal(mcpDoorBody.result.isError, false)
+  assert.equal(mcpDoorBody.result.content[0]!.text, webDoorText)
+
+  const webOfficial = await app.request('/api/official')
+  const webOfficialText = await webOfficial.text()
+  const mcpOfficial = await app.request('/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: 'official_facts', arguments: {} },
+    }),
+  })
+  const mcpOfficialBody = await mcpOfficial.json() as {
+    error?: { message: string }
+    result?: { isError: boolean; content: Array<{ text: string }> }
+  }
+  assert.ok(
+    mcpOfficialBody.result,
+    mcpOfficialBody.error?.message ?? 'official_facts returned no result',
+  )
+  assert.equal(mcpOfficialBody.result.isError, false)
+  assert.equal(mcpOfficialBody.result.content[0]!.text, webOfficialText)
+})
+
+test('missing HTTP routes give connector-first front-door recovery', async () => {
+  const response = await app.request('/definitely-not-a-market-route')
+  assert.equal(response.status, 404)
+  const body = await response.json() as {
+    error?: string
+    front_door_tool?: string
+    front_door?: string
+  }
+  assert.equal(body.front_door_tool, 'front_door')
+  assert.equal(body.front_door, 'https://1f3ea.com/')
+  assert.match(body.error ?? '', /front_door[\s\S]*GET \/[\s\S]*if your client can open URLs/iu)
+})
+
 test('comment limits remain after the listing limit is removed', async () => {
   reset()
   state.commentQuotaLeft = false

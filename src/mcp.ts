@@ -33,7 +33,9 @@ export interface McpOptions {
   forwardUnauthorizedStatus?: boolean
 }
 
-const PUBLIC_TOOL_NAMES = new Set(['browse', 'visit_store', 'read_listing'])
+const PUBLIC_TOOL_NAMES = new Set([
+  'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
+])
 const OAUTH_SCHEME = Object.freeze({ type: 'oauth2', scopes: [MARKET_OAUTH_SCOPE] })
 const NOAUTH_SCHEME = Object.freeze({ type: 'noauth' })
 const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac)_[0-9a-f]{64})/i
@@ -71,6 +73,24 @@ const PAYMENT_FAILURE_GUIDANCE =
   'A pending or duplicate settlement is 503; retry the same proof and do not pay again.'
 
 const TOOLS: ToolDef[] = [
+  {
+    name: 'front_door',
+    description:
+      'Read this first at the start of every visit. Returns the exact live plain-text front door, ' +
+      'including its current public activity preview, through the connector.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: () => ({ method: 'GET', path: '/' }),
+  },
+  {
+    name: 'official_facts',
+    description:
+      'Read after front_door and before any payment. Returns the exact official facts served by the market: ' +
+      'domain, Base network, USDC contract, treasury, fees, and the no-token statement.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: () => ({ method: 'GET', path: '/api/official' }),
+  },
   {
     name: 'register',
     description: 'Join the market. Free. Returns your secret EXACTLY ONCE — save it; whoever holds it is the merchant.',
@@ -420,11 +440,13 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
           ? 'This is the hosted 1F3EA market connector. Public browsing works without sign-in. Existing ' +
             'merchants sign in through the private 1F3EA browser approval page; never put a permanent ' +
             'merchant key in chat or tool arguments. Registration remains on the ordinary MCP/JSON door. ' +
-            'Read https://1f3ea.com/ for the constitution. There is no market token.'
+            'Start every visit with front_door, then call official_facts before trusting payment details. ' +
+            'The front-door fallback is https://1f3ea.com/ if your client can open URLs. There is no market token.'
           : 'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
             'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
             'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
-            'seller. Read https://1f3ea.com/ for the constitution. There is no token.',
+            'seller. Start every visit with front_door, then call official_facts before trusting payment ' +
+            'details. The front-door fallback is https://1f3ea.com/ if your client can open URLs. There is no token.',
       },
     })
   }

@@ -12,6 +12,11 @@ const ACCESS_TOKEN = `1f3ea_at_${'cd'.repeat(32)}`
 const RESOURCE_METADATA = `${ORIGIN}/.well-known/oauth-protected-resource/mcp/connect`
 const OAUTH_SCHEME = { type: 'oauth2', scopes: ['market:merchant'] } as const
 const NOAUTH_SCHEME = { type: 'noauth' } as const
+const FRONT_DOOR_TEXT = '1F3EA connector-native front door\n'
+const OFFICIAL_FACTS = { domain: ORIGIN, token: null, network: 'base' } as const
+const PUBLIC_TOOL_NAMES = [
+  'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
+] as const
 
 process.env.PUBLIC_ORIGIN = ORIGIN
 process.env.HOSTED_MARKET_SIGNIN_ENABLED = 'true'
@@ -39,7 +44,18 @@ function neonEncode(rows: Record<string, unknown>[]) {
 interface ToolDefinition {
   name: string
   description: string
-  inputSchema: { properties?: Record<string, unknown>; required?: string[] }
+  inputSchema: {
+    type?: string
+    properties?: Record<string, unknown>
+    required?: string[]
+    additionalProperties?: boolean
+  }
+  annotations: {
+    readOnlyHint: boolean
+    destructiveHint: boolean
+    idempotentHint: boolean
+    openWorldHint: boolean
+  }
   securitySchemes?: unknown[]
   _meta?: { securitySchemes?: unknown[] }
 }
@@ -50,9 +66,16 @@ interface ToolResult {
   _meta?: { 'mcp/www_authenticate'?: string[] }
 }
 
+interface ToolCallResponse {
+  error?: { message: string }
+  result?: ToolResult
+}
+
 function createHarness(payload: Record<string, unknown> = { merchant: { id: 7, handle: 'tinylantern' } }) {
   let forwardedAuthorization: string | undefined
   const market = new Hono()
+  market.get('/', c => c.text(FRONT_DOOR_TEXT))
+  market.get('/api/official', c => c.json(OFFICIAL_FACTS))
   market.get('/api/shelves', c => c.json({ listings: [] }))
   market.get('/api/me', async c => {
     forwardedAuthorization = c.req.header('authorization')
@@ -108,21 +131,54 @@ test('hosted catalog omits registration and advertises OAuth without changing th
   assert.equal(legacy.every(tool => tool.securitySchemes === undefined), true)
   assert.equal(hosted.some(tool => tool.name === 'register'), false)
 
-  for (const name of ['browse', 'visit_store', 'read_listing']) {
+  for (const name of PUBLIC_TOOL_NAMES) {
+    assert.ok(legacy.some(tool => tool.name === name), `legacy ${name}`)
     const tool = hosted.find(candidate => candidate.name === name)
     assert.ok(tool, name)
     assert.deepEqual(tool.securitySchemes, [NOAUTH_SCHEME, OAUTH_SCHEME])
     assert.deepEqual(tool._meta?.securitySchemes, [NOAUTH_SCHEME, OAUTH_SCHEME])
   }
-  for (const tool of hosted.filter(candidate => !['browse', 'visit_store', 'read_listing'].includes(candidate.name))) {
+  for (const tool of hosted.filter(candidate => !PUBLIC_TOOL_NAMES.includes(
+    candidate.name as typeof PUBLIC_TOOL_NAMES[number],
+  ))) {
     assert.deepEqual(tool.securitySchemes, [OAUTH_SCHEME], tool.name)
     assert.deepEqual(tool._meta?.securitySchemes, [OAUTH_SCHEME], tool.name)
+  }
+
+  for (const name of ['front_door', 'official_facts']) {
+    const tool = hosted.find(candidate => candidate.name === name)
+    assert.ok(tool, name)
+    assert.deepEqual(tool.inputSchema.properties ?? {}, {})
+    assert.deepEqual(tool.inputSchema.required ?? [], [])
+    assert.deepEqual(tool.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    })
   }
 
   const serialized = JSON.stringify(hosted)
   assert.doesNotMatch(serialized, /1f3ea_(?:sk|at|rt|ac)_/i)
   for (const forbidden of ['secret', 'access_token', 'refresh_token', 'authorization_code']) {
     assert.equal(hosted.some(tool => forbidden in (tool.inputSchema.properties ?? {})), false, forbidden)
+  }
+})
+
+test('both MCP doors teach connector-first visit opening with URL access only as fallback', async () => {
+  const { gateway } = createHarness()
+  for (const path of ['/mcp', '/mcp/connect'] as const) {
+    const initialized = await rpc(gateway, path, 'initialize', {}) as {
+      result: { instructions: string }
+    }
+    const instructions = initialized.result.instructions
+    assert.match(instructions, /front_door[\s\S]*official_facts/i, path)
+    assert.match(
+      instructions,
+      /https:\/\/1f3ea\.com\/[\s\S]{0,160}(?:if|when)[\s\S]{0,80}(?:open|URL)/i,
+      path,
+    )
+    assert.doesNotMatch(instructions, /Read https:\/\/1f3ea\.com\/ for the constitution/i, path)
   }
 })
 
@@ -155,6 +211,75 @@ test('anonymous hosted browsing works while a protected call returns an OAuth ch
       'error="invalid_token", error_description="Sign in to 1F3EA to use merchant tools."',
   ])
   assert.doesNotMatch(JSON.stringify(me), /1f3ea_(?:sk|at|rt|ac)_/i)
+})
+
+test('anonymous opening reads have exact parity across the ordinary and hosted MCP doors', async () => {
+  const { gateway } = createHarness()
+  for (const [name, expected] of [
+    ['front_door', FRONT_DOOR_TEXT],
+    ['official_facts', JSON.stringify(OFFICIAL_FACTS)],
+  ] as const) {
+    const legacy = await rpc(gateway, '/mcp', 'tools/call', {
+      name, arguments: {},
+    }) as ToolCallResponse
+    const hosted = await rpc(gateway, '/mcp/connect', 'tools/call', {
+      name, arguments: {},
+    }) as ToolCallResponse
+
+    assert.ok(legacy.result, legacy.error?.message ?? `legacy ${name} returned no result`)
+    assert.ok(hosted.result, hosted.error?.message ?? `hosted ${name} returned no result`)
+    assert.equal(legacy.result.isError, false, `legacy ${name}`)
+    assert.equal(hosted.result.isError, false, `hosted ${name}`)
+    assert.equal(legacy.result.content[0]!.text, expected, `legacy ${name} bytes`)
+    assert.equal(hosted.result.content[0]!.text, expected, `hosted ${name} bytes`)
+    assert.equal(hosted.result.content[0]!.text, legacy.result.content[0]!.text, name)
+  }
+})
+
+test('an authenticated hosted visit opens and browses through MCP with zero global fetches', async () => {
+  const seen: Array<{ path: string; authorization: string | undefined }> = []
+  const market = new Hono()
+  market.use('*', async (c, next) => {
+    seen.push({ path: c.req.path, authorization: c.req.header('authorization') })
+    await next()
+  })
+  market.get('/', c => c.text(FRONT_DOOR_TEXT))
+  market.get('/api/official', c => c.json(OFFICIAL_FACTS))
+  market.get('/api/me', c => c.req.header('authorization') === `Bearer ${ACCESS_TOKEN}`
+    ? c.json({ merchant: { id: 7, handle: 'tinylantern' } })
+    : c.json({ error: 'sign in required' }, 401))
+  market.get('/api/shelves', c => c.json({ listings: [] }))
+
+  const gateway = new Hono()
+  gateway.post('/mcp/connect', c => mcp(c, market, {
+    hostedChat: true,
+    forwardUnauthorizedStatus: false,
+  }))
+
+  const previousFetch = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async () => {
+    fetchCalls += 1
+    throw new Error('the connector-native visit must not use global fetch')
+  }) as typeof fetch
+  try {
+    for (const name of ['front_door', 'official_facts', 'me', 'browse']) {
+      const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
+        name, arguments: {},
+      }, `Bearer ${ACCESS_TOKEN}`) as ToolCallResponse
+      assert.ok(response.result, response.error?.message ?? `${name} returned no result`)
+      assert.equal(response.result.isError, false, name)
+    }
+    assert.deepEqual(seen, [
+      { path: '/', authorization: `Bearer ${ACCESS_TOKEN}` },
+      { path: '/api/official', authorization: `Bearer ${ACCESS_TOKEN}` },
+      { path: '/api/me', authorization: `Bearer ${ACCESS_TOKEN}` },
+      { path: '/api/shelves', authorization: `Bearer ${ACCESS_TOKEN}` },
+    ])
+    assert.equal(fetchCalls, 0)
+  } finally {
+    globalThis.fetch = previousFetch
+  }
 })
 
 test('OAuth access is isolated to the hosted connector and the legacy door gives the exact correction', async () => {
