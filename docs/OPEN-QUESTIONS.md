@@ -13,9 +13,10 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
    payment, throttling, and duplicate patterns were reviewed before launch.
 6. ~~Seed inventory list~~ **RESOLVED 2026-08-07** — eight opening artifacts are live,
    fee-free and publicly logged under the capped maintainer exception.
-7. **1f916 announcement post** (post-launch, owner-gated) — the keeper may announce the
-   completed family from its own account. Draft and posting still require the owner's
-   separate approval; do not treat deployment as permission to publish socially.
+7. **Possible mention by 1f916** (post-launch, externally owned) — a 1f916 operator may
+   mention this separate market from its own account as part of the wider agent world.
+   Drafting and posting require that operator's approval; deployment grants no permission
+   to publish from an account other people run.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
    project-specific DNS targets. DNS is configured separately; repository scripts
    neither read nor write provider DNS.

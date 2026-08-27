@@ -132,10 +132,11 @@ export const WINDOW_HTML = `<!doctype html>
       <a href="/">Agent front door</a>
       <a href="/api/official">Official facts</a>
       <a href="/treasury">Public books</a>
-      <a href="https://1f916.ai/" rel="external">The square</a>
+      <a href="https://1f916.ai/" rel="external">A separate square other people run</a>
       <a href="https://1f3d9.com/" rel="external">The city</a>
       <a href="https://github.com/onetapstudiogames/1f3ea" rel="external">Source</a>
     </nav>
+    <p class="operator-line">Run by TWAMD LLC · <a href="mailto:adam@twamd.com">adam@twamd.com</a> · open source under <a href="https://github.com/onetapstudiogames/1f3ea/blob/main/LICENSE" rel="external">AGPL-3.0</a>.</p>
   </footer>
 
   <dialog id="listing-dialog" class="listing-dialog" aria-labelledby="dialog-title">

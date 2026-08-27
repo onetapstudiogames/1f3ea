@@ -7,6 +7,10 @@ process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 
 const { default: app } = await import('../src/index.ts')
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+const BUYER_BINDING =
+  'public market checkout binds its authenticated market_buyer to a normalized city_handle; ' +
+  'the city requires city_handle to match the authenticated city claimant, then records that ' +
+  'resident as buyer and copies market_buyer onto the city offer'
 
 test('every market discovery surface tells the same family and world-delivery truth', () => {
   const surfaces = [
@@ -51,6 +55,49 @@ test('every market discovery surface tells the same family and world-delivery tr
   }
 })
 
+test('every active market surface frames 1f916 as a separate place other people run', async () => {
+  const [frontDoorResponse, compactMapResponse, windowResponse] = await Promise.all([
+    app.request('/'),
+    app.request('/llms.txt'),
+    app.request('/window'),
+  ])
+  const [frontDoor, compactMap, window] = await Promise.all([
+    frontDoorResponse.text(),
+    compactMapResponse.text(),
+    windowResponse.text(),
+  ])
+  const surfaces = [
+    ['front door', frontDoor],
+    ['compact machine map', compactMap],
+    ['human window', window],
+    ['readme', read('../README.md')],
+    ['specification', read('../docs/SPEC.md')],
+  ] as const
+
+  for (const [name, value] of surfaces) {
+    assert.match(value, /1f916/iu, `${name}: names the wider-world place`)
+    assert.match(
+      value,
+      /(?:separate[\s\S]{0,220}other people run|other people run[\s\S]{0,220}separate)/iu,
+      `${name}: separateness and operator truth`,
+    )
+    assert.doesNotMatch(
+      value,
+      /third of three|third sibling|the trio completes|one of (?:a|the) trio/iu,
+      `${name}: no family claim`,
+    )
+  }
+
+  assert.doesNotMatch(read('../package.json'), /1f916/iu, 'package description')
+  assert.doesNotMatch(read('../server.json'), /1f916/iu, 'server description')
+  assert.doesNotMatch(
+    read('../docs/OPEN-QUESTIONS.md'),
+    /(?:1f916[\s\S]{0,100}completed family|completed family[\s\S]{0,100}1f916)/iu,
+    'active planning notes do not claim a shared family',
+  )
+
+})
+
 test('official facts and MCP advertise the city bridge and all world tools', async () => {
   const official = await app.request('/api/official')
   assert.equal(official.status, 200)
@@ -58,6 +105,7 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
   assert.equal(facts.city, 'https://1f3d9.com')
   assert.match(JSON.stringify(facts), /public/i)
   assert.match(JSON.stringify(facts), /market_buyer.*city_handle/i)
+  assert.equal((facts.world as { buyer_binding?: unknown }).buyer_binding, BUYER_BINDING)
   const directFacts = JSON.stringify(facts.ordinary_direct_payment)
   assert.match(directFacts, /signed payer/i)
   assert.match(directFacts, /Base USDC/i)

@@ -26,9 +26,9 @@ INFRASTRUCTURE
 
 1F3EA uses Vercel for hosting, Neon for Postgres data storage, and Base for public blockchain records. These providers process data under their own policies.
 
-CONTACT
+OPERATOR AND CONTACT
 
-onetapstudio.games@gmail.com
+Operator: TWAMD LLC. Contact: adam@twamd.com.
 `
 
 export const TERMS = `1F3EA TERMS
@@ -53,9 +53,10 @@ MODERATION AND SERVICE CHANGES
 
 The maintainer may remove content that breaks these rules and may pin or unpin public bulletins. Those actions are publicly logged. 1F3EA may change, pause, or end the service and may update these terms.
 
-CONTACT
+OPERATOR AND CONTACT
 
-onetapstudio.games@gmail.com
+1f3ea.com is operated by TWAMD LLC, an Arkansas limited liability company.
+Contact: adam@twamd.com.
 `
 
 export const SUPPORT = `1F3EA SUPPORT

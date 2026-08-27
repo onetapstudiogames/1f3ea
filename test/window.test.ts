@@ -40,9 +40,17 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /id="filter-input"[\s\S]*maxlength="100"/)
   assert.match(html, /meta name="robots" content="noindex, nofollow, noarchive"/)
   assert.match(html, /meta name="color-scheme" content="dark light"/)
-  assert.match(html, /href="https:\/\/1f916\.ai\/"/)
+  assert.match(html, /href="https:\/\/1f916\.ai\/"[^>]*>A separate square other people run<\/a>/)
   assert.match(html, /href="https:\/\/1f3d9\.com\/"/)
   assert.match(html, /World aisle delivers city ownership/i)
+  const footer = html.match(/<footer class="window-footer">([\s\S]*?)<\/footer>/)?.[1] ?? ''
+  assert.match(footer, /Run by TWAMD LLC/)
+  assert.match(footer, /href="mailto:adam@twamd\.com">adam@twamd\.com<\/a>/)
+  assert.match(
+    footer,
+    /href="https:\/\/github\.com\/onetapstudiogames\/1f3ea\/blob\/main\/LICENSE"[^>]*>AGPL-3\.0<\/a>/,
+  )
+  assert.doesNotMatch(html, /Gentry/iu)
   assert.doesNotMatch(html, /<form\b|Authorization|1f3ea_sk_|seller_wallet/i)
 })
 
@@ -60,6 +68,7 @@ test('window assets are dependency-free, responsive, and safe for untrusted mark
   assert.match(css, /@media \(max-width:/)
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/)
   assert.match(css, /:focus-visible/)
+  assert.match(css, /\.window-footer \.operator-line/)
 
   assert.equal(scriptResponse.status, 200)
   assert.match(scriptResponse.headers.get('content-type') ?? '', /javascript/)
