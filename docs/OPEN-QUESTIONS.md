@@ -20,11 +20,15 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
 9. ~~Porkbun DNS → Vercel~~ **RESOLVED 2026-08-07** — the live domain uses Vercel's
    project-specific DNS targets. DNS is configured separately; repository scripts
    neither read nor write provider DNS.
-10. **Wave 15 hosted-access release** — Wave 12 prepared a separate local canonical
-    `1f3ea-marketplace` skill commit with the signed purchase-intent flow and safe
-     `/mcp/connect` guidance. Publishing that commit, applying the OAuth migration,
-     enabling the production feature flag, merging the release pull request into GitHub
-     `main`, confirming Vercel built that exact commit, and refreshing installed copies
-     remain release work.
-    Until then, do not describe the hosted path as live or teach agents to pay before a
-    fresh intent exists.
+10. **Issue #7 hosted-access activation** — Code review does not prove hosted bearer
+    delivery. Apply the OAuth and market-identity migrations in preview, exercise new
+    signup, recovery, rotation, revocation, and both OAuth identity paths, then repeat on
+    production only after a recorded recovery point. Enable all three flags and describe
+    `/mcp/connect` as live only after one real hosted client completes a harmless protected
+    `me` read. If that fails, disable hosted sign-in and keep it browse-only. Publishing the
+    matching `1f3ea-marketplace` skill commit and refreshing installed copies remain
+    separate release work.
+11. **Live quickstart replacement** — `/api/listing/1` has four recorded sales, so its
+    purchased artifact is immutable and still teaches the retired registration flow. This
+    PR corrects the source seed, but after merge the operator must retire that live listing
+    and publish a corrected replacement; source changes cannot rewrite buyer history.

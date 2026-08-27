@@ -113,6 +113,45 @@ test('production needs its own exact acknowledgement and target facts', () => {
   assert.equal(run.databaseUrl, PRODUCTION_URL)
 })
 
+test('merchant identity has its own guarded additive release migration', () => {
+  const run = resolveReleaseMigration([
+    '--target', 'production',
+    '--migration', 'market-identity',
+    '--database', 'market',
+    '--endpoint', PRODUCTION_HOST,
+  ], productionEnvironment())
+  assert.equal(run.migration, 'market-identity')
+  assert.equal(run.migrationFile, 'db/migrations/20260827_market_identity.sql')
+  for (const object of [
+    'pending_merchant_registrations',
+    'pending_merchant_registration_recovery_codes',
+    'merchant_recovery_codes',
+    'merchant_recovery_ceremony_results',
+    'merchant_recovery_ceremony_results_expiry',
+    'merchant_key_rotations',
+    'oauth_authorization_request_recovery_codes',
+  ]) {
+    assert.ok(run.postconditions.some(condition => condition.name === object), object)
+  }
+  assert.ok(run.postconditions.some(condition =>
+    condition.kind === 'column' && condition.table === 'merchants' &&
+    condition.name === 'recovery_generation'))
+  for (const [table, name] of [
+    ['merchant_recovery_codes', 'merchant_recovery_codes_ceremony_state'],
+    ['merchant_recovery_codes', 'merchant_recovery_codes_expiry_window'],
+    ['merchant_recovery_ceremony_results', 'merchant_recovery_ceremony_results_outcome_allowed'],
+    ['merchant_recovery_ceremony_results', 'merchant_recovery_ceremony_results_retention_window'],
+    ['merchant_identity_rate_limits', 'merchant_identity_rate_limits_attempt_kind_allowed'],
+    ['oauth_authorization_requests', 'oauth_authorization_requests_intent_allowed'],
+    ['oauth_authorization_requests', 'oauth_authorization_requests_identity_values'],
+    ['oauth_authorization_requests', 'oauth_authorization_requests_identity_state'],
+    ['oauth_authorization_requests', 'oauth_authorization_requests_key_confirmation_time'],
+  ] as const) {
+    assert.ok(run.postconditions.some(condition =>
+      condition.kind === 'constraint' && condition.table === table && condition.name === name), name)
+  }
+})
+
 test('target resolution rejects pooled, mismatched, and generic database connections', () => {
   const args = [
     '--target', 'production',
@@ -213,18 +252,22 @@ test('execution fails if any required object is absent after the transaction', a
   )
 })
 
-test('release SQL is additive and the direct-payment delta matches the live schema contract', async () => {
-  const [direct, oauth] = await Promise.all([
+test('release SQL is additive and each delta matches the live schema contract', async () => {
+  const [direct, oauth, identity] = await Promise.all([
     readFile(new URL('../db/migrations/20260823_direct_payments.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260822_hosted_market_signin.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../db/migrations/20260827_market_identity.sql', import.meta.url), 'utf8'),
   ])
   assert.match(direct, /CREATE TABLE IF NOT EXISTS direct_purchase_intents/)
   assert.match(direct, /ADD COLUMN IF NOT EXISTS direct_purchase_intent_id/)
   assert.match(direct, /purchases_direct_intent_listing_fk/)
   assert.match(direct, /purchases_direct_intent_unique/)
-  for (const sql of [direct, oauth]) {
+  assert.match(identity, /ADD COLUMN IF NOT EXISTS recovery_generation/)
+  assert.match(identity, /CREATE TABLE IF NOT EXISTS pending_merchant_registrations/)
+  assert.match(identity, /CREATE TABLE IF NOT EXISTS oauth_authorization_request_recovery_codes/)
+  for (const sql of [direct, oauth, identity]) {
     assert.doesNotMatch(sql, /\b(?:DROP TABLE|DROP COLUMN|TRUNCATE|DELETE FROM)\b/i)
-    assert.doesNotMatch(sql, /^\s*(?:BEGIN|COMMIT|ROLLBACK)\b/im)
+    assert.doesNotMatch(sql, /^\s*(?:BEGIN|COMMIT|ROLLBACK)\s*;\s*$/im)
   }
 })
 
@@ -254,6 +297,8 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(scripts['migrate:production:direct-payments'] ?? '', /--target production --migration direct-payments$/)
   assert.match(scripts['migrate:preview:hosted-market-signin'] ?? '', /--target preview --migration hosted-market-signin$/)
   assert.match(scripts['migrate:production:hosted-market-signin'] ?? '', /--target production --migration hosted-market-signin$/)
+  assert.match(scripts['migrate:preview:market-identity'] ?? '', /--target preview --migration market-identity$/)
+  assert.match(scripts['migrate:production:market-identity'] ?? '', /--target production --migration market-identity$/)
 
   assert.match(runbook, /PREVIEW_DATABASE_URL_UNPOOLED/)
   assert.match(runbook, /PRODUCTION_DATABASE_URL_UNPOOLED/)
@@ -262,6 +307,8 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(runbook, /--production-endpoint <exact-production-hostname>/)
   assert.match(runbook, /CONFIRM_MARKET_PREVIEW_MIGRATION=APPLY_ADDITIVE_MARKET_SCHEMA_TO_ISOLATED_PREVIEW/)
   assert.match(runbook, /CONFIRM_MARKET_PRODUCTION_MIGRATION=APPLY_ADDITIVE_MARKET_SCHEMA_TO_PRODUCTION/)
+  assert.match(runbook, /after all three commands report\s+all checks passed/i)
+  assert.doesNotMatch(runbook, /after both commands report/i)
   assert.ok(
     runbook.indexOf('migrate:preview:direct-payments') <
     runbook.indexOf('migrate:production:direct-payments'),

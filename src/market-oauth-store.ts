@@ -1,5 +1,18 @@
 import { sql } from './db.ts'
 import type { Merchant } from './core.ts'
+import { requireOAuthHash as requireHash } from './market-oauth-hashes.ts'
+import {
+  createMarketOAuthRegistrationStore,
+  type ConfirmNewMerchantInput,
+  type NewMerchantConfirmationResult,
+  type PendingMerchantRegistrationResult,
+  type StageNewMerchantRegistrationInput,
+} from './market-oauth-registration-store.ts'
+
+export type {
+  NewMerchantConfirmationResult,
+  PendingMerchantRegistrationResult,
+} from './market-oauth-registration-store.ts'
 
 export type OAuthAttemptKind = 'authorize' | 'merchant_key' | 'token' | 'refresh' | 'revoke'
 
@@ -24,15 +37,26 @@ export interface AuthorizationRequestRecord {
   scope: string
   state: string
   code_challenge: string
+  intent: 'existing' | 'new' | null
   merchant_id: number | null
-  verified_at: string | null
-  approved_at: string | null
+  new_handle: string | null
+  new_model: string | null
+  merchant_key_confirmed_at: string | null
 }
+
+export type AuthorizationRequestProgress =
+  | { status: 'confirmed'; request: AuthorizationRequestRecord; merchantId: number; handle: string }
+  | { status: 'canceled' | 'expired' | 'unavailable'; request: AuthorizationRequestRecord }
 
 export interface AuthorizationRedirect {
   redirectUri: string
   state: string
 }
+
+export type AuthorizationApprovalResult =
+  | ({ status: 'approved' } & AuthorizationRedirect)
+  | { status: 'merchant_key_rejected' }
+  | { status: 'request_unavailable' }
 
 export interface AuthorizationCodeRecord {
   merchantId: number
@@ -68,6 +92,10 @@ export type RefreshRotationResult = 'rotated' | 'reused' | 'invalid'
 export interface MarketOAuthStore {
   createAuthorizationRequest(input: AuthorizationRequestInput): Promise<void>
   getAuthorizationRequest(sessionHash: string): Promise<AuthorizationRequestRecord | null>
+  getAuthorizationRequestProgress(input: {
+    sessionHash: string
+    csrfHash: string
+  }): Promise<AuthorizationRequestProgress | null>
   cancelAuthorizationRequest(input: {
     sessionHash: string
     csrfHash: string
@@ -77,7 +105,13 @@ export interface MarketOAuthStore {
     csrfHash: string
     merchantSecretHash: string
     authorizationCodeHash: string
-  }): Promise<AuthorizationRedirect | null>
+  }): Promise<AuthorizationApprovalResult>
+  stageNewMerchantRegistration(
+    input: StageNewMerchantRegistrationInput,
+  ): Promise<PendingMerchantRegistrationResult>
+  confirmNewMerchantAndIssueAuthorizationCode(
+    input: ConfirmNewMerchantInput,
+  ): Promise<NewMerchantConfirmationResult>
   getAuthorizationCode(codeHash: string): Promise<AuthorizationCodeRecord | null>
   exchangeAuthorizationCode(input: CodeExchangeInput): Promise<boolean>
   rotateRefreshToken(input: RefreshRotationInput): Promise<RefreshRotationResult>
@@ -99,17 +133,34 @@ export type MarketOAuthQuery = (
   ...values: readonly unknown[]
 ) => Promise<readonly Record<string, unknown>[]>
 
-const SHA256_HASH = /^[0-9a-f]{64}$/
-
-function requireHash(value: string, name: string): void {
-  if (!SHA256_HASH.test(value)) throw new Error(`${name} must be a lowercase sha256 hash`)
-}
-
 export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStore {
   async function createAuthorizationRequest(input: AuthorizationRequestInput): Promise<void> {
     requireHash(input.sessionHash, 'sessionHash')
     requireHash(input.csrfHash, 'csrfHash')
     await query`
+      WITH cleared_expired_pending AS (
+        UPDATE oauth_authorization_requests
+        SET used_at = now(),
+            intent = NULL,
+            new_handle = NULL,
+            new_model = NULL,
+            new_secret_hash = NULL,
+            verified_at = NULL,
+            approved_at = NULL
+        WHERE merchant_id IS NULL
+          AND used_at IS NULL
+          AND expires_at <= now()
+          AND (
+            intent IS NOT NULL OR new_handle IS NOT NULL OR new_model IS NOT NULL
+            OR new_secret_hash IS NOT NULL OR verified_at IS NOT NULL OR approved_at IS NOT NULL
+          )
+        RETURNING id
+      ), cleared_expired_codes AS (
+        DELETE FROM oauth_authorization_request_recovery_codes code
+        USING cleared_expired_pending expired
+        WHERE code.request_id = expired.id
+        RETURNING code.request_id
+      )
       INSERT INTO oauth_authorization_requests (
         session_hash, csrf_hash, client_id, client_display_name, redirect_uri,
         resource, scope, state, code_challenge, code_challenge_method, expires_at
@@ -127,15 +178,62 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     requireHash(sessionHash, 'sessionHash')
     const rows = await query`
       SELECT id, client_id, client_display_name, redirect_uri, resource, scope,
-        state, code_challenge, merchant_id, verified_at, approved_at
+        state, code_challenge, intent, merchant_id, new_handle, new_model,
+        merchant_key_confirmed_at
       FROM oauth_authorization_requests
       WHERE session_hash = ${sessionHash}
-        AND merchant_id IS NULL
         AND used_at IS NULL
         AND expires_at > now()
       LIMIT 1
     ` as unknown as AuthorizationRequestRecord[]
     return rows[0] ?? null
+  }
+
+  async function getAuthorizationRequestProgress(input: {
+    sessionHash: string
+    csrfHash: string
+  }): Promise<AuthorizationRequestProgress | null> {
+    requireHash(input.sessionHash, 'sessionHash')
+    requireHash(input.csrfHash, 'csrfHash')
+    const rows = await query`
+      SELECT request.id, request.client_id, request.client_display_name,
+        request.redirect_uri, request.resource, request.scope, request.state,
+        request.code_challenge, request.intent, request.merchant_id,
+        request.new_handle, request.new_model, request.merchant_key_confirmed_at,
+        CASE
+          WHEN request.merchant_id IS NOT NULL
+            AND request.merchant_key_confirmed_at IS NOT NULL
+            AND request.used_at IS NOT NULL
+            AND merchant.id IS NOT NULL
+            THEN 'confirmed'
+          WHEN request.merchant_id IS NULL
+            AND request.used_at IS NOT NULL
+            AND request.used_at < request.expires_at
+            THEN 'canceled'
+          WHEN request.merchant_id IS NULL AND request.expires_at <= now()
+            THEN 'expired'
+          ELSE 'unavailable'
+        END AS progress_status,
+        merchant.handle AS merchant_handle
+      FROM oauth_authorization_requests request
+      LEFT JOIN merchants merchant ON merchant.id = request.merchant_id
+      WHERE request.session_hash = ${input.sessionHash}
+        AND request.csrf_hash = ${input.csrfHash}
+      LIMIT 1
+    ` as unknown as Array<AuthorizationRequestRecord & {
+      progress_status: AuthorizationRequestProgress['status']
+      merchant_handle: string | null
+    }>
+    const row = rows[0]
+    if (!row) return null
+    const { progress_status: status, merchant_handle: merchantHandle, ...request } = row
+    if (status === 'confirmed') {
+      if (request.merchant_id === null || merchantHandle === null) {
+        return { status: 'unavailable', request }
+      }
+      return { status, request, merchantId: request.merchant_id, handle: merchantHandle }
+    }
+    return { status, request }
   }
 
   async function cancelAuthorizationRequest(input: {
@@ -145,14 +243,28 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     requireHash(input.sessionHash, 'sessionHash')
     requireHash(input.csrfHash, 'csrfHash')
     const rows = await query`
-      UPDATE oauth_authorization_requests
-      SET used_at = now()
-      WHERE session_hash = ${input.sessionHash}
-        AND csrf_hash = ${input.csrfHash}
-        AND merchant_id IS NULL
-        AND used_at IS NULL
-        AND expires_at > now()
-      RETURNING redirect_uri, state
+      WITH canceled AS MATERIALIZED (
+        UPDATE oauth_authorization_requests
+        SET used_at = now(),
+            intent = NULL,
+            new_handle = NULL,
+            new_model = NULL,
+            new_secret_hash = NULL,
+            verified_at = NULL,
+            approved_at = NULL
+        WHERE session_hash = ${input.sessionHash}
+          AND csrf_hash = ${input.csrfHash}
+          AND merchant_id IS NULL
+          AND used_at IS NULL
+          AND expires_at > now()
+        RETURNING id, redirect_uri, state
+      ), scrubbed_pending_codes AS (
+        DELETE FROM oauth_authorization_request_recovery_codes code
+        USING canceled
+        WHERE code.request_id = canceled.id
+        RETURNING code.request_id
+      )
+      SELECT redirect_uri, state FROM canceled
     ` as unknown as { redirect_uri: string; state: string }[]
     const redirect = rows[0]
     return redirect ? { redirectUri: redirect.redirect_uri, state: redirect.state } : null
@@ -163,28 +275,42 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     csrfHash: string
     merchantSecretHash: string
     authorizationCodeHash: string
-  }): Promise<AuthorizationRedirect | null> {
+  }): Promise<AuthorizationApprovalResult> {
     requireHash(input.sessionHash, 'sessionHash')
     requireHash(input.csrfHash, 'csrfHash')
     requireHash(input.merchantSecretHash, 'merchantSecretHash')
     requireHash(input.authorizationCodeHash, 'authorizationCodeHash')
     const rows = await query`
-      WITH proven_merchant AS MATERIALIZED (
+      WITH locked_merchant AS MATERIALIZED (
         SELECT id
         FROM merchants
         WHERE secret_hash = ${input.merchantSecretHash}
-      ), consumed_request AS (
-        UPDATE oauth_authorization_requests request
-        SET merchant_id = merchant.id,
-            verified_at = now(),
-            approved_at = now(),
-            used_at = now()
-        FROM proven_merchant merchant
+        FOR UPDATE
+      ), merchant_gate AS MATERIALIZED (
+        SELECT count(*)::integer AS merchant_matches FROM locked_merchant
+      ), active_request AS MATERIALIZED (
+        SELECT request.id, request.client_id, request.redirect_uri,
+          request.resource, request.scope, request.state, request.code_challenge,
+          gate.merchant_matches
+        FROM oauth_authorization_requests request
+        CROSS JOIN merchant_gate gate
         WHERE request.session_hash = ${input.sessionHash}
           AND request.csrf_hash = ${input.csrfHash}
+          AND request.intent IS NULL
           AND request.merchant_id IS NULL
           AND request.used_at IS NULL
           AND request.expires_at > now()
+        FOR UPDATE OF request
+      ), consumed_request AS (
+        UPDATE oauth_authorization_requests request
+        SET intent = 'existing',
+            merchant_id = merchant.id,
+            verified_at = now(),
+            approved_at = now(),
+            used_at = now()
+        FROM active_request active
+        JOIN locked_merchant merchant ON active.merchant_matches = 1
+        WHERE request.id = active.id
         RETURNING request.id, merchant.id AS merchant_id, request.client_id,
           request.redirect_uri, request.resource, request.scope, request.state,
           request.code_challenge
@@ -197,13 +323,36 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
           resource, scope, code_challenge, 'S256', now() + interval '5 minutes'
         FROM consumed_request
         RETURNING request_id
+      ), completed AS MATERIALIZED (
+        SELECT request.redirect_uri, request.state
+        FROM consumed_request request
+        JOIN issued_code code ON code.request_id = request.id
       )
-      SELECT request.redirect_uri, request.state
-      FROM consumed_request request
-      JOIN issued_code code ON code.request_id = request.id
-    ` as unknown as { redirect_uri: string; state: string }[]
-    const redirect = rows[0]
-    return redirect ? { redirectUri: redirect.redirect_uri, state: redirect.state } : null
+      SELECT 'approved'::text AS status, completed.redirect_uri, completed.state
+      FROM completed
+      UNION ALL
+      SELECT 'request_unavailable'::text, NULL::text, NULL::text
+      WHERE NOT EXISTS (SELECT 1 FROM active_request)
+      UNION ALL
+      SELECT 'merchant_key_rejected'::text, NULL::text, NULL::text
+      WHERE EXISTS (SELECT 1 FROM active_request)
+        AND NOT EXISTS (SELECT 1 FROM locked_merchant)
+    ` as unknown as {
+      status: 'approved' | 'merchant_key_rejected' | 'request_unavailable'
+      redirect_uri: string | null
+      state: string | null
+    }[]
+    const result = rows[0]
+    if (!result) throw new Error('existing-merchant approval produced no outcome')
+    if (result.status !== 'approved') return { status: result.status }
+    if (result.redirect_uri === null || result.state === null) {
+      throw new Error('existing-merchant approval returned an incomplete redirect')
+    }
+    return {
+      status: 'approved',
+      redirectUri: result.redirect_uri,
+      state: result.state,
+    }
   }
 
   async function getAuthorizationCode(codeHash: string): Promise<AuthorizationCodeRecord | null> {
@@ -239,16 +388,33 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     requireHash(input.accessTokenHash, 'accessTokenHash')
     requireHash(input.refreshTokenHash, 'refreshTokenHash')
     const rows = await query`
-      WITH consumed_code AS (
-        UPDATE oauth_authorization_codes
-        SET used_at = now()
+      WITH eligible_code AS MATERIALIZED (
+        SELECT id, merchant_id, client_id, resource, scope
+        FROM oauth_authorization_codes
         WHERE code_hash = ${input.codeHash}
           AND client_id = ${input.clientId}
           AND redirect_uri = ${input.redirectUri}
           AND resource = ${input.resource}
           AND used_at IS NULL
           AND expires_at > now()
-        RETURNING merchant_id, client_id, resource, scope
+      ), locked_merchant AS MATERIALIZED (
+        SELECT merchant.id
+        FROM merchants merchant
+        JOIN eligible_code code ON code.merchant_id = merchant.id
+        FOR UPDATE OF merchant
+      ), consumed_code AS (
+        UPDATE oauth_authorization_codes code
+        SET used_at = now()
+        FROM eligible_code eligible
+        JOIN locked_merchant merchant ON merchant.id = eligible.merchant_id
+        WHERE code.id = eligible.id
+          AND code.code_hash = ${input.codeHash}
+          AND code.client_id = ${input.clientId}
+          AND code.redirect_uri = ${input.redirectUri}
+          AND code.resource = ${input.resource}
+          AND code.used_at IS NULL
+          AND code.expires_at > now()
+        RETURNING code.merchant_id, code.client_id, code.resource, code.scope
       ), new_family AS (
         INSERT INTO oauth_token_families (
           merchant_id, client_id, resource, scope, expires_at
@@ -326,7 +492,7 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
           AND family.client_id = ${input.clientId}
           AND family.resource = ${input.resource}
           AND family.revoked_at IS NULL
-          AND family.expires_at > now()
+          AND family.expires_at >= now() + interval '10 minutes'
         RETURNING token.id, token.family_id
       ), new_access AS (
         INSERT INTO oauth_tokens (token_hash, token_type, family_id, expires_at)
@@ -490,11 +656,18 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     return rows.length === 1
   }
 
+  const registrationStore = createMarketOAuthRegistrationStore(query, {
+    cancelAuthorizationRequest,
+    getAuthorizationRequestProgress,
+  })
+
   return {
     createAuthorizationRequest,
     getAuthorizationRequest,
+    getAuthorizationRequestProgress,
     cancelAuthorizationRequest,
     approveExistingMerchantAndIssueAuthorizationCode,
+    ...registrationStore,
     getAuthorizationCode,
     exchangeAuthorizationCode,
     rotateRefreshToken,
@@ -511,8 +684,11 @@ export const postgresMarketOAuthStore = createMarketOAuthStore(
 export const {
   createAuthorizationRequest,
   getAuthorizationRequest,
+  getAuthorizationRequestProgress,
   cancelAuthorizationRequest,
   approveExistingMerchantAndIssueAuthorizationCode,
+  stageNewMerchantRegistration,
+  confirmNewMerchantAndIssueAuthorizationCode,
   getAuthorizationCode,
   exchangeAuthorizationCode,
   rotateRefreshToken,

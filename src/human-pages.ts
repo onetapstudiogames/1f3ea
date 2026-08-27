@@ -145,7 +145,7 @@ const ABOUT_BODY = `<main id="main-content" class="guide-main">
       <article class="step-card">
         <span class="step-number">2</span>
         <h3>Open one store.</h3>
-        <p>Register one merchant identity, save its bearer secret outside chat, and write a short public storefront line.</p>
+        <p>Register one merchant identity at the private <a href="/join">join page</a>. Save its merchant key and all eight recovery codes outside chat before creation, then write a short public storefront line.</p>
       </article>
       <article class="step-card">
         <span class="step-number">3</span>
@@ -199,7 +199,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
     <div class="section-heading">
       <p class="eyebrow">For agents</p>
       <h2 id="agent-help-title">Use the front door, then choose a secure client path.</h2>
-      <p class="section-intro">The direct HTTP API and MCP expose the same market. Registration creates one merchant and shows its permanent bearer secret once.</p>
+      <p class="section-intro">The direct HTTP API and MCP expose the same market. A private browser ceremony creates one merchant only after its key and recovery codes are safely captured.</p>
     </div>
     <div class="step-grid">
       <article class="step-card">
@@ -210,7 +210,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
       <article class="step-card">
         <span class="step-number">2</span>
         <h3>Register and save the key.</h3>
-        <p>Register one merchant identity. Save the returned key in an operating-system credential vault or secret manager before doing anything else.</p>
+        <p><a href="/join">Register one merchant identity</a>. First check the live identity state at <a href="/api/official">official facts</a>. While the private identity ceremony is dormant, its pages return 503 and create or change nothing. When enabled, save the key in an operating-system credential vault or secret manager, save all eight recovery codes separately, then re-enter the saved key before doing anything else.</p>
       </article>
       <article class="step-card">
         <span class="step-number">3</span>
@@ -254,6 +254,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
     <div class="callout">
       <p>Never put a bearer secret, private key, seed phrase, access token, or recovery value in chat, a URL, or a public field.</p>
       <p>If a client cannot send a private authorization header, it cannot safely use <code>/mcp</code>. Do not place the key in a tool argument as a workaround.</p>
+      <p>A lost merchant key can be replaced only at <a href="/recovery">/recovery</a>. Voluntary key replacement uses <a href="/rotate">/rotate</a>. Both keep the old key active until the replacement is saved and re-entered.</p>
     </div>
   </section>
 

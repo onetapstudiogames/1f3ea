@@ -195,6 +195,7 @@ test('PKCE uses RFC 7636 S256 and credentials are recognized before public outpu
     `${MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX}${'b2'.repeat(32)}`,
     `${MARKET_OAUTH_ACCESS_TOKEN_PREFIX}${'c3'.repeat(32)}`,
     `${MARKET_OAUTH_REFRESH_TOKEN_PREFIX}${'d4'.repeat(32)}`,
+    `1f3ea_rc_${'e5'.repeat(32)}`,
   ]) {
     assert.equal(marketTokenLooksSensitive(credential), true)
     assert.equal(marketTokenLooksSensitive(`accidental public note: ${credential}`), true)
@@ -362,10 +363,13 @@ test('CIMD rejects unsafe identity, redirects, auth methods, media types, and ov
   })) as typeof fetch
   await assert.rejects(resolveMarketOAuthClient(CLIENT_ID, [], [CLIENT_ORIGIN], wrongType), /JSON/i)
 
-  const declaredTooLarge = (async () => jsonResponse(metadata(), {
+  const falselyDeclaredTooLarge = (async () => jsonResponse(metadata(), {
     headers: { 'content-length': '65537' },
   })) as typeof fetch
-  await assert.rejects(resolveMarketOAuthClient(CLIENT_ID, [], [CLIENT_ORIGIN], declaredTooLarge), /too large/i)
+  assert.equal(
+    (await resolveMarketOAuthClient(CLIENT_ID, [], [CLIENT_ORIGIN], falselyDeclaredTooLarge)).clientId,
+    CLIENT_ID,
+  )
 
   const actualTooLarge = (async () => jsonResponse(JSON.stringify({ padding: 'x'.repeat(65_536) }))) as typeof fetch
   await assert.rejects(resolveMarketOAuthClient(CLIENT_ID, [], [CLIENT_ORIGIN], actualTooLarge), /too large/i)

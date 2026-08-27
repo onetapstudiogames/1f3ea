@@ -2,13 +2,13 @@ export const PRIVACY = `1F3EA PRIVACY
 
 WHAT THIS SERVICE STORES
 
-Registration IP addresses are one-way hashed for abuse prevention. The app uses SHA-256 with a fixed service label and stores the result, not the registration IP address. This hash is not anonymous because possible IP addresses can be guessed. Registration rate-limit records expire after 24 hours.
+Identity and OAuth request IP addresses are one-way hashed for abuse prevention. The app uses SHA-256 with a fixed service label and stores the result, not the request IP address. This hash is not anonymous because possible IP addresses can be guessed. Rate-limit records become eligible for deletion after 24 hours and are pruned by later identity or OAuth activity.
 
-Bearer secrets are shown once. Only a one-way hash of each bearer secret is stored. There is no recovery. Keep your secret private.
+Merchant keys and eight one-use recovery codes are shown once during private browser signup. The merchant is created only after the key is saved and re-entered. Only one-way hashes are stored. A recovery code may prepare a replacement key; the code is consumed only when that replacement is saved and re-entered. Creating a fresh recovery set invalidates the older set. Keep every key and recovery code private and outside chat.
 
 HOSTED CHAT SIGN-IN
 
-When the feature-gated hosted connector is enabled, an existing merchant may approve ChatGPT through a private 1F3EA browser page. The permanent merchant key is checked against its existing one-way hash and is never stored in plaintext. The browser session, CSRF value, one-use authorization code, access token, and rotating refresh token are stored only as one-way hashes with short, bounded lifetimes. A refresh-token reuse attempt revokes its whole connection family. Never put a merchant key or OAuth credential in chat or a tool argument.
+When the feature-gated hosted connector is enabled, a new merchant may complete the same save-first signup, or an existing merchant may approve ChatGPT, through a private 1F3EA browser page. A permanent merchant key is checked against its one-way hash and is never stored in plaintext. Browser sessions, CSRF values, recovery codes, one-use authorization codes, access tokens, and rotating refresh tokens are stored only as one-way hashes with bounded lifetimes. A refresh-token reuse attempt revokes its whole connection family. Successful key recovery or rotation revokes older connector sessions. Never put a merchant key, recovery code, or OAuth credential in chat or a tool argument.
 
 WHAT MAY BE PUBLIC
 
@@ -65,9 +65,9 @@ Email: adam@twamd.com
 
 Public bug reports and feature requests: https://github.com/onetapstudiogames/1f3ea/issues
 
-Never send bearer secrets, private keys, seed phrases, passwords, OTP codes, or other credentials. 1F3EA support will never ask for them.
+Never send merchant keys, recovery codes, OAuth tokens, private keys, seed phrases, passwords, OTP codes, or other credentials. 1F3EA support will never ask for them.
 
-For hosted ChatGPT, the safe connector address is https://1f3ea.com/mcp/connect. If the wrong /mcp address was added, disconnect or remove it, then add /mcp/connect. Disconnect or use OAuth revocation before reconnecting when a fresh link is needed. Never send support the merchant key, access token, refresh token, authorization code, or browser cookie.
+For hosted ChatGPT, the safe connector address is https://1f3ea.com/mcp/connect. If the wrong /mcp address was added, disconnect or remove it, then add /mcp/connect. Disconnect or use OAuth revocation before reconnecting when a fresh link is needed. Signup is at https://1f3ea.com/join, lost-key recovery is at https://1f3ea.com/recovery, and voluntary rotation is at https://1f3ea.com/rotate. Check GET /api/official and inspect its identity object first: while the private identity ceremony is dormant, those pages return 503 and create or change nothing. Never send support the merchant key, any of the eight recovery codes, an access token, refresh token, authorization code, or browser cookie.
 
 When reporting a problem, share only safe public details such as the route, response status, UTC time, public market or city handle, public world offer or checkout identifier, and a public transaction hash when relevant.
 `

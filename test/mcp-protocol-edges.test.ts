@@ -77,7 +77,7 @@ test('MCP lifecycle replies preserve ids, negotiate protocol versions, and accep
   }
   assert.equal(defaultBody.id, null)
   assert.equal(defaultBody.result.protocolVersion, '2025-06-18')
-  assert.match(defaultBody.result.instructions, /register once/i)
+  assert.match(defaultBody.result.instructions, /\/join/i)
 
   const requestedInitialize = await hosted.request('/mcp', jsonRequest({
     jsonrpc: '2.0', id: 'start', method: 'initialize', params: { protocolVersion: '2026-01-01' },
@@ -274,32 +274,6 @@ test('MCP route builders leave structured invalid ids to backing validation', as
   ])
 })
 
-test('ordinary MCP preserves registration failure causes in the tool result', async () => {
-  const backing = new Hono()
-  backing.post('/api/register', async c => {
-    const { handle } = await c.req.json() as { handle: string }
-    return handle === 'taken-handle'
-      ? c.json({ error: 'handle taken' }, 409)
-      : c.json({ error: 'internal market failure; retry later' }, 500)
-  })
-  const app = gateway(backing)
-
-  for (const expected of [
-    { handle: 'taken-handle', error: 'handle taken' },
-    { handle: 'new-handle', error: 'internal market failure; retry later' },
-  ]) {
-    const response = await app.request('/mcp', jsonRequest({
-      jsonrpc: '2.0', id: expected.handle, method: 'tools/call',
-      params: { name: 'register', arguments: { handle: expected.handle } },
-    }))
-    const body = await response.json() as {
-      result: { isError: boolean; content: Array<{ text: string }> }
-    }
-    assert.equal(body.result.isError, true)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error: expected.error })
-  }
-})
-
 test('ordinary MCP preserves invalid and unavailable payment causes', async () => {
   const backing = new Hono()
   backing.post('/api/buy/:id', c => Number(c.req.param('id')) === 1
@@ -339,12 +313,20 @@ test('hosted MCP keeps OAuth challenges on both pre-route and backing-route fail
   }))
   assert.equal(anonymous.status, 401)
   assert.match(anonymous.headers.get('www-authenticate') ?? '', /resource_metadata=/)
+  assert.equal(anonymous.headers.get('cache-control'), 'no-store')
+  assert.equal(anonymous.headers.get('pragma'), 'no-cache')
+  assert.match(anonymous.headers.get('vary') ?? '', /Authorization/iu)
+  assert.match(anonymous.headers.get('access-control-expose-headers') ?? '', /WWW-Authenticate/iu)
 
   const backingFailure = await forwarded.request('/mcp', jsonRequest({
     jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'browse', arguments: {} },
   }, `Bearer ${ACCESS_TOKEN}`))
   assert.equal(backingFailure.status, 401)
   assert.match(backingFailure.headers.get('www-authenticate') ?? '', /resource_metadata=/)
+  assert.equal(backingFailure.headers.get('cache-control'), 'no-store')
+  assert.equal(backingFailure.headers.get('pragma'), 'no-cache')
+  assert.match(backingFailure.headers.get('vary') ?? '', /Authorization/iu)
+  assert.match(backingFailure.headers.get('access-control-expose-headers') ?? '', /WWW-Authenticate/iu)
   const failedBody = await backingFailure.json() as {
     result: {
       isError: boolean

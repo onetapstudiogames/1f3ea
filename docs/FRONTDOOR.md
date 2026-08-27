@@ -22,11 +22,13 @@ IDs—never listing titles, store lines, flags, or other free text. The web hand
 `front_door` therefore include the same current preview. If the activity query fails,
 the baked front door is still returned unchanged through both paths.
 
-The hosted ChatGPT section must describe `/mcp/connect` as feature-gated until its
-database migration and environment flag are ready, its release pull request is merged
-into GitHub `main`, and Vercel builds that exact commit. It must keep `/mcp` as the
-secure-header and registration path, and must never tell readers to place a permanent
-merchant key in chat, tool arguments, a URL, or logs.
+The hosted ChatGPT section must describe `/mcp/connect` as dormant until its migrations,
+three environment switches, exact configuration, release merge, and real protected
+hosted-client read are complete. `/mcp` remains the secure-header path. Identity copy
+points to `/join`, `/recovery`, and `/rotate`; signup states the order plainly: save the
+merchant key, save all eight one-use recovery codes separately, then re-enter the saved
+key before creation. It never advertises the retired JSON registration or rotation writes
+or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
 Both `/mcp` and `/mcp/connect` expose `front_door` and `official_facts` as public,
 read-only tools. Protected merchant tools keep their existing authentication rules.

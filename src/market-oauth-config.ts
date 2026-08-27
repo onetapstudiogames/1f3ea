@@ -20,7 +20,7 @@ const MAX_CIMD_BODY_BYTES = 65_536
 const CIMD_TIMEOUT_MS = 4_000
 const PKCE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const PKCE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/
-const MARKET_CREDENTIAL_PATTERN = /1f3ea_(?:sk|at|rt|ac)_[0-9a-f]{8,}/i
+const MARKET_CREDENTIAL_PATTERN = /1f3ea_(?:sk|at|rt|ac|rc)_[0-9a-f]{8,}/i
 
 export type MarketOAuthEnvironment = Readonly<Record<string, string | undefined>>
 
@@ -279,10 +279,6 @@ export function verifyMarketPkceS256(verifier: string, expectedChallenge: string
 }
 
 async function boundedResponseText(response: Response): Promise<string> {
-  const declaredLength = Number(response.headers.get('content-length') ?? 0)
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_CIMD_BODY_BYTES) {
-    throw new Error('OAuth client metadata is too large')
-  }
   if (!response.body) return ''
 
   const reader = response.body.getReader()

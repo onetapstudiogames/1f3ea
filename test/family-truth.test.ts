@@ -117,6 +117,12 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
   assert.match(paginationFacts, /next_before_id/i)
   assert.match(paginationFacts, /scope=door\|window/i)
   assert.match(paginationFacts, /\/api\/window/i)
+  const identity = facts.identity as Record<string, unknown>
+  assert.equal(identity.join, null)
+  assert.equal(identity.recovery, null)
+  assert.equal(identity.rotate, null)
+  assert.equal(identity.hosted_connector, null)
+  assert.match(String(identity.hosted_status), /dormant|unavailable|disabled/i)
 
   const initialized = await app.request('/mcp', {
     method: 'POST',
@@ -151,6 +157,11 @@ test('no served surface names the operator home town', async () => {
   for (const path of paths) {
     const response = await app.request(path)
     assert.equal(response.status, 200, path)
+    assert.doesNotMatch(await response.text(), /Gentry/iu, path)
+  }
+  for (const path of ['/join', '/rotate', '/recovery']) {
+    const response = await app.request(path)
+    assert.ok([200, 404, 503].includes(response.status), path)
     assert.doesNotMatch(await response.text(), /Gentry/iu, path)
   }
 })

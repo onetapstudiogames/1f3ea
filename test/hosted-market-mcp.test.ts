@@ -94,7 +94,7 @@ function createHarness(payload: Record<string, unknown> = { merchant: { id: 7, h
   gateway.post('/mcp', c => mcp(c, market))
   gateway.post('/mcp/connect', c => mcp(c, market, {
     hostedChat: true,
-    forwardUnauthorizedStatus: false,
+    forwardUnauthorizedStatus: true,
   }))
   return { gateway, market, forwardedAuthorization: () => forwardedAuthorization }
 }
@@ -105,6 +105,7 @@ async function rpc(
   method: string,
   params?: Record<string, unknown>,
   authorization?: string,
+  expectedStatus = 200,
 ) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (authorization) headers.authorization = authorization
@@ -113,7 +114,7 @@ async function rpc(
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   })
-  assert.equal(response.status, 200)
+  assert.equal(response.status, expectedStatus)
   return response.json() as Promise<Record<string, unknown>>
 }
 
@@ -122,12 +123,12 @@ async function tools(app: Hono, path: '/mcp' | '/mcp/connect') {
   return body.result.tools
 }
 
-test('hosted catalog omits registration and advertises OAuth without changing the legacy catalog', async () => {
+test('both catalogs keep permanent-key creation out of tools and hosted tools advertise OAuth', async () => {
   const { gateway } = createHarness()
   const legacy = await tools(gateway, '/mcp')
   const hosted = await tools(gateway, '/mcp/connect')
 
-  assert.ok(legacy.some(tool => tool.name === 'register'))
+  assert.equal(legacy.some(tool => tool.name === 'register'), false)
   assert.equal(legacy.every(tool => tool.securitySchemes === undefined), true)
   assert.equal(hosted.some(tool => tool.name === 'register'), false)
 
@@ -204,13 +205,35 @@ test('anonymous hosted browsing works while a protected call returns an OAuth ch
 
   const me = await rpc(gateway, '/mcp/connect', 'tools/call', {
     name: 'me', arguments: {},
-  }) as { result: ToolResult }
+  }, undefined, 401) as { result: ToolResult }
   assert.equal(me.result.isError, true)
   assert.deepEqual(me.result._meta?.['mcp/www_authenticate'], [
     `Bearer resource_metadata="${RESOURCE_METADATA}", scope="market:merchant", ` +
       'error="invalid_token", error_description="Sign in to 1F3EA to use merchant tools."',
   ])
   assert.doesNotMatch(JSON.stringify(me), /1f3ea_(?:sk|at|rt|ac)_/i)
+})
+
+test('a protected hosted call uses HTTP 401 so the client starts OAuth and sends a bearer', async () => {
+  const { gateway } = createHarness()
+  const response = await gateway.request('/mcp/connect', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'me', arguments: {} },
+    }),
+  })
+
+  assert.equal(response.status, 401)
+  assert.match(response.headers.get('www-authenticate') ?? '', /resource_metadata=/i)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.equal(response.headers.get('pragma'), 'no-cache')
+  assert.match(response.headers.get('vary') ?? '', /(?:^|,\s*)Authorization(?:,|$)/iu)
+  assert.match(response.headers.get('access-control-expose-headers') ?? '', /WWW-Authenticate/iu)
+  const body = await response.json() as { result: ToolResult }
+  assert.equal(body.result.isError, true)
+  assert.equal(body.result._meta?.['mcp/www_authenticate']?.length, 1)
 })
 
 test('anonymous opening reads have exact parity across the ordinary and hosted MCP doors', async () => {
@@ -342,6 +365,8 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
   const credentialArguments: Array<[string, string]> = [
     ['body', `remember ${LEGACY_SECRET}`],
     ['refresh_token', 'hidden'],
+    ['recovery_code', 'hidden'],
+    ['replacement_key', 'hidden'],
   ]
   for (const [field, value] of credentialArguments) {
     const rejected = await rpc(gateway, '/mcp/connect', 'tools/call', {
@@ -349,7 +374,7 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
     }) as { result: ToolResult }
     assert.equal(rejected.result.isError, true)
     assert.match(rejected.result.content[0]!.text, /do not put (?:secrets|credentials)/i)
-    assert.doesNotMatch(JSON.stringify(rejected), /1f3ea_(?:sk|at|rt|ac)_/i)
+    assert.doesNotMatch(JSON.stringify(rejected), /1f3ea_(?:sk|at|rt|ac|rc)_/i)
   }
 })
 
@@ -359,6 +384,7 @@ test('MCP redacts every 1F3EA credential family from backing responses', async (
     `1f3ea_at_${'b2'.repeat(32)}`,
     `1f3ea_rt_${'c3'.repeat(32)}`,
     `1f3ea_ac_${'d4'.repeat(32)}`,
+    `1f3ea_rc_${'e5'.repeat(32)}`,
   ]) {
     const { gateway } = createHarness({ merchant: { id: 7, note: `old ${credential}` } })
     const response = await rpc(gateway, '/mcp', 'tools/call', {

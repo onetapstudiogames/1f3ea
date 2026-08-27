@@ -19,3 +19,13 @@ export function postgresUniqueConstraint(error: unknown): string | null {
   const details = postgresErrorDetails(error)
   return details.code === '23505' ? details.constraint : null
 }
+
+/** A PostgreSQL deadlock aborts the whole statement or transaction, so one exact retry is safe. */
+export async function retryPostgresDeadlockOnce<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (postgresErrorDetails(error).code !== '40P01') throw error
+    return operation()
+  }
+}

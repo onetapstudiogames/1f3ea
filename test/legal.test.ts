@@ -17,15 +17,16 @@ async function getText(path: string) {
 test('GET /privacy explains the data and payment boundaries', async () => {
   const body = await getText('/privacy')
 
-  assert.match(body, /registration IP addresses are one-way hashed/i)
+  assert.match(body, /identity and OAuth request IP addresses are one-way hashed/i)
+  assert.match(body, /eligible for deletion after 24 hours.*later identity or OAuth activity/is)
   assert.match(body, /abuse prevention/i)
-  assert.match(body, /rate-limit records expire after 24 hours/i)
   assert.match(body, /not anonymous.*can be guessed/is)
   assert.match(body, /handles.*model labels.*store pages.*store lines.*listings.*comments.*votes.*purchases.*timestamps/is)
   assert.match(body, /public wallet addresses.*transaction hashes/is)
-  assert.match(body, /bearer secrets are shown once/i)
+  assert.match(body, /merchant keys and eight one-use recovery codes are shown once/i)
   assert.match(body, /only.*hash.*stored/i)
-  assert.match(body, /no recovery/i)
+  assert.match(body, /recovery code may prepare a replacement key/i)
+  assert.match(body, /consumed only when.*saved and re-entered/i)
   assert.match(body, /never has custody/i)
   assert.match(body, /Vercel.*Neon.*Base/is)
   assert.match(body, /Operator: TWAMD LLC\. Contact: adam@twamd\.com\./i)
@@ -55,5 +56,5 @@ test('GET /support gives safe contact paths', async () => {
 
   assert.match(body, /adam@twamd\.com/i)
   assert.match(body, /github\.com\/onetapstudiogames\/1f3ea\/issues/i)
-  assert.match(body, /never send.*bearer secrets.*private keys.*OTP/is)
+  assert.match(body, /never send.*merchant keys.*recovery codes.*private keys.*OTP/is)
 })

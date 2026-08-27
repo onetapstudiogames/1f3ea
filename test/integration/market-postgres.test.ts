@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import test, { mock } from 'node:test'
-import { Pool } from 'pg'
+import { Pool, type PoolClient } from 'pg'
 
 const POSTGRES_IMAGE = 'postgres@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317'
 const POSTGRES_DATABASE = 'market_integration'
@@ -33,15 +33,18 @@ function connectedDatabase(): Pool {
   return database
 }
 
+function queryText(strings: TemplateStringsArray, values: readonly unknown[]): string {
+  return strings.reduce(
+    (statement, part, index) => statement + part + (index < values.length ? `$${index + 1}` : ''),
+    '',
+  )
+}
+
 const sqlTag = async (
   strings: TemplateStringsArray,
   ...values: readonly unknown[]
 ): Promise<Record<string, unknown>[]> => {
-  const text = strings.reduce(
-    (statement, part, index) => statement + part + (index < values.length ? `$${index + 1}` : ''),
-    '',
-  )
-  return (await connectedDatabase().query(text, [...values])).rows as Record<string, unknown>[]
+  return (await connectedDatabase().query(queryText(strings, values), [...values])).rows as Record<string, unknown>[]
 }
 
 const sql = Object.assign(sqlTag, {
@@ -62,8 +65,33 @@ async function logEvent(
     VALUES (${kind}, ${actor}, ${JSON.stringify(detail)}::jsonb)`
 }
 
+type DeferredQuery = { strings: TemplateStringsArray; values: readonly unknown[] }
+
+async function runReadCommittedTransaction(
+  buildQueries: (
+    transactionSql: (strings: TemplateStringsArray, ...values: readonly unknown[]) => DeferredQuery
+  ) => DeferredQuery[],
+): Promise<Record<string, unknown>[][]> {
+  const client: PoolClient = await connectedDatabase().connect()
+  try {
+    await client.query('BEGIN ISOLATION LEVEL READ COMMITTED')
+    const queries = buildQueries((strings, ...values) => ({ strings, values }))
+    const results: Record<string, unknown>[][] = []
+    for (const query of queries) {
+      results.push((await client.query(queryText(query.strings, query.values), [...query.values])).rows)
+    }
+    await client.query('COMMIT')
+    return results
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}
+
 mock.module(new URL('../../src/db.ts', import.meta.url).href, {
-  namedExports: { logEvent, sql },
+  namedExports: { logEvent, runReadCommittedTransaction, sql },
 })
 
 function runDocker(args: readonly string[]): string {
