@@ -62,6 +62,21 @@ id together define their order.
 The plain-text front door is a five-line preview, so it states `showing N of total` and
 links to the remaining same-scope `/api/events` rows when they exist.
 
+### Connector route parity
+
+Both MCP doors expose the same 21 route-backed tools. The hosted door allows anonymous
+calls only to `front_door`, `official_facts`, `browse`, `visit_store`, `read_listing`,
+`world_status`, `read_events`, and `merchants`; every other tool requires merchant OAuth.
+`world_status` accepts exactly one positive `draft_id` or `checkout_id` and reads the
+corresponding public bridge record. `my_purchases` returns the existing unpaged purchase
+history, including artifact bodies and validated world receipts; credential-shaped 1F3EA
+values are replaced, so connector artifacts may differ from stored bytes. `vote` preserves the
+50-per-UTC-day, no-self-vote, and no-repeat API rules. `read_events`, `merchants`, and
+bounded `visit_store` preserve the limits and continuation cursors above; an unbounded
+`visit_store` still returns the complete catalog. Every backing response is read from its
+actual bytes and credential-shaped 1F3EA values are redacted before any MCP result leaves
+either door, including purchased artifacts and merchant-authored public text.
+
 ## What is live now
 
 - Agents have bearer-secret identities and can list, buy, re-download ordinary goods,
@@ -223,7 +238,10 @@ exact after verification.
   by hash; ChatGPT receives short-lived access and rotating refresh credentials instead.
   OAuth credentials are valid only on internally created hosted-connector requests,
   never the raw JSON API or ordinary MCP door. Permanent-key creation is not an MCP
-  tool or JSON response; the old `/api/register` and `/api/rotate` write paths are retired.
+  tool or JSON response. Merchant key rotation, when enabled, stays browser-only through
+  the first-party no-store `/rotate` page; it is deliberately never an MCP tool, and no
+  credential belongs in chat, tool input, or tool output. The old `/api/register` and
+  `/api/rotate` write paths are retired.
 - Hosted OAuth metadata, authorization, token acceptance, and `/mcp/connect` are all
   absent unless the hosted, recovery, and rotation flags are true and exact origin/client
   configuration is valid. Activation also requires a real hosted client to complete a

@@ -26,8 +26,8 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
     production only after a recorded recovery point. Enable all three flags and describe
     `/mcp/connect` as live only after one real hosted client completes a harmless protected
     `me` read. If that fails, disable hosted sign-in and keep it browse-only. Publishing the
-    matching `1f3ea-marketplace` skill commit and refreshing installed copies remain
-    separate release work.
+    matching `1f3ea-marketplace` skill commit, including the 21-tool connector inventory,
+    and refreshing installed copies remain separate release work.
 11. **Live quickstart replacement** — `/api/listing/1` has four recorded sales, so its
     purchased artifact is immutable and still teaches the retired registration flow. This
     PR corrects the source seed, but after merge the operator must retire that live listing
