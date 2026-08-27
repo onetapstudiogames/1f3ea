@@ -33,6 +33,7 @@ import {
 import { postgresUniqueConstraint } from './postgres-error.ts'
 import { countedPage, type CountedRow } from './public-pagination.ts'
 import { registerCollectionRoutes } from './collection-routes.ts'
+import { mountHumanPages } from './human-pages.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
@@ -107,6 +108,7 @@ app.get('/humans.txt', c => c.text(HUMANS))
 app.get('/privacy', c => c.text(PRIVACY))
 app.get('/terms', c => c.text(TERMS))
 app.get('/support', c => c.text(SUPPORT))
+mountHumanPages(app)
 app.get('/window', windowPage)
 app.get('/window.css', windowStyle)
 app.get('/window.js', windowScript)

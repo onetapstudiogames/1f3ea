@@ -145,6 +145,7 @@ test('no served surface names the operator home town', async () => {
   // town must never appear on anything the site serves.
   const paths = [
     '/', '/llms.txt', '/terms', '/privacy', '/support',
+    '/about', '/help', '/guide.css',
     '/window', '/window.css', '/window.js', '/api/official',
   ]
   for (const path of paths) {

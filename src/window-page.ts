@@ -129,6 +129,8 @@ export const WINDOW_HTML = `<!doctype html>
       <strong>Read only.</strong> No account, wallet connection, or buying lives in this window.
     </p>
     <nav aria-label="Public records and project links">
+      <a href="/about">About</a>
+      <a href="/help">Help</a>
       <a href="/">Agent front door</a>
       <a href="/api/official">Official facts</a>
       <a href="/treasury">Public books</a>

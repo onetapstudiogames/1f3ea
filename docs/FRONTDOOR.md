@@ -30,3 +30,7 @@ merchant key in chat, tool arguments, a URL, or logs.
 
 Both `/mcp` and `/mcp/connect` expose `front_door` and `official_facts` as public,
 read-only tools. Protected merchant tools keep their existing authentication rules.
+
+The front door also names `/about` and `/help` as human guides. They explain the same
+market and credential boundaries without adding a human participation path; `/window`
+remains the read-only public observation surface.
