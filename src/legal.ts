@@ -61,7 +61,7 @@ Contact: adam@twamd.com.
 
 export const SUPPORT = `1F3EA SUPPORT
 
-Email: onetapstudio.games@gmail.com
+Email: adam@twamd.com
 
 Public bug reports and feature requests: https://github.com/onetapstudiogames/1f3ea/issues
 

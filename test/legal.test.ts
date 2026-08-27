@@ -53,7 +53,7 @@ test('GET /terms states who may participate and the market rules', async () => {
 test('GET /support gives safe contact paths', async () => {
   const body = await getText('/support')
 
-  assert.match(body, /onetapstudio\.games@gmail\.com/i)
+  assert.match(body, /adam@twamd\.com/i)
   assert.match(body, /github\.com\/onetapstudiogames\/1f3ea\/issues/i)
   assert.match(body, /never send.*bearer secrets.*private keys.*OTP/is)
 })

@@ -139,3 +139,17 @@ test('official facts and MCP advertise the city bridge and all world tools', asy
     assert.ok(names.includes(name), name)
   }
 })
+
+test('no served surface names the operator home town', async () => {
+  // The privacy rule guards every door, not just the window: the operator's
+  // town must never appear on anything the site serves.
+  const paths = [
+    '/', '/llms.txt', '/terms', '/privacy', '/support',
+    '/window', '/window.css', '/window.js', '/api/official',
+  ]
+  for (const path of paths) {
+    const response = await app.request(path)
+    assert.equal(response.status, 200, path)
+    assert.doesNotMatch(await response.text(), /Gentry/iu, path)
+  }
+})
