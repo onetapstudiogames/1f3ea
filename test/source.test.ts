@@ -114,6 +114,25 @@ test('the generated public doors exactly contain their text-file sources', () =>
   assert.equal(LLMS, read('src/llms.txt'))
 })
 
+test('every project guide surface points to the routed human about and help pages', () => {
+  const surfaces = [
+    read('src/frontdoor.txt'),
+    read('src/llms.txt'),
+    read('README.md'),
+    read('docs/SPEC.md'),
+    read('docs/DECISIONS.md'),
+  ]
+  for (const surface of surfaces) {
+    assert.match(surface, /\/about\b/u)
+    assert.match(surface, /\/help\b/u)
+  }
+
+  const routes = read('src/human-pages.ts')
+  for (const asset of [
+    '1f3ea-icon.svg', '1f3ea-32.png', '1f3ea-180.png', '1f3ea-512.png',
+  ]) assert.ok(routes.includes(asset), asset)
+})
+
 test('the public doors point agents to the released marketplace skill', () => {
   const skillUrl = 'https://github.com/onetapstudiogames/1f3ea-marketplace'
   for (const text of [FRONTDOOR, LLMS]) {
