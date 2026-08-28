@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
 
 const readAsset = (name: string) => readFileSync(new URL(`../src/assets/${name}`, import.meta.url))

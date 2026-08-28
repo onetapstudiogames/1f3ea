@@ -83,7 +83,18 @@ const PAYMENT_FAILURE_GUIDANCE =
   'requirements, or facilitator handling was at fault; do not replace or replay the proof blindly. ' +
   'A terminal refusal with an unrecognized caller-correctable cause is 502; do not retry or replay that proof blindly. ' +
   'A 503 means payment or chain verification is unavailable, including an explicit facilitator failure ' +
-  'that did not match a known caller mistake; retry the same proof and do not pay again. ' +
+  'that did not match a known caller mistake; retry the same proof. payment_preserved:false means no direct fee or ' +
+  'claim transaction was stored: check the wallet and retry that same proof inside its original window instead of ' +
+  'blindly paying again. do_not_pay_again:true means the market stored or may have settled that payment; follow only ' +
+  'the exact retry action in the response. For x402, the verified proof and exact paid request are saved before ' +
+  'the facilitator is asked to settle. Once saved, retry the same endpoint with the same body; omit X-PAYMENT when ' +
+  'do_not_pay_again is true, and never create or pay a replacement proof. Delivery waits until the exact transfer is ' +
+  'in a canonical finalized Base block. Changing a paid listing body creates a different request that the saved ' +
+  'payment cannot satisfy. ' +
+  'Each facilitator verification and settlement ' +
+  'request has its own eight-second deadline. A verification timeout happens before settlement starts: retry the ' +
+  'same request with the same proof. A settlement timeout may leave the result uncertain: retry the same endpoint ' +
+  'and body, omit X-PAYMENT when do_not_pay_again is true, and do not pay again. ' +
   'A pending or duplicate settlement is 503; retry the same proof and do not pay again.'
 
 const TOOLS: ToolDef[] = [
@@ -185,7 +196,10 @@ const TOOLS: ToolDef[] = [
     name: 'list_item',
     description:
       'Create a listing ($1 USDC fee, with no daily listing cap). Without payment this returns the x402 payment ' +
-      'requirements; pay them with an x402 client, or send USDC directly to the treasury and pass fee_tx_hash. ' +
+      'requirements; pay them with an x402 client, or send at least 1 USDC from seller_wallet directly to the treasury ' +
+      'and pass fee_tx_hash. The first exact listing request fixes an inclusive one-hour transfer block-time window ' +
+      'ending when that request began. Finality may arrive later; after the matching transaction is stored, retry the ' +
+      'same listing body and fee_tx_hash and do not pay again. ' +
       PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
@@ -229,7 +243,8 @@ const TOOLS: ToolDef[] = [
     name: 'list_world',
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
-      'Costs the normal $1 USDC listing fee. Never put a city bearer secret in arguments. ' +
+      'Costs the normal $1 USDC listing fee. A direct fee uses the same fixed one-hour block-time window and exact-body ' +
+      'retry rules as list_item. Never put a city bearer secret in arguments. ' +
       PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
@@ -268,7 +283,12 @@ const TOOLS: ToolDef[] = [
   {
     name: 'sync_world',
     description:
-      'Read the city public offer and mirror a completed ownership transfer or cancellation into the market. ' +
+      'Read the city public offer and mirror a completed ownership transfer or cancellation into the market. After ' +
+      'the city reports claimed, the market independently requires the same Base transfer in its canonical block at ' +
+      'or below the finalized head. Its block time must be at or after reserved_at and strictly before reserved_until; ' +
+      'finality may be observed later. Pending or temporarily unavailable finality writes no purchase: retry this same ' +
+      'sync and do not pay again. Conflicting finalized evidence is preserved as needs_review with no sale; do not pay ' +
+      'again, and repeating this sync only rereads that review state. ' +
       'payment_pending remains locked and writes no purchase; payment_invalid closes the lane without a sale ' +
       'before city unlock. This never takes payment.',
     inputSchema: {
@@ -332,9 +352,12 @@ const TOOLS: ToolDef[] = [
   {
     name: 'buy',
     description:
-      'Buy a listing. Free goods deliver at once. Priced goods return x402 requirements that pay the SELLER ' +
-      'directly; or start a fresh ten-minute direct-payment intent for one payer wallet, then claim with ' +
-      'intent_id, tx_hash, and payer_signature. ' + PAYMENT_FAILURE_GUIDANCE,
+      'Buy an ordinary listing. Free goods deliver at once. Priced goods return x402 requirements that pay Base ' +
+      'USDC directly from the buyer wallet to the SELLER wallet; or start a fresh ten-minute direct-payment intent ' +
+      'for one payer wallet, then claim with intent_id, tx_hash, and payer_signature. The transfer block time and first ' +
+      'claim-request start must be inside the inclusive intent window. Delivery waits for canonical Base finality, which ' +
+      'may arrive after expiry; after the matching transaction is stored, retry the same claim and do not pay again. ' +
+      PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,

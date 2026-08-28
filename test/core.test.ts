@@ -2,7 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dupHash, HANDLE_RE, newSecret, sha256, WALLET_RE } from '../src/core.ts'
 import { toUnits } from '../src/chain.ts'
-import { paymentCustodyReady, requirements } from '../src/pay.ts'
+
+process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+const { paymentCustodyReady, requirements } = await import('../src/pay.ts')
 
 test('secrets are prefixed, long, and unique', () => {
   const a = newSecret()

@@ -93,6 +93,265 @@ test('preview uses only its direct URL and refuses the production endpoint', () 
   )
 })
 
+test('world payment finality is registered for guarded preview and production targets', () => {
+  const preview = resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'world-payment-finality',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment())
+  assert.equal(preview.migrationFile, 'db/migrations/20260827_world_payment_finality.sql')
+  assert.ok(preview.postconditions.some(item => item.kind === 'table' && item.name === 'world_payment_attempts'))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'column' && item.table === 'purchases' && item.name === 'world_payment_attempt_id'))
+  assert.deepEqual(
+    Object.fromEntries(['table', 'column', 'index', 'constraint', 'function', 'trigger'].map(kind => [
+      kind,
+      preview.postconditions.filter(item => item.kind === kind).length,
+    ])),
+    { table: 2, column: 56, index: 11, constraint: 52, function: 14, trigger: 15 },
+  )
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'column' && item.table === 'listing_fee_attempts'
+      && item.name === 'maximum_block_time'))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'function' && item.name === 'claim_payment_use'
+      && item.contains === 'listing_fee_attempt_id'))
+  const moneyDefinitions = preview.postconditions.filter(item =>
+    ['index', 'constraint', 'function', 'trigger'].includes(item.kind))
+  assert.equal(moneyDefinitions.length, 92)
+  assert.equal(moneyDefinitions.every(item =>
+    'definitionSha256' in item && /^[0-9a-f]{64}$/u.test(item.definitionSha256 ?? '')), true)
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'column' && item.table === 'fees' && item.name === 'verification_method'
+      && item.dataType === 'text' && item.notNull === true
+      && Object.hasOwn(item, 'defaultExpression') && item.defaultExpression === null))
+  for (const name of [
+    'purchases_claim_requires_direct_payment_intent',
+    'fees_new_rows_not_legacy',
+  ]) {
+    assert.ok(preview.postconditions.some(item =>
+      item.kind === 'constraint' && item.name === name && item.validated === false))
+  }
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'index' && item.name === 'world_payment_attempts_tx_owner_unique'
+      && item.unique === true && item.definitionIncludes?.includes('needs_review')))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'constraint' && item.table === 'fees'
+      && item.name === 'fees_verification_method_link'
+      && item.definitionIncludes?.includes('listing_fee_attempt_id is not null')))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'trigger' && item.table === 'purchases'
+      && item.name === 'payment_use_claim' && item.functionName === 'claim_payment_use'
+      && item.enabled === 'O' && item.definitionIncludes?.includes('before insert')))
+
+  const production = resolveReleaseMigration([
+    '--target', 'production',
+    '--migration', 'world-payment-finality',
+    '--database', 'market',
+    '--endpoint', PRODUCTION_HOST,
+  ], productionEnvironment())
+  assert.equal(production.migrationFile, preview.migrationFile)
+})
+
+test('x402 payment attempts are registered for guarded preview and production targets', () => {
+  const preview = resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'x402-payment-attempts',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment())
+
+  assert.equal(preview.migrationFile, 'db/migrations/20260828_x402_payment_attempts.sql')
+  const expectedObjectIds = [
+    'table:x402_payment_attempts',
+    'column:x402_payment_attempts.operation_key',
+    'column:x402_payment_attempts.operation_kind',
+    'column:x402_payment_attempts.proof_digest',
+    'column:x402_payment_attempts.requirements_digest',
+    'column:x402_payment_attempts.network',
+    'column:x402_payment_attempts.asset',
+    'column:x402_payment_attempts.payer_wallet',
+    'column:x402_payment_attempts.payee_wallet',
+    'column:x402_payment_attempts.amount_units',
+    'column:x402_payment_attempts.resource',
+    'column:x402_payment_attempts.authorization_nonce',
+    'column:x402_payment_attempts.authorization_valid_after',
+    'column:x402_payment_attempts.authorization_valid_before',
+    'column:x402_payment_attempts.start_block',
+    'column:x402_payment_attempts.status',
+    'column:x402_payment_attempts.tx_hash',
+    'column:x402_payment_attempts.review_reason',
+    'column:x402_payment_attempts.operation_started_at',
+    'column:x402_payment_attempts.settlement_started_at',
+    'column:x402_payment_attempts.settled_at',
+    'column:x402_payment_attempts.finalized_block_number',
+    'column:x402_payment_attempts.finalized_block_hash',
+    'column:x402_payment_attempts.finalized_block_time',
+    'column:x402_payment_attempts.finalized_at',
+    'column:x402_payment_attempts.created_at',
+    'column:x402_payment_attempts.updated_at',
+    'column:fees.x402_payment_operation_key',
+    'column:purchases.x402_payment_operation_key',
+    'column:payment_uses.x402_payment_operation_key',
+    'index:x402_payment_attempts.x402_payment_attempts_reconcile',
+    'index:fees.fees_x402_payment_attempt_unique',
+    'index:purchases.purchases_x402_payment_attempt_unique',
+    'index:payment_uses.payment_uses_x402_payment_attempt_unique',
+    'constraint:x402_payment_attempts.x402_payment_attempts_pkey',
+    'constraint:x402_payment_attempts.x402_payment_attempts_operation_key_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_operation_kind_allowed',
+    'constraint:x402_payment_attempts.x402_payment_attempts_proof_digest_key',
+    'constraint:x402_payment_attempts.x402_payment_attempts_proof_digest_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_requirements_digest_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_network_base',
+    'constraint:x402_payment_attempts.x402_payment_attempts_asset_usdc',
+    'constraint:x402_payment_attempts.x402_payment_attempts_payer_wallet_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_payee_wallet_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_amount_range',
+    'constraint:x402_payment_attempts.x402_payment_attempts_resource_size',
+    'constraint:x402_payment_attempts.x402_payment_attempts_nonce_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_status_allowed',
+    'constraint:x402_payment_attempts.x402_payment_attempts_tx_hash_key',
+    'constraint:x402_payment_attempts.x402_payment_attempts_tx_hash_shape',
+    'constraint:x402_payment_attempts.x402_payment_attempts_review_reason_size',
+    'constraint:x402_payment_attempts.x402_payment_attempts_authorization_owner',
+    'constraint:x402_payment_attempts.x402_payment_attempts_authorization_window',
+    'constraint:x402_payment_attempts.x402_payment_attempts_operation_overlap',
+    'constraint:x402_payment_attempts.x402_payment_attempts_finality_complete',
+    'constraint:x402_payment_attempts.x402_payment_attempts_finality_anchor',
+    'constraint:x402_payment_attempts.x402_payment_attempts_state_facts',
+    'constraint:x402_payment_attempts.x402_payment_attempts_time_order',
+    'constraint:fees.fees_x402_payment_attempt_fk',
+    'constraint:fees.fees_x402_requires_payment_attempt',
+    'constraint:purchases.purchases_x402_payment_attempt_fk',
+    'constraint:purchases.purchases_x402_requires_payment_attempt',
+    'constraint:payment_uses.payment_uses_x402_payment_attempt_fk',
+    'constraint:payment_uses.payment_uses_one_durable_owner_v2',
+    'function:protect_x402_payment_attempt_history',
+    'function:protect_x402_result_link',
+    'function:validate_x402_result_link',
+    'function:protect_linked_payment_use',
+    'function:claim_payment_use',
+    'function:reserve_x402_payment_attempt_use',
+    'function:validate_x402_payment_attempt_use',
+    'trigger:x402_payment_attempts.x402_payment_attempts_keep_history',
+    'trigger:fees.fees_x402_payment_attempt_match',
+    'trigger:fees.fees_x402_result_link_immutable',
+    'trigger:purchases.purchases_x402_payment_attempt_match',
+    'trigger:purchases.purchases_x402_result_link_immutable',
+    'trigger:payment_uses.linked_payment_use_immutable',
+    'trigger:x402_payment_attempts.x402_payment_attempt_reserve_use',
+    'trigger:x402_payment_attempts.x402_payment_attempt_use_matches',
+    'trigger:purchases.payment_use_claim',
+    'trigger:fees.payment_use_claim',
+  ].sort()
+  const objectId = (item: typeof preview.postconditions[number]): string =>
+    item.kind === 'table' || item.kind === 'function'
+      ? `${item.kind}:${item.name}`
+      : `${item.kind}:${item.table}.${item.name}`
+  assert.deepEqual(preview.postconditions.map(objectId).sort(), expectedObjectIds)
+  assert.deepEqual(
+    Object.fromEntries(['table', 'column', 'index', 'constraint', 'function', 'trigger'].map(kind => [
+      kind,
+      preview.postconditions.filter(item => item.kind === kind).length,
+    ])),
+    { table: 1, column: 29, index: 4, constraint: 30, function: 7, trigger: 10 },
+  )
+  const definitionObjects = preview.postconditions.filter(item =>
+    item.kind === 'index' || item.kind === 'constraint'
+      || item.kind === 'function' || item.kind === 'trigger')
+  assert.equal(definitionObjects.length, 51)
+  assert.deepEqual(
+    definitionObjects.map(objectId).sort(),
+    expectedObjectIds.filter(id => /^(?:index|constraint|function|trigger):/u.test(id)),
+  )
+  assert.equal(definitionObjects.every(item =>
+    /^[0-9a-f]{64}$/u.test(item.definitionSha256 ?? '')), true)
+  assert.equal(preview.postconditions.filter(item => item.kind === 'column').every(item =>
+    typeof item.dataType === 'string' && typeof item.notNull === 'boolean'), true)
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'column' && item.table === 'x402_payment_attempts'
+      && item.name === 'status' && item.dataType === 'text' && item.notNull === true
+      && item.defaultExpression === "'settling'::text"))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'index' && item.name === 'x402_payment_attempts_reconcile'
+      && [
+        '(updated_at, operation_key)', 'where', "'settling'::text", "'settled'::text",
+        "'needs_review'::text", 'finalized_block_number is null',
+      ]
+        .every(fragment => item.definitionIncludes?.includes(fragment))))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'constraint' && item.name === 'x402_payment_attempts_finality_complete'
+      && [
+        'finalized_block_number is null', 'finalized_block_hash is null',
+        'finalized_block_time is null', 'finalized_at is null',
+        'finalized_block_number is not null',
+        "finalized_block_hash ~ '^0x[0-9a-f]{64}$'::text",
+      ].every(fragment => item.definitionIncludes?.includes(fragment))))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'constraint' && item.name === 'x402_payment_attempts_state_facts'
+      && [
+        "status = 'settled'::text", "status = 'verified'::text",
+        'finalized_block_number is not null',
+      ].every(fragment => item.definitionIncludes?.includes(fragment))))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'constraint' && item.name === 'x402_payment_attempts_time_order'
+      && [
+        'operation_started_at <= settlement_started_at',
+        'finalized_at >= finalized_block_time',
+      ].every(fragment => item.definitionIncludes?.includes(fragment))))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'function' && item.name === 'protect_x402_payment_attempt_history'
+      && [
+        "old.status = 'verified'", 'old.finalized_block_number is not null',
+        'new.operation_started_at',
+      ].every(fragment => item.containsAll?.includes(fragment))))
+  assert.ok(preview.postconditions.some(item =>
+    item.kind === 'trigger' && item.table === 'x402_payment_attempts'
+      && item.name === 'x402_payment_attempts_keep_history'
+      && item.functionName === 'protect_x402_payment_attempt_history'
+      && item.enabled === 'O'
+      && ['before', 'update', 'delete']
+        .every(fragment => item.definitionIncludes?.includes(fragment))))
+  for (const name of [
+    'fees_x402_payment_attempt_fk', 'fees_x402_requires_payment_attempt',
+    'purchases_x402_payment_attempt_fk', 'purchases_x402_requires_payment_attempt',
+  ]) {
+    assert.ok(preview.postconditions.some(item =>
+      item.kind === 'constraint' && item.name === name && item.validated === false))
+  }
+  for (const [table, name] of [
+    ['fees', 'fees_x402_payment_attempt_match'],
+    ['purchases', 'purchases_x402_payment_attempt_match'],
+  ]) {
+    assert.ok(preview.postconditions.some(item =>
+      item.kind === 'trigger' && item.table === table && item.name === name
+      && item.functionName === 'validate_x402_result_link' && item.deferred === true))
+  }
+
+  const production = resolveReleaseMigration([
+    '--target', 'production',
+    '--migration', 'x402-payment-attempts',
+    '--database', 'market',
+    '--endpoint', PRODUCTION_HOST,
+  ], productionEnvironment())
+  assert.equal(production.migrationFile, preview.migrationFile)
+
+  assert.throws(
+    () => resolveReleaseMigration([
+      '--target', 'preview',
+      '--migration', 'x402-payment-attempt',
+      '--database', 'market_preview',
+      '--endpoint', PREVIEW_HOST,
+      '--production-endpoint', PRODUCTION_HOST,
+    ], previewEnvironment()),
+    /--migration.*x402-payment-attempts/i,
+  )
+})
+
 test('production needs its own exact acknowledgement and target facts', () => {
   const args = [
     '--target', 'production',
@@ -200,17 +459,29 @@ test('execution proves the connected database before one transaction and checks 
       calls.push('identify')
       return { databaseName: 'market_preview' }
     },
-    async migrate(statements) {
-      calls.push(`migrate:${statements.length}`)
-    },
-    async missingPostconditions(postconditions) {
-      calls.push(`verify:${postconditions.length}`)
-      return []
+    async inspect() { return [] },
+    async transaction(operation) {
+      calls.push('transaction:begin')
+      try {
+        const result = await operation(async text => {
+          calls.push(text.startsWith('SELECT') ? 'verify:query' : 'migrate:query')
+          return text.startsWith('SELECT') ? [{ present: true }] : []
+        })
+        calls.push('transaction:commit')
+        return result
+      } catch (error) {
+        calls.push('transaction:rollback')
+        throw error
+      }
     },
   }
 
   const result = await executeReleaseMigration(run, database)
-  assert.deepEqual(calls.map(call => call.split(':')[0]), ['identify', 'migrate', 'verify'])
+  assert.equal(calls[0], 'identify')
+  assert.equal(calls[1], 'transaction:begin')
+  assert.ok(calls.includes('migrate:query'))
+  assert.ok(calls.includes('verify:query'))
+  assert.equal(calls.at(-1), 'transaction:commit')
   assert.ok(result.statementCount > 0)
   assert.ok(result.postconditionCount > 0)
 })
@@ -225,38 +496,96 @@ test('execution refuses a connected database mismatch before applying SQL', asyn
   let migrated = false
   const database: MigrationDatabase = {
     async identify() { return { databaseName: 'market_preview' } },
-    async migrate() { migrated = true },
-    async missingPostconditions() { return [] },
+    async inspect() { throw new Error('inspection must not run') },
+    async transaction<T>(): Promise<T> {
+      migrated = true
+      throw new Error('transaction must not run')
+    },
   }
 
   await assert.rejects(() => executeReleaseMigration(run, database), /connected database.*market_preview/i)
   assert.equal(migrated, false)
 })
 
-test('execution fails if any required object is absent after the transaction', async () => {
+test('x402 execution names its required migration before opening a transaction', async () => {
+  const run = resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'x402-payment-attempts',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment())
+  const calls: string[] = []
+  const database: MigrationDatabase = {
+    async identify() {
+      calls.push('identify')
+      return { databaseName: 'market_preview' }
+    },
+    async inspect() {
+      calls.push('inspect')
+      return [{ present: false }]
+    },
+    async transaction<T>(): Promise<T> {
+      calls.push('transaction')
+      throw new Error('transaction must not run')
+    },
+  }
+
+  await assert.rejects(
+    () => executeReleaseMigration(run, database),
+    /x402-payment-attempts requires world-payment-finality.*first/i,
+  )
+  assert.equal(calls[0], 'identify')
+  assert.ok(calls.includes('inspect'))
+  assert.equal(calls.includes('transaction'), false)
+})
+
+test('execution rolls back if any required object is absent before commit', async () => {
   const run = resolveReleaseMigration([
     '--target', 'production',
     '--migration', 'hosted-market-signin',
     '--database', 'market',
     '--endpoint', PRODUCTION_HOST,
   ], productionEnvironment())
+  const calls: string[] = []
   const database: MigrationDatabase = {
     async identify() { return { databaseName: 'market' } },
-    async migrate() {},
-    async missingPostconditions() { return ['table:oauth_tokens'] },
+    async inspect() { return [] },
+    async transaction(operation) {
+      calls.push('begin')
+      try {
+        const result = await operation(async text => {
+          if (!text.startsWith('SELECT')) {
+            calls.push('migration-change')
+            return []
+          }
+          return [{ present: false }]
+        })
+        calls.push('commit')
+        return result
+      } catch (error) {
+        calls.push('rollback')
+        throw error
+      }
+    },
   }
 
   await assert.rejects(
     () => executeReleaseMigration(run, database),
-    /migration postconditions failed.*oauth_tokens/i,
+    /migration postconditions failed/i,
   )
+  assert.ok(calls.includes('migration-change'))
+  assert.equal(calls.at(-1), 'rollback')
+  assert.equal(calls.includes('commit'), false)
 })
 
 test('release SQL is additive and each delta matches the live schema contract', async () => {
-  const [direct, oauth, identity] = await Promise.all([
+  const [direct, oauth, identity, worldFinality, x402Attempts] = await Promise.all([
     readFile(new URL('../db/migrations/20260823_direct_payments.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260822_hosted_market_signin.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260827_market_identity.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../db/migrations/20260827_world_payment_finality.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../db/migrations/20260828_x402_payment_attempts.sql', import.meta.url), 'utf8'),
   ])
   assert.match(direct, /CREATE TABLE IF NOT EXISTS direct_purchase_intents/)
   assert.match(direct, /ADD COLUMN IF NOT EXISTS direct_purchase_intent_id/)
@@ -265,7 +594,11 @@ test('release SQL is additive and each delta matches the live schema contract', 
   assert.match(identity, /ADD COLUMN IF NOT EXISTS recovery_generation/)
   assert.match(identity, /CREATE TABLE IF NOT EXISTS pending_merchant_registrations/)
   assert.match(identity, /CREATE TABLE IF NOT EXISTS oauth_authorization_request_recovery_codes/)
-  for (const sql of [direct, oauth, identity]) {
+  assert.match(worldFinality, /CREATE TABLE IF NOT EXISTS world_payment_attempts/)
+  assert.match(worldFinality, /ADD COLUMN IF NOT EXISTS world_payment_attempt_id/)
+  assert.match(x402Attempts, /CREATE TABLE IF NOT EXISTS x402_payment_attempts/)
+  assert.match(x402Attempts, /CREATE TRIGGER x402_payment_attempts_keep_history/)
+  for (const sql of [direct, oauth, identity, worldFinality, x402Attempts]) {
     assert.doesNotMatch(sql, /\b(?:DROP TABLE|DROP COLUMN|TRUNCATE|DELETE FROM)\b/i)
     assert.doesNotMatch(sql, /^\s*(?:BEGIN|COMMIT|ROLLBACK)\s*;\s*$/im)
   }
@@ -299,6 +632,10 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(scripts['migrate:production:hosted-market-signin'] ?? '', /--target production --migration hosted-market-signin$/)
   assert.match(scripts['migrate:preview:market-identity'] ?? '', /--target preview --migration market-identity$/)
   assert.match(scripts['migrate:production:market-identity'] ?? '', /--target production --migration market-identity$/)
+  assert.match(scripts['migrate:preview:world-payment-finality'] ?? '', /--target preview --migration world-payment-finality$/)
+  assert.match(scripts['migrate:production:world-payment-finality'] ?? '', /--target production --migration world-payment-finality$/)
+  assert.match(scripts['migrate:preview:x402-payment-attempts'] ?? '', /--target preview --migration x402-payment-attempts$/)
+  assert.match(scripts['migrate:production:x402-payment-attempts'] ?? '', /--target production --migration x402-payment-attempts$/)
 
   assert.match(runbook, /PREVIEW_DATABASE_URL_UNPOOLED/)
   assert.match(runbook, /PRODUCTION_DATABASE_URL_UNPOOLED/)
@@ -313,4 +650,23 @@ test('package and runbook expose separate guarded preview and production command
     runbook.indexOf('migrate:preview:direct-payments') <
     runbook.indexOf('migrate:production:direct-payments'),
   )
+  assert.match(runbook, /migrate:preview:world-payment-finality/)
+  assert.match(runbook, /migrate:production:world-payment-finality/)
+  assert.match(runbook, /migrate:preview:x402-payment-attempts/)
+  assert.match(runbook, /migrate:production:x402-payment-attempts/)
+  assert.ok(
+    runbook.indexOf('migrate:preview:world-payment-finality') <
+    runbook.indexOf('migrate:preview:x402-payment-attempts'),
+  )
+  assert.ok(
+    runbook.indexOf('migrate:production:world-payment-finality') <
+    runbook.indexOf('migrate:production:x402-payment-attempts'),
+  )
+  assert.match(runbook, /PAYMENT_CUSTODY_READY/)
+  assert.match(runbook, /503 before facilitator, Base, or new payment-table work/)
+  assert.match(runbook, /prior deployment inactive/)
+  assert.match(runbook, /every table, column, index, constraint, trigger, and\s+trigger function present/)
+  assert.match(runbook, /fees\.verification_method/)
+  assert.match(runbook, /no prior-deployment invocation\s+for one full provider maximum function duration/)
+  assert.match(runbook, /semantic runner postcondition/)
 })

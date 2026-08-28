@@ -182,16 +182,20 @@ test('every literal SQL row cap in the whole source tree matches the audited non
     return limits.length ? [[path, limits]] : []
   }))
   assert.deepEqual(actual, {
+    'src/artifact-listing-routes.ts': ['LIMIT 1'],
     'src/market-identity-progress-store.ts': ['LIMIT 2'],
     'src/market-identity-store.ts': ['LIMIT 1', 'LIMIT 1'],
     'src/market-oauth-store.ts': [
       'LIMIT 1', 'LIMIT 1', 'LIMIT 1',
       'LIMIT 50', 'LIMIT 50', 'LIMIT 50', 'LIMIT 50',
     ],
-    'src/world-routes.ts': ['LIMIT 1'],
+    'src/world-payment-sync.ts': ['LIMIT 1'],
+    'src/x402-payment-attempts.ts': ['LIMIT 1', 'LIMIT 1'],
   })
 
   const identityStore = read('src/market-identity-store.ts')
+  const marketRoutes = read('src/artifact-listing-routes.ts')
+  assert.match(marketRoutes, /\/\* x402-listing:completed \*\/[\s\S]*?LIMIT 1/)
   const identityProgressStore = read('src/market-identity-progress-store.ts')
   assert.match(identityProgressStore, /getMerchantRotationProgress[\s\S]*?LIMIT 2/)
   assert.match(identityStore, /getMerchantRegistrationProgress[\s\S]*?LIMIT 1/)
@@ -200,7 +204,7 @@ test('every literal SQL row cap in the whole source tree matches the audited non
   assert.match(oauthStore, /getAuthorizationRequest[\s\S]*?LIMIT 1/)
   assert.match(oauthStore, /getAuthorizationCode[\s\S]*?LIMIT 1/)
   assert.equal((oauthStore.match(/retired_(?:codes|requests|tokens|families)[\s\S]*?LIMIT 50/g) ?? []).length, 4)
-  assert.match(read('src/world-routes.ts'), /priorWorldPurchase[\s\S]*?LIMIT 1/)
+  assert.match(read('src/world-payment-sync.ts'), /priorWorldPurchase[\s\S]*?LIMIT 1/)
 })
 
 test('public market text teaches the fresh signed direct-payment flow, not tx-hash-only replay', () => {
@@ -211,6 +215,57 @@ test('public market text teaches the fresh signed direct-payment flow, not tx-ha
     assert.match(text, /intent_id/i)
     assert.match(text, /payer_signature/i)
     assert.doesNotMatch(text, /POST .*\/api\/claim\/:id\s+\{"tx_hash"\}/i)
+  }
+})
+
+test('served and mirrored payment text contains no unimplemented payment rail', () => {
+  const surfaces = [
+    read('README.md'),
+    read('docs/SPEC.md'),
+    read('docs/DECISIONS.md'),
+    read('src/frontdoor.txt'),
+    read('src/door.ts'),
+    read('src/llms.txt'),
+    read('src/mcp.ts'),
+    read('src/legal.ts'),
+  ]
+  for (const surface of surfaces) {
+    assert.doesNotMatch(surface, /voucher|city[ -]?credit|phase[ -]?c|credit rail|coming soon/iu)
+  }
+})
+
+test('caller payment contracts state finality windows and safe retries before use', () => {
+  for (const surface of [FRONTDOOR, LLMS, read('src/mcp.ts')]) {
+    assert.match(surface, /one-hour|inclusive (?:one-)?hour/iu)
+    assert.match(surface, /finalized head|Base finality/iu)
+    assert.match(surface, /eight-second/iu)
+    assert.match(surface, /do_not_pay_again/iu)
+    assert.match(surface, /payment_preserved/iu)
+  }
+
+  for (const surface of [read('README.md'), read('docs/SPEC.md'), read('docs/DECISIONS.md')]) {
+    assert.match(surface,
+      /buyer wallet.*seller wallet|buyer.*directly.*seller|wallet-to-wallet.*buyer to seller/isu)
+    assert.match(surface, /one-hour|one hour/iu)
+    assert.match(surface, /finalized head|canonical finalized/iu)
+    assert.match(surface, /do not pay again|do_not_pay_again|without paying again|never paid again/iu)
+  }
+})
+
+test('caller x402 contracts explain saved-payment retries before payment use', () => {
+  for (const surface of [FRONTDOOR, LLMS, read('src/mcp.ts')]) {
+    assert.match(surface, /verified[\s\S]{0,100}(?:saved|stored)[\s\S]{0,100}before[\s\S]{0,100}settle/iu)
+    assert.match(surface, /same\s+(?:endpoint|request)[\s\S]{0,100}(?:body|operation)/iu)
+    assert.match(surface, /without X-PAYMENT|omit X-PAYMENT/iu)
+    assert.match(surface, /canonical[\s\S]{0,60}finalized[\s\S]{0,60}Base/iu)
+    assert.match(surface, /do_not_pay_again/iu)
+  }
+
+  for (const surface of [read('README.md'), read('docs/SPEC.md'), read('docs/DECISIONS.md')]) {
+    assert.match(surface, /verified[\s\S]{0,100}(?:saved|stored)[\s\S]{0,100}before[\s\S]{0,100}settle/iu)
+    assert.match(surface, /same\s+(?:endpoint|request)[\s\S]{0,100}(?:body|operation)/iu)
+    assert.match(surface, /canonical[\s\S]{0,60}finalized[\s\S]{0,60}Base/iu)
+    assert.match(surface, /do not pay again|do_not_pay_again/iu)
   }
 })
 
@@ -273,7 +328,7 @@ test('payment hashes are canonical and case-insensitively unique in both money t
 
 test('direct purchase intents are private, short-lived, exact, and claimed once', () => {
   const schema = read('db/schema.sql')
-  const index = read('src/index.ts')
+  const purchaseRoutes = read('src/artifact-purchase-routes.ts')
   assert.match(schema, /CREATE TABLE IF NOT EXISTS direct_purchase_intents/)
   assert.match(schema, /merchant_id[\s\S]*listing_id[\s\S]*payer_wallet[\s\S]*seller_wallet/)
   assert.match(schema, /network[\s\S]*asset[\s\S]*minimum_amount_usdc/)
@@ -284,8 +339,8 @@ test('direct purchase intents are private, short-lived, exact, and claimed once'
   assert.match(schema, /direct_purchase_intent_id/)
   assert.match(schema, /purchases_direct_intent_listing_fk[\s\S]*FOREIGN KEY \(listing_id, direct_purchase_intent_id\)[\s\S]*REFERENCES direct_purchase_intents\(listing_id, id\)/)
   assert.match(schema, /purchases_direct_intent_unique/)
-  assert.match(index, /INSERT INTO direct_purchase_intents[\s\S]*ON CONFLICT \(merchant_id, listing_id\) DO UPDATE/)
-  assert.match(index, /direct_purchase_intents\.claimed_at IS NULL[\s\S]*direct_purchase_intents\.expires_at <= EXCLUDED\.created_at/)
+  assert.match(purchaseRoutes, /INSERT INTO direct_purchase_intents[\s\S]*ON CONFLICT \(merchant_id, listing_id\) DO UPDATE/)
+  assert.match(purchaseRoutes, /direct_purchase_intents\.claimed_at IS NULL[\s\S]*direct_purchase_intents\.expires_at <= EXCLUDED\.created_at/)
 })
 
 test('schema migrations run as one transaction', () => {
@@ -377,16 +432,16 @@ test('the human window browser matrix is installed and part of the release gate'
 
 test('listing edits and public edit receipts share one changed-field allowlist', () => {
   const market = read('src/market.ts')
-  const index = read('src/index.ts')
+  const listingRoutes = read('src/artifact-listing-routes.ts')
   const windowRoute = read('src/window.ts')
   const windowClient = read('src/window-client.ts')
 
   assert.match(market, /export const EDITABLE_LISTING_FIELDS\s*=\s*\[/)
-  assert.match(index, /import \{[\s\S]*EDITABLE_LISTING_FIELDS[\s\S]*\} from '\.\/market\.ts'/)
-  assert.doesNotMatch(index, /^const EDITABLE_LISTING_FIELDS\s*=/m)
+  assert.match(listingRoutes, /import \{[\s\S]*EDITABLE_LISTING_FIELDS[\s\S]*\} from '\.\/market\.ts'/)
+  assert.doesNotMatch(listingRoutes, /^const EDITABLE_LISTING_FIELDS\s*=/m)
   assert.match(windowRoute, /EDITABLE_LISTING_FIELDS/)
   assert.match(windowClient, /EDITABLE_LISTING_FIELDS/)
-  assert.doesNotMatch([market, index, windowRoute, windowClient].join('\n'), /PUBLIC_LISTING_CHANGED_FIELDS/)
+  assert.doesNotMatch([market, listingRoutes, windowRoute, windowClient].join('\n'), /PUBLIC_LISTING_CHANGED_FIELDS/)
 })
 
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {

@@ -2,6 +2,7 @@
 // They never use a live service, bearer secret, wallet, transaction, or database.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { setTimeout as delay } from 'node:timers/promises'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
@@ -12,8 +13,26 @@ const SELLER = '0x1111111111111111111111111111111111111111'
 const BUYER_WALLET = '0x2222222222222222222222222222222222222222'
 const TREASURY = process.env.TREASURY_ADDRESS
 const TX = '0x' + '31'.repeat(32)
+const X402_NONCE = '0x' + '42'.repeat(32)
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+const AUTHORIZATION_USED_TOPIC = '0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5'
+const X402_PAYMENT = Buffer.from(JSON.stringify({
+  x402Version: 1,
+  scheme: 'exact',
+  network: 'base',
+  payload: {
+    signature: '0x' + 'ab'.repeat(65),
+    authorization: {
+      from: SELLER,
+      to: TREASURY,
+      value: '1000000',
+      validAfter: '0',
+      validBefore: '4102444800',
+      nonce: X402_NONCE,
+    },
+  },
+})).toString('base64')
 
 interface DbCall { query: string; params: unknown[] }
 
@@ -21,6 +40,58 @@ interface PostgresErrorFixture {
   code: string
   constraint?: string
   nested?: boolean
+}
+
+interface ListingFeeAttemptFixture extends Record<string, unknown> {
+  id: number
+  merchant_id: number
+  listing_id: number | null
+  tx_hash: string
+  fee_request_kind: 'world_listing'
+  fee_request_hash: string
+  payer_wallet: string
+  payee_wallet: string
+  asset: string
+  minimum_block_time: string
+  maximum_block_time: string
+  payment_status: 'payment_pending' | 'completed' | 'needs_review'
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  payment_review_reason: string | null
+  world_draft_id: number
+  world_offer_id: number
+  world_seller_handle: string
+}
+
+interface X402PaymentAttemptFixture extends Record<string, unknown> {
+  operation_key: string
+  operation_kind: 'world_listing_fee'
+  proof_digest: string
+  requirements_digest: string
+  network: 'base'
+  asset: string
+  payee_wallet: string
+  amount_units: string
+  resource: string
+  status: 'settling' | 'settled' | 'verified' | 'needs_review'
+  tx_hash: string | null
+  payer_wallet: string
+  authorization_nonce: string
+  authorization_valid_after: string
+  authorization_valid_before: string
+  start_block: string
+  review_reason: string | null
+  operation_started_at: string
+  settlement_started_at: string
+  settled_at: string | null
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 const state = {
@@ -42,16 +113,24 @@ const state = {
   listingWithdrawn: false,
   listingWithdrawnAt: null as string | null,
   checkoutInsertError: null as PostgresErrorFixture | null,
+  checkoutReadError: false,
   purchaseInsertError: null as PostgresErrorFixture | null,
   purchaseConflictWritesReceipt: false,
   checkoutStatus: 'active',
+  checkoutCreatedAt: '2026-08-12T00:02:00.000Z',
   checkoutExpiresAt: '2099-08-12T00:10:00.000Z',
   checkoutMerchantId: 9,
   checkoutMarketBuyer: 'agent-9',
   checkoutCityHandle: 'new-neighbor',
   cityMarketBuyer: 'agent-9',
   priorReceipt: null as Record<string, unknown> | null,
-  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'unknown-phase' | 'canceled' | 'claimed',
+  worldAttempt: null as Record<string, unknown> | null,
+  worldReviewWriteError: false,
+  worldReviewWriteNoop: false,
+  listingFeeAttempt: null as ListingFeeAttemptFixture | null,
+  x402Attempt: null as X402PaymentAttemptFixture | null,
+  attemptReserveError: null as PostgresErrorFixture | null,
+  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'unknown-phase' | 'canceled' | 'claimed',
   cityStreamPulls: 0,
   cityStreamCanceled: false,
   cityReservedAt: '2026-08-12T00:04:00.000Z',
@@ -64,8 +143,14 @@ const state = {
   rpcCalls: 0,
   rpcUnavailable: false,
   rpcReceiptMissing: false,
+  rpcFinalized: true,
+  rpcCanonical: true,
+  rpcListingFeeBlockTime: null as string | null,
+  rpcWorldAmountUnits: 2_000_000n,
   facilitatorUnavailable: false,
   facilitatorRejectedRequest: false,
+  facilitatorSettlement: 'settled' as 'settled' | 'timeout',
+  facilitatorSettleCalls: 0,
 }
 
 function merchantRow(id = state.merchantId) {
@@ -146,7 +231,7 @@ function checkoutRow() {
     market_buyer: state.checkoutMarketBuyer,
     city_handle: state.checkoutCityHandle,
     expires_at: state.checkoutExpiresAt,
-    created_at: '2026-08-12T00:02:00.000Z',
+    created_at: state.checkoutCreatedAt,
   }
 }
 
@@ -235,28 +320,231 @@ function postgresError(fixture: PostgresErrorFixture, message: string): Error {
 
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
   if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow()] : []
+  if (query.includes('x402-payment-attempt:read-operation')) {
+    return state.x402Attempt?.operation_key === String(params[0]) ? [state.x402Attempt] : []
+  }
+  if (query.includes('x402-payment-attempt:read')) return state.x402Attempt ? [state.x402Attempt] : []
+  if (query.includes('x402-payment-attempt:reserve')) {
+    if (state.x402Attempt) return []
+    const now = '2026-08-28T12:00:00.000Z'
+    state.x402Attempt = {
+      operation_key: String(params[0]),
+      operation_kind: String(params[1]) as 'world_listing_fee',
+      proof_digest: String(params[2]),
+      requirements_digest: String(params[3]),
+      network: 'base',
+      asset: String(params[4]),
+      payee_wallet: String(params[5]),
+      amount_units: String(params[6]),
+      resource: String(params[7]),
+      payer_wallet: String(params[8]),
+      authorization_nonce: String(params[9]),
+      authorization_valid_after: String(params[10]),
+      authorization_valid_before: String(params[11]),
+      start_block: String(params[12]),
+      status: 'settling',
+      tx_hash: null,
+      review_reason: null,
+      operation_started_at: new Date(String(params[13])).toISOString(),
+      settlement_started_at: now,
+      settled_at: null,
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      created_at: now,
+      updated_at: now,
+    }
+    return [state.x402Attempt]
+  }
+  if (query.includes('x402-payment-attempt:review')) {
+    if (state.x402Attempt?.status === 'settling') {
+      state.x402Attempt = {
+        ...state.x402Attempt,
+        status: 'needs_review',
+        review_reason: String(params[2]),
+        updated_at: '2026-08-28T12:00:01.000Z',
+      }
+    }
+    return state.x402Attempt ? [state.x402Attempt] : []
+  }
+  if (query.includes('x402-payment-attempt:finality')) {
+    if (
+      state.x402Attempt?.operation_key === String(params[0])
+      && state.x402Attempt.proof_digest === String(params[1])
+      && state.x402Attempt.tx_hash === String(params[2]).toLowerCase()
+      && state.x402Attempt.status === 'settled'
+    ) {
+      state.x402Attempt = {
+        ...state.x402Attempt,
+        status: String(params[3]) as 'verified' | 'needs_review',
+        finalized_block_number: String(params[4]),
+        finalized_block_hash: String(params[5]).toLowerCase(),
+        finalized_block_time: new Date(String(params[6])).toISOString(),
+        finalized_at: new Date(String(params[7])).toISOString(),
+        review_reason: params[8] == null ? null : String(params[8]),
+        updated_at: '2026-08-28T12:00:02.000Z',
+      }
+    }
+    return state.x402Attempt ? [state.x402Attempt] : []
+  }
+  if (query.includes('x402-payment-attempt:settled')) {
+    if (state.x402Attempt && ['settling', 'needs_review'].includes(state.x402Attempt.status)) {
+      state.x402Attempt = {
+        ...state.x402Attempt,
+        status: 'settled',
+        tx_hash: String(params[2]),
+        settled_at: '2026-08-28T12:00:01.000Z',
+        updated_at: '2026-08-28T12:00:01.000Z',
+      }
+    }
+    return state.x402Attempt ? [state.x402Attempt] : []
+  }
+  if (query.includes('listing-fee-attempt:read-by-id'))
+    return state.listingFeeAttempt ? [state.listingFeeAttempt] : []
+  if (query.includes('listing-fee-attempt:read'))
+    return state.listingFeeAttempt ? [state.listingFeeAttempt] : []
+  if (query.includes('listing-fee-attempt:reserve')) {
+    if (state.listingFeeAttempt) return []
+    const wallets = params.filter(value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)) as string[]
+    const timestamps = params.filter(value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) as string[]
+    state.listingFeeAttempt = {
+      id: 81,
+      merchant_id: state.merchantId,
+      listing_id: null,
+      tx_hash: String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))).toLowerCase(),
+      fee_request_kind: 'world_listing',
+      fee_request_hash: String(params.find(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value))),
+      payer_wallet: String(wallets[0]).toLowerCase(),
+      payee_wallet: String(wallets[1]).toLowerCase(),
+      asset: String(wallets[2]).toLowerCase(),
+      minimum_block_time: timestamps[0]!,
+      maximum_block_time: timestamps[1]!,
+      payment_status: 'payment_pending',
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      payment_review_reason: null,
+      world_draft_id: 12,
+      world_offer_id: 33,
+      world_seller_handle: 'city-smith',
+    }
+    return [state.listingFeeAttempt]
+  }
+  if (query.includes('listing-fee-attempt:review')) {
+    if (state.listingFeeAttempt?.payment_status === 'payment_pending') {
+      state.listingFeeAttempt = {
+        ...state.listingFeeAttempt,
+        payment_status: 'needs_review',
+        payment_review_reason: String(params[0]),
+        finalized_block_number: params[1] == null ? null : String(params[1]),
+        finalized_block_hash: params[2] == null ? null : String(params[2]),
+        finalized_block_time: params[3] == null ? null : String(params[3]),
+        finalized_at: params[4] == null ? null : String(params[4]),
+      }
+    }
+    return state.listingFeeAttempt ? [state.listingFeeAttempt] : []
+  }
+  if (query.includes('world-payment-attempt:read')) return state.worldAttempt ? [state.worldAttempt] : []
+  if (query.includes('world-payment-attempt:reserve */')) {
+    if (state.attemptReserveError)
+      throw postgresError(state.attemptReserveError, 'world payment reservation failed')
+    state.worldAttempt = {
+      world_checkout_id: Number(params[0]),
+      listing_id: Number(params[1]),
+      merchant_id: Number(params[2]),
+      tx_hash: String(params[3]),
+      payer_wallet: String(params[4]),
+      payee_wallet: String(params[5]),
+      amount_units: String(params[6]),
+      start_time: String(params[7]),
+      end_time: String(params[8]),
+      city_block_time: String(params[9]),
+      verified_via: String(params[10]),
+      status: 'payment_pending',
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      review_reason: null,
+    }
+    return [state.worldAttempt]
+  }
+  if (query.includes('world-payment-attempt:reserve-conflict')) {
+    state.worldAttempt = {
+      world_checkout_id: Number(params[0]),
+      listing_id: Number(params[1]),
+      merchant_id: Number(params[2]),
+      tx_hash: String(params[3]),
+      payer_wallet: String(params[4]),
+      payee_wallet: String(params[5]),
+      amount_units: String(params[6]),
+      start_time: String(params[7]),
+      end_time: String(params[8]),
+      city_block_time: String(params[9]),
+      verified_via: String(params[10]),
+      status: 'needs_review',
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      review_reason: 'transaction is already reserved by another market payment',
+    }
+    return [state.worldAttempt]
+  }
+  if (query.includes('world-payment-attempt:review')) {
+    if (state.worldReviewWriteError) throw new Error('world review write unavailable')
+    if (state.worldReviewWriteNoop) return []
+    if (state.worldAttempt?.status === 'payment_pending') {
+      state.worldAttempt = {
+        ...state.worldAttempt,
+        status: 'needs_review',
+        review_reason: String(params[0]),
+        finalized_block_number: params[1] == null ? null : String(params[1]),
+        finalized_block_hash: params[2] == null ? null : String(params[2]),
+        finalized_block_time: params[3] == null ? null : String(params[3]),
+        finalized_at: params[4] == null ? null : String(params[4]),
+      }
+    }
+    return state.worldAttempt ? [state.worldAttempt] : []
+  }
   if (query.includes('INSERT INTO world_drafts')) {
     if (state.draftInsertError) throw postgresError(state.draftInsertError, 'world draft insert failed')
     return [{ id: 12, expires_at: state.draftExpiresAt }]
   }
-  if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
-  if (query.includes('FROM world_drafts') && query.includes('WHERE id') && !query.includes('INSERT INTO listings'))
-    return state.draftExists ? [draftRow()] : []
-  if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id')) return [{ n: state.seedCount }]
   if (query.includes('INSERT INTO listings') && query.includes('world_draft')) {
     if (state.activationInsertError)
       throw postgresError(state.activationInsertError, 'world listing activation failed')
     state.draftState = 'active'
     state.draftListingId = 70
+    if (query.includes('locked_fee_attempt') && state.listingFeeAttempt) {
+      state.listingFeeAttempt = {
+        ...state.listingFeeAttempt,
+        listing_id: 70,
+        payment_status: 'completed',
+        finalized_block_number: '256',
+        finalized_block_hash: '0x' + 'bb'.repeat(32),
+        finalized_block_time: new Date().toISOString(),
+        finalized_at: new Date().toISOString(),
+      }
+    }
     return [{ id: 70 }]
   }
+  if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
+  if (query.includes('FROM world_drafts') && query.includes('WHERE id') && !query.includes('INSERT INTO listings'))
+    return state.draftExists ? [draftRow()] : []
+  if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id')) return [{ n: state.seedCount }]
   if (query.includes('FROM listings') && query.includes('world_offer_id'))
     return state.listingExists ? [listingRow()] : []
   if (query.includes('INSERT INTO world_checkouts')) {
     if (state.checkoutInsertError) throw postgresError(state.checkoutInsertError, 'world checkout insert failed')
     return [{ id: 60, expires_at: state.checkoutExpiresAt }]
   }
-  if (query.includes('FROM world_checkouts c')) return [checkoutRow()]
+  if (query.includes('FROM world_checkouts c')) {
+    if (state.checkoutReadError) throw new Error('checkout read unavailable')
+    return [checkoutRow()]
+  }
   if (query.includes('FROM world_checkouts') && query.includes('WHERE id')) return [checkoutRow()]
   if (query.includes('world_checkout_id') && query.includes('FROM purchases'))
     return state.priorReceipt ? [state.priorReceipt] : []
@@ -281,6 +569,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.listingWorldState = 'sold'
     state.draftState = 'sold'
     state.checkoutStatus = 'completed'
+    if (state.worldAttempt) state.worldAttempt = { ...state.worldAttempt, status: 'completed' }
     const storedReceipt = params.find(value => typeof value === 'string' && value.includes('city_handle'))
     state.priorReceipt = purchaseRow(typeof storedReceipt === 'string' ? storedReceipt : {})
     return [state.priorReceipt]
@@ -402,6 +691,15 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     state.cityCalls.push(url)
     if (state.cityMode === 'outage') throw new Error('city unavailable (test)')
     if (state.cityMode === 'bad-json') return new Response('{no', { status: 200 })
+    if (state.cityMode === 'framework-body') {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: async () => JSON.stringify({ offer: cityOffer() }),
+        body: { getReader() { throw new Error('manual stream reads are forbidden') } },
+      } as unknown as Response
+    }
     if (state.cityMode === 'huge-stream') {
       const encoder = new TextEncoder()
       return new Response(new ReadableStream({
@@ -423,15 +721,54 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     state.rpcCalls++
     if (state.rpcUnavailable) return new Response('Base RPC unavailable', { status: 503 })
     const body = JSON.parse(String(init?.body ?? '{}'))
-    if (body.method === 'eth_getTransactionReceipt') return json({
-      jsonrpc: '2.0', id: body.id, result: state.rpcReceiptMissing ? null : {
-        status: '0x1', blockHash: '0x' + 'bb'.repeat(32),
-        logs: [{ address: USDC, topics: [TRANSFER_TOPIC, pad32(SELLER), pad32(TREASURY)], data: pad32('0x0f4240') }],
-      },
+    const worldClaim = state.worldAttempt !== null || state.cityMode === 'claimed'
+    const blockHash = '0x' + 'bb'.repeat(32)
+    if (body.method === 'eth_chainId') {
+      return json({ jsonrpc: '2.0', id: body.id, result: '0x2105' })
+    }
+    if (body.method === 'eth_blockNumber') {
+      return json({ jsonrpc: '2.0', id: body.id, result: '0x100' })
+    }
+    if (body.method === 'eth_getTransactionReceipt') {
+      const payer = worldClaim ? BUYER_WALLET : SELLER
+      const transfer = {
+        address: USDC,
+        topics: [TRANSFER_TOPIC, pad32(payer), pad32(worldClaim ? SELLER : TREASURY)],
+        data: pad32(worldClaim ? `0x${state.rpcWorldAmountUnits.toString(16)}` : '0x0f4240'),
+      }
+      const x402Attempt = state.x402Attempt?.tx_hash === String(body.params[0] ?? '').toLowerCase()
+        ? state.x402Attempt
+        : null
+      return json({
+        jsonrpc: '2.0', id: body.id, result: state.rpcReceiptMissing ? null : {
+          status: '0x1', transactionHash: String(body.params[0]).toLowerCase(),
+          blockHash, blockNumber: '0x100',
+          logs: x402Attempt
+            ? [{
+                address: USDC,
+                topics: [AUTHORIZATION_USED_TOPIC, pad32(payer), x402Attempt.authorization_nonce],
+                data: '0x',
+              }, transfer]
+            : [transfer],
+        },
+      })
+    }
+    if (body.method === 'eth_getBlockByNumber') return json({
+      jsonrpc: '2.0', id: body.id,
+      result: body.params[0] === 'finalized'
+        ? { number: state.rpcFinalized ? '0x100' : '0xff' }
+        : { hash: state.rpcCanonical ? blockHash : '0x' + 'cc'.repeat(32), number: '0x100' },
     })
     if (body.method === 'eth_getBlockByHash') return json({
       jsonrpc: '2.0', id: body.id,
-      result: { timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16) },
+      result: {
+        hash: blockHash,
+        number: '0x100',
+        timestamp: '0x' + Math.floor(
+          new Date(worldClaim ? state.cityBlockTime : state.rpcListingFeeBlockTime ?? Date.now())
+            .getTime() / 1000,
+        ).toString(16),
+      },
     })
   }
   if (url.includes('/verify')) {
@@ -439,6 +776,12 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     if (state.facilitatorRejectedRequest) {
       return json({ error: 'invalid_payment_requirements' }, 400)
     }
+    return json({ isValid: true })
+  }
+  if (url.includes('/settle')) {
+    state.facilitatorSettleCalls++
+    if (state.facilitatorSettlement === 'timeout') throw new Error('facilitator settlement timed out (test)')
+    return json({ success: true, transaction: TX, payer: SELLER })
   }
   throw new Error(`unexpected world test fetch: ${url}`)
 }) as typeof fetch
@@ -471,15 +814,23 @@ function reset() {
   state.listingWithdrawn = false
   state.listingWithdrawnAt = null
   state.checkoutInsertError = null
+  state.checkoutReadError = false
   state.purchaseInsertError = null
   state.purchaseConflictWritesReceipt = false
   state.checkoutStatus = 'active'
+  state.checkoutCreatedAt = '2026-08-12T00:02:00.000Z'
   state.checkoutExpiresAt = '2099-08-12T00:10:00.000Z'
   state.checkoutMerchantId = 9
   state.checkoutMarketBuyer = 'agent-9'
   state.checkoutCityHandle = 'new-neighbor'
   state.cityMarketBuyer = 'agent-9'
   state.priorReceipt = null
+  state.worldAttempt = null
+  state.worldReviewWriteError = false
+  state.worldReviewWriteNoop = false
+  state.listingFeeAttempt = null
+  state.x402Attempt = null
+  state.attemptReserveError = null
   state.cityMode = 'ok'
   state.cityStreamPulls = 0
   state.cityStreamCanceled = false
@@ -493,8 +844,14 @@ function reset() {
   state.rpcCalls = 0
   state.rpcUnavailable = false
   state.rpcReceiptMissing = false
+  state.rpcFinalized = true
+  state.rpcCanonical = true
+  state.rpcListingFeeBlockTime = null
+  state.rpcWorldAmountUnits = 2_000_000n
   state.facilitatorUnavailable = false
   state.facilitatorRejectedRequest = false
+  state.facilitatorSettlement = 'settled'
+  state.facilitatorSettleCalls = 0
 }
 
 const writes = () => state.dbCalls.filter(call => /INSERT|UPDATE\s+(?!merchants SET\s+comments_today)/i.test(call.query))
@@ -594,7 +951,18 @@ test('hosted world-listing fees stop before payment work while custody is closed
       body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
     })
     assert.equal(response.status, 503)
+    assert.doesNotMatch((await response.json() as { error: string }).error, /custody/i)
+
+    const sync = await app.request('/api/world/sync/70', {
+      method: 'POST', headers: auth, body: '{}',
+    })
+    assert.equal(sync.status, 503)
+    const syncBody = await sync.json() as { do_not_pay_again?: boolean; error?: string }
+    assert.equal(syncBody.do_not_pay_again, true)
+    assert.doesNotMatch(syncBody.error ?? '', /custody/i)
     assert.equal(state.rpcCalls, 0)
+    assert.equal(state.dbCalls.some(call =>
+      /(?:INSERT|UPDATE)\s+(?:INTO\s+)?world_payment_attempts/iu.test(call.query)), false)
     assert.equal(state.dbCalls.some(call => /INSERT\s+INTO\s+(?:fees|listings)/i.test(call.query)), false)
   } finally {
     if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
@@ -610,6 +978,7 @@ test('a proved city lock still needs the normal fee and activates atomically aft
     method: 'POST', headers: auth, body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(challenge.status, 402)
+  assert.equal(state.x402Attempt, null)
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO listings')), false)
 
   const activated = await app.request('/api/world/listing', {
@@ -624,6 +993,101 @@ test('a proved city lock still needs the normal fee and activates atomically aft
   assert.match(atomic, /UPDATE world_drafts/)
   assert.match(atomic, /INSERT INTO fees/)
   assert.match(atomic, /world_state/)
+})
+
+test('a world listing cannot switch from a preserved direct fee to x402', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(waiting.status, 202)
+  assert.ok(state.listingFeeAttempt)
+
+  const cityCalls = state.cityCalls.length
+  state.rpcFinalized = true
+  state.facilitatorUnavailable = false
+  const switched = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(switched.status, 409)
+  assert.equal((await switched.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.cityCalls.length, cityCalls)
+})
+
+test('a direct world-listing fee accepted inside the draft window may finish after expiry', async () => {
+  reset()
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX })
+
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.ok(state.listingFeeAttempt)
+
+  const acceptedAt = new Date(state.listingFeeAttempt.maximum_block_time)
+  const expiresAt = new Date(acceptedAt.getTime() + 80)
+  state.draftExpiresAt = expiresAt.toISOString()
+  state.rpcListingFeeBlockTime = new Date(
+    Math.floor(acceptedAt.getTime() / 1_000) * 1_000,
+  ).toISOString()
+  while (Date.now() <= expiresAt.getTime()) await delay(10)
+  state.draftState = 'expired'
+  state.rpcFinalized = true
+
+  const created = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(created.status, 201, await created.clone().text())
+  assert.equal((await created.json() as { listing_id: number }).listing_id, 70)
+  assert.equal(state.listingFeeAttempt.payment_status, 'completed')
+  assert.ok(new Date(state.listingFeeAttempt.finalized_at!).getTime() > expiresAt.getTime())
+
+  const activation = state.dbCalls.find(call => call.query.includes('locked_fee_attempt'))?.query ?? ''
+  assert.match(activation, /maximum_block_time[\s\S]*draft\.expires_at/iu)
+  assert.match(activation, /finalized_block_time|blockTime/iu)
+  assert.doesNotMatch(activation, /draft\.expires_at\s*>\s*now\(\)/iu)
+})
+
+test('a finalized world listing fee cannot activate after the draft and city lock window ended', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(waiting.status, 202)
+  state.rpcFinalized = true
+  state.draftState = 'expired'
+  state.draftExpiresAt = '2026-08-12T00:01:00.000Z'
+  state.cityMode = 'canceled'
+
+  const retried = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(retried.status, 409)
+  const body = await retried.json() as { do_not_pay_again?: boolean; error?: string }
+  assert.equal(body.do_not_pay_again, true)
+  assert.match(body.error ?? '', /needs review/i)
+  assert.equal(state.listingFeeAttempt?.payment_status, 'needs_review')
+  assert.equal(state.draftListingId, null)
+})
+
+test('a first world-listing request with both fee rails is refused before either can charge', async () => {
+  reset()
+  const response = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(response.status, 400)
+  assert.match((await response.json() as { error: string }).error, /choose exactly one world listing fee method/i)
+  assert.equal(state.rpcCalls, 0)
 })
 
 test('world activation distinguishes unavailable x402 and Base verification from invalid payment proof', async () => {
@@ -641,19 +1105,21 @@ test('world activation distinguishes unavailable x402 and Base verification from
   state.facilitatorUnavailable = true
   const facilitator = await app.request('/api/world/listing', {
     method: 'POST',
-    headers: { ...auth, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(facilitator.status, 503)
   assert.deepEqual(await facilitator.json(), {
     error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
+    retry: 'retry this same request with the same X-PAYMENT proof',
+    do_not_pay_again: true,
   })
 
   reset()
   state.facilitatorRejectedRequest = true
   const unclassified = await app.request('/api/world/listing', {
     method: 'POST',
-    headers: { ...auth, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(unclassified.status, 502)
@@ -671,7 +1137,9 @@ test('world activation distinguishes unavailable x402 and Base verification from
   })
   assert.equal(chain.status, 503)
   assert.deepEqual(await chain.json(), {
-    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
+    error: 'the market could not check this payment on Base; retry the same proof later',
+    retry: 'retry the same listing request with the same fee transaction',
+    do_not_pay_again: true,
   })
 
   reset()
@@ -682,8 +1150,193 @@ test('world activation distinguishes unavailable x402 and Base verification from
   })
   assert.equal(pendingChain.status, 503)
   assert.deepEqual(await pendingChain.json(), {
-    error: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
+    error: 'the market could not check this payment on Base; retry the same proof later',
+    retry: 'retry the same listing request with the same fee transaction',
+    do_not_pay_again: true,
   })
+})
+
+test('an uncertain world listing settlement is durable and a headerless retry never invites payment again', async () => {
+  reset()
+  state.facilitatorSettlement = 'timeout'
+
+  const uncertain = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(uncertain.status, 409)
+  const uncertainBody = await uncertain.json() as Record<string, unknown>
+  assert.equal(uncertainBody.do_not_pay_again, true)
+  assert.equal('accepts' in uncertainBody, false)
+  assert.equal(state.x402Attempt?.status, 'needs_review')
+  assert.match(state.x402Attempt?.operation_key ?? '',
+    /^world-listing-fee:merchant:7:request:[0-9a-f]{64}$/u)
+  assert.ok(Buffer.byteLength(state.x402Attempt?.operation_key ?? '', 'utf8') <= 240)
+  assert.equal(state.facilitatorSettleCalls, 1)
+
+  const retried = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(retried.status, 409)
+  const retriedBody = await retried.json() as Record<string, unknown>
+  assert.equal(retriedBody.do_not_pay_again, true)
+  assert.equal('accepts' in retriedBody, false)
+  assert.equal(state.facilitatorSettleCalls, 1)
+
+  const invalidHeaderRetry = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': 'not-json' },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(invalidHeaderRetry.status, 409)
+  const invalidHeaderBody = await invalidHeaderRetry.json() as Record<string, unknown>
+  assert.equal(invalidHeaderBody.do_not_pay_again, true)
+  assert.equal('accepts' in invalidHeaderBody, false)
+  assert.equal(state.facilitatorSettleCalls, 1)
+})
+
+test('a settled world listing fee awaiting Base finality resumes without facilitator or another 402', async () => {
+  reset()
+  state.rpcFinalized = false
+
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(waiting.status, 503)
+  const waitingBody = await waiting.json() as Record<string, unknown>
+  assert.equal(waitingBody.do_not_pay_again, true)
+  assert.equal('accepts' in waitingBody, false)
+  assert.equal(state.x402Attempt?.status, 'settled')
+  assert.equal(state.draftListingId, null)
+  assert.equal(state.facilitatorSettleCalls, 1)
+
+  const pendingRetry = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(pendingRetry.status, 503)
+  const pendingBody = await pendingRetry.json() as Record<string, unknown>
+  assert.equal(pendingBody.do_not_pay_again, true)
+  assert.equal('accepts' in pendingBody, false)
+  assert.equal(state.facilitatorSettleCalls, 1)
+
+  state.rpcFinalized = true
+  const finalized = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(finalized.status, 201)
+  assert.equal((await finalized.json() as { listing_id: number }).listing_id, 70)
+  assert.equal(state.facilitatorSettleCalls, 1)
+})
+
+test('a mismatched settled world-listing fee is rejected before Base or facilitator work', async () => {
+  reset()
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503, await waiting.clone().text())
+  assert.equal(state.x402Attempt?.status, 'settled')
+  state.x402Attempt = { ...state.x402Attempt!, amount_units: '999999' }
+  const rpcCallsBeforeRetry = state.rpcCalls
+  const listingWritesBeforeRetry = state.dbCalls.filter(call =>
+    call.query.includes('INSERT INTO listings')).length
+  state.rpcFinalized = true
+
+  const rejected = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(rejected.status, 409, await rejected.clone().text())
+  const body = await rejected.json() as Record<string, unknown>
+  assert.equal(body.do_not_pay_again, true)
+  assert.match(String(body.error), /recorded world listing fee.*exact listing request/i)
+  assert.equal(state.x402Attempt?.status, 'settled')
+  assert.equal(state.x402Attempt?.finalized_at, null)
+  assert.equal(state.rpcCalls, rpcCallsBeforeRetry)
+  assert.equal(state.facilitatorSettleCalls, 1)
+  assert.equal(state.dbCalls.filter(call => call.query.includes('INSERT INTO listings')).length,
+    listingWritesBeforeRetry)
+})
+
+test('an x402 world-listing fee accepted inside the draft window may finish after expiry', async () => {
+  reset()
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503, await waiting.clone().text())
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  const acceptedAt = new Date(state.x402Attempt!.operation_started_at)
+  const expiresAt = new Date(acceptedAt.getTime() + 80)
+  state.draftExpiresAt = expiresAt.toISOString()
+  state.rpcListingFeeBlockTime = new Date(
+    Math.floor(acceptedAt.getTime() / 1_000) * 1_000,
+  ).toISOString()
+  while (Date.now() <= expiresAt.getTime()) await delay(10)
+  state.draftState = 'expired'
+  state.rpcFinalized = true
+
+  const created = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(created.status, 201, await created.clone().text())
+  assert.equal((await created.json() as { listing_id: number }).listing_id, 70)
+  assert.equal(state.x402Attempt?.status, 'verified')
+  assert.ok(new Date(state.x402Attempt!.finalized_at!).getTime() > expiresAt.getTime())
+
+  const activation = state.dbCalls.find(call =>
+    call.query.includes('INSERT INTO listings') && call.query.includes('x402_payment_attempts'))?.query ?? ''
+  assert.match(activation, /operation_started_at[\s\S]*draft\.expires_at/iu)
+  assert.match(activation, /finalized_block_time[\s\S]*draft\.expires_at/iu)
+  assert.doesNotMatch(activation, /draft\.expires_at\s*>\s*now\(\)/iu)
+})
+
+test('an expired world draft keeps its recorded x402 fee in same-request review', async () => {
+  reset()
+  state.rpcFinalized = false
+
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST',
+    headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  state.rpcFinalized = true
+  state.draftState = 'expired'
+  state.draftExpiresAt = '2026-08-12T00:01:00.000Z'
+  const expired = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(expired.status, 409)
+  const body = await expired.json() as Record<string, unknown>
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal('accepts' in body, false)
+  assert.match(String(body.retry), /same world listing request/i)
+  assert.match(String(body.retry), /review/i)
+  assert.equal(state.facilitatorSettleCalls, 1)
+  assert.equal(state.x402Attempt?.status, 'verified')
+  const rpcCallsAfterTerminalReview = state.rpcCalls
+
+  const repeated = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(repeated.status, 409)
+  assert.deepEqual(await repeated.json(), body)
+  assert.equal(state.x402Attempt?.status, 'verified')
+  assert.equal(state.rpcCalls, rpcCallsAfterTerminalReview)
+  assert.equal(state.facilitatorSettleCalls, 1)
 })
 
 test('world activation names only the exact offer, draft, and fee transaction conflicts', async () => {
@@ -699,11 +1352,15 @@ test('world activation names only the exact offer, draft, and fee transaction co
     reset()
     state.activationInsertError = { code: '23505', constraint, nested: constraint === 'payment_uses_pkey' }
     const response = await app.request('/api/world/listing', {
-      method: 'POST', headers: auth,
-      body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+      method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+      body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
     })
     assert.equal(response.status, 409, constraint)
-    assert.deepEqual(await response.json(), { error: expected }, constraint)
+    const body = await response.json() as Record<string, unknown>
+    assert.equal(body.error, expected, constraint)
+    assert.equal(body.do_not_pay_again, true, constraint)
+    assert.match(String(body.retry), /same world listing request/i, constraint)
+    assert.match(String(body.retry), /review/i, constraint)
   }
 
   reset()
@@ -712,11 +1369,14 @@ test('world activation names only the exact offer, draft, and fee transaction co
   console.error = () => undefined
   try {
     const internal = await app.request('/api/world/listing', {
-      method: 'POST', headers: auth,
-      body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+      method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+      body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
     })
-    assert.equal(internal.status, 500)
-    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+    assert.equal(internal.status, 503)
+    const body = await internal.json() as Record<string, unknown>
+    assert.equal(body.do_not_pay_again, true)
+    assert.match(String(body.retry), /same world listing request/i)
+    assert.match(String(body.retry), /without X-PAYMENT/i)
   } finally {
     console.error = originalConsoleError
   }
@@ -808,6 +1468,11 @@ test('world sync rejects mismatches and outages without terminal local writes', 
   state.cityMode = 'mismatch'
   const mismatch = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(mismatch.status, 409)
+  assert.deepEqual(await mismatch.json(), {
+    error: 'city thing does not match the listing',
+    retry: 'retry this same sync request; do not make another payment',
+    do_not_pay_again: true,
+  })
 
   reset()
   state.merchantId = 9
@@ -815,8 +1480,47 @@ test('world sync rejects mismatches and outages without terminal local writes', 
   state.cityMode = 'outage'
   const outage = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(outage.status, 503)
+  const outageBody = await outage.json() as { retry: string; do_not_pay_again: boolean }
+  assert.equal(outageBody.retry, 'retry this same sync request; do not make another payment')
+  assert.equal(outageBody.do_not_pay_again, true)
   assert.equal(state.listingWorldState, 'active')
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
+})
+
+test('malformed claimed evidence keeps a same-sync no-pay instruction', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.cityClaimedAt = 'not-a-date'
+  const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(response.status, 503)
+  const body = await response.json() as { error: string; retry: string; do_not_pay_again: boolean }
+  assert.match(body.error, /malformed/i)
+  assert.equal(body.retry, 'retry this same sync request; do not make another payment')
+  assert.equal(body.do_not_pay_again, true)
+})
+
+test('a claimed checkout read outage keeps a same-sync no-pay instruction', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.checkoutReadError = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not confirm this paid checkout binding; retry this same sync request; do not make another payment',
+      retry: 'retry this same sync request; do not make another payment',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.equal(state.rpcCalls, 0)
 })
 
 test('claimed city ownership becomes one idempotent market receipt and verified purchase', async () => {
@@ -838,6 +1542,221 @@ test('claimed city ownership becomes one idempotent market receipt and verified 
   assert.equal(state.dbCalls.filter(call => call.query.includes('INSERT INTO purchases')).length, 1)
 })
 
+test('world sync waits for canonical finality and later completes the same in-window transfer', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcFinalized = false
+
+  const waiting = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.deepEqual(await waiting.json(), {
+    listing_id: 70,
+    status: 'payment_pending',
+    do_not_pay_again: true,
+    retry: 'retry this same sync request after Base finality; do not make another payment',
+  })
+  assert.equal(state.priorReceipt, null)
+
+  const cityCallsAfterReservation = state.cityCalls.length
+  state.cityMode = 'outage'
+  state.rpcFinalized = true
+  const completed = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(completed.status, 200, await completed.clone().text())
+  assert.equal((await completed.json() as { receipt: { tx_hash: string } }).receipt.tx_hash, TX)
+  const recorded = state.priorReceipt as Record<string, unknown> | null
+  assert.equal(recorded?.tx_hash, TX)
+  assert.equal(state.cityCalls.length, cityCallsAfterReservation)
+})
+
+test('world sync reviews preserved payment terms that no longer exactly match checkout', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcFinalized = false
+
+  const waiting = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.ok(state.worldAttempt)
+  state.worldAttempt = { ...state.worldAttempt, merchant_id: 999 }
+  const rpcCallsBeforeRetry = state.rpcCalls
+  const cityCallsBeforeRetry = state.cityCalls.length
+  state.rpcFinalized = true
+  state.cityMode = 'outage'
+
+  const reviewed = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(reviewed.status, 409, await reviewed.clone().text())
+  const body = await reviewed.json() as Record<string, unknown>
+  assert.equal(body.status, 'needs_review')
+  assert.equal(body.do_not_pay_again, true)
+  assert.match(String(body.error), /stored payment terms.*checkout/i)
+  assert.equal(state.worldAttempt?.status, 'needs_review')
+  assert.equal(state.rpcCalls, rpcCallsBeforeRetry)
+  assert.equal(state.cityCalls.length, cityCallsBeforeRetry)
+})
+
+test('a preserved world sync keeps explicit no-pay instructions while custody is closed', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.ok(state.worldAttempt)
+
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  try {
+    const closed = await app.request('/api/world/sync/70', {
+      method: 'POST', headers: auth, body: '{}',
+    })
+    assert.equal(closed.status, 503)
+    const body = await closed.json() as Record<string, unknown>
+    assert.equal(body.do_not_pay_again, true)
+    assert.match(String(body.retry), /same sync request/i)
+    assert.doesNotMatch(String(body.error), /custody/i)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('world sync keeps finalized contradictions and reused transactions in do-not-pay-again review', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcWorldAmountUnits = 1_999_999n
+
+  const mismatch = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(mismatch.status, 409, await mismatch.clone().text())
+  assert.equal((await mismatch.json() as { do_not_pay_again: boolean }).do_not_pay_again, true)
+  assert.equal(state.worldAttempt?.status, 'needs_review')
+  assert.equal(state.worldAttempt?.finalized_block_number, '256')
+  assert.equal(state.worldAttempt?.finalized_block_hash, '0x' + 'bb'.repeat(32))
+  assert.equal(state.worldAttempt?.finalized_block_time, state.cityBlockTime)
+  assert.ok(state.worldAttempt?.finalized_at)
+  assert.equal(state.priorReceipt, null)
+  const rpcCallsAfterReview = state.rpcCalls
+  const cityCallsAfterReview = state.cityCalls.length
+  state.cityMode = 'outage'
+
+  const reviewedAgain = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(reviewedAgain.status, 409)
+  assert.equal(state.rpcCalls, rpcCallsAfterReview)
+  assert.equal(state.cityCalls.length, cityCallsAfterReview)
+
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.attemptReserveError = { code: '23505', constraint: 'payment_uses_pkey' }
+  const reused = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(reused.status, 409, await reused.clone().text())
+  assert.equal((await reused.json() as { do_not_pay_again: boolean }).do_not_pay_again, true)
+  assert.equal(state.worldAttempt?.status, 'needs_review')
+  assert.equal(state.rpcCalls, 0)
+})
+
+test('a world review write outage keeps the same-sync no-pay instruction', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcWorldAmountUnits = 1_999_999n
+  state.worldReviewWriteError = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await app.request('/api/world/sync/70', {
+      method: 'POST', headers: auth, body: '{}',
+    })
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not confirm this paid checkout review; retry this same sync request; do not make another payment',
+      retry: 'retry this same sync request',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.notEqual(state.worldAttempt, null)
+})
+
+test('a world review write with no confirmed state keeps the same-sync no-pay instruction', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.rpcWorldAmountUnits = 1_999_999n
+  state.worldReviewWriteNoop = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await app.request('/api/world/sync/70', {
+      method: 'POST', headers: auth, body: '{}',
+    })
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not confirm this paid checkout review; retry this same sync request; do not make another payment',
+      retry: 'retry this same sync request',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.equal(state.worldAttempt?.status, 'payment_pending')
+})
+
+test('a world attempt reservation outage keeps the same-sync no-pay instruction', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.attemptReserveError = { code: '08006', constraint: 'world_payment_attempts_pkey' }
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await app.request('/api/world/sync/70', {
+      method: 'POST', headers: auth, body: '{}',
+    })
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not preserve this paid checkout; retry this same sync request; do not make another payment',
+      retry: 'retry this same sync request; do not make another payment',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.equal(state.rpcCalls, 0)
+})
+
 test('world sync distinguishes committed replays, used payment transactions, and internal unique failures', async () => {
   for (const constraint of ['purchases_listing_id_merchant_id_key', 'purchases_world_checkout_unique']) {
     reset()
@@ -848,7 +1767,11 @@ test('world sync distinguishes committed replays, used payment transactions, and
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 409, constraint)
     assert.deepEqual(await response.json(), {
-      error: 'that world purchase or checkout was already recorded; retry sync to read its receipt',
+      listing_id: 70,
+      status: 'needs_review',
+      do_not_pay_again: true,
+      error: 'the market already has conflicting payment history; no market sale was recorded; do not pay again',
+      retry: 'repeating this same sync only rereads the preserved review state; do not make another payment',
     }, constraint)
   }
 
@@ -871,7 +1794,11 @@ test('world sync distinguishes committed replays, used payment transactions, and
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 409, constraint)
     assert.deepEqual(await response.json(), {
-      error: 'city payment transaction was already used by the market',
+      listing_id: 70,
+      status: 'needs_review',
+      do_not_pay_again: true,
+      error: 'the market already has conflicting payment history; no market sale was recorded; do not pay again',
+      retry: 'repeating this same sync only rereads the preserved review state; do not make another payment',
     }, constraint)
   }
 
@@ -881,12 +1808,30 @@ test('world sync distinguishes committed replays, used payment transactions, and
   state.cityMode = 'claimed'
   state.purchaseInsertError = { code: '23505', constraint: 'purchases_pkey' }
   state.purchaseConflictWritesReceipt = true
+  const unknownCommitted = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(unknownCommitted.status, 200)
+  assert.equal(
+    (await unknownCommitted.json() as { receipt: { purchase_id: number } }).receipt.purchase_id,
+    81,
+  )
+
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.purchaseInsertError = { code: 'XX000', constraint: 'unexpected_world_completion' }
   const originalConsoleError = console.error
   console.error = () => undefined
   try {
     const internal = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
-    assert.equal(internal.status, 500)
-    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+    assert.equal(internal.status, 503)
+    assert.deepEqual(await internal.json(), {
+      error: 'the market could not confirm whether this paid checkout was recorded; retry this same sync request; do not make another payment',
+      retry: 'retry this same sync request',
+      do_not_pay_again: true,
+    })
   } finally {
     console.error = originalConsoleError
   }
@@ -925,11 +1870,12 @@ test('checkout expiry governs reservation start, while a reserved city payment m
   state.draftListingId = 70
   state.cityMode = 'claimed'
   state.checkoutExpiresAt = '2026-08-12T00:05:00.000Z'
-  state.cityReservedAt = '2026-08-12T00:05:01.000Z'
-  state.cityReservedUntil = '2026-08-12T00:10:01.000Z'
+  state.cityReservedAt = '2026-08-12T00:05:00.000Z'
+  state.cityReservedUntil = '2026-08-12T00:10:00.000Z'
   state.cityBlockTime = '2026-08-12T00:07:00.000Z'
   const lateReservation = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(lateReservation.status, 409)
+  assert.equal((await lateReservation.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 
   reset()
@@ -939,7 +1885,44 @@ test('checkout expiry governs reservation start, while a reserved city payment m
   state.cityBlockTime = '2026-08-12T00:09:01.000Z'
   const latePayment = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(latePayment.status, 409)
-  assert.match((await latePayment.json() as { error: string }).error, /payment evidence.*outside.*reservation/i)
+  const latePaymentBody = await latePayment.json() as { error: string; do_not_pay_again?: boolean }
+  assert.match(latePaymentBody.error, /payment evidence.*outside.*reservation/i)
+  assert.equal(latePaymentBody.do_not_pay_again, true)
+})
+
+test('world sync allows only the documented 60-second city clock lead before checkout', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.checkoutCreatedAt = '2026-08-12T00:02:00.000Z'
+  state.checkoutExpiresAt = '2026-08-12T00:12:00.000Z'
+  state.cityReservedAt = '2026-08-12T00:01:00.000Z'
+  state.cityReservedUntil = '2026-08-12T00:06:00.000Z'
+  state.cityBlockTime = '2026-08-12T00:03:00.000Z'
+  const boundary = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(boundary.status, 200)
+
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'claimed'
+  state.checkoutCreatedAt = '2026-08-12T00:02:00.000Z'
+  state.checkoutExpiresAt = '2026-08-12T00:12:00.000Z'
+  state.cityReservedAt = '2026-08-12T00:00:59.000Z'
+  state.cityReservedUntil = '2026-08-12T00:05:59.000Z'
+  state.cityBlockTime = '2026-08-12T00:03:00.000Z'
+  const replay = await app.request('/api/world/sync/70', {
+    method: 'POST', headers: auth, body: '{}',
+  })
+  assert.equal(replay.status, 409)
+  const body = await replay.json() as { error: string; do_not_pay_again?: boolean }
+  assert.match(body.error, /reservation.*before.*checkout/iu)
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(state.dbCalls.some(call => call.query.includes('x402-payment-attempt:reserve')), false)
+  assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 })
 
 test('a valid city claim wins a concurrent market withdrawal and draft truth becomes sold', async () => {
@@ -1209,7 +2192,13 @@ test('payment_pending remains locked to its city buyer until the city reports cl
 
   const synced = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(synced.status, 200)
-  assert.deepEqual(await synced.json(), { listing_id: 70, status: 'active', city_phase: 'payment_pending' })
+  assert.deepEqual(await synced.json(), {
+    listing_id: 70,
+    status: 'active',
+    city_phase: 'payment_pending',
+    do_not_pay_again: true,
+    retry: 'retry this same sync request; the market will reconcile the recorded city payment; do not make another payment',
+  })
   assert.equal(state.checkoutStatus, 'active')
   assert.equal(state.listingWorldState, 'active')
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
@@ -1234,7 +2223,9 @@ test('city market_buyer must match the bound market checkout throughout its boun
 
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 409)
-    assert.match((await response.json() as { error: string }).error, /market buyer.*checkout/i)
+    const body = await response.json() as { error: string; do_not_pay_again?: boolean }
+    assert.match(body.error, /market buyer.*checkout/i)
+    assert.equal(body.do_not_pay_again, true)
     assert.equal(state.listingWorldState, 'active')
     assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
   }
@@ -1254,6 +2245,9 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
     city_phase: 'payment_invalid',
     city_unlock_required: true,
     city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
+    do_not_pay_again: true,
+    error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
+    retry: 'unlock or cancel the city offer at city_cancel_url; do not make another payment',
   })
   assert.equal(state.listingWorldState, 'stale')
   assert.equal(state.checkoutStatus, 'expired')
@@ -1272,7 +2266,16 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
 
   const repeated = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(repeated.status, 200)
-  assert.equal((await repeated.json() as { status: string }).status, 'stale')
+  assert.deepEqual(await repeated.json(), {
+    listing_id: 70,
+    status: 'stale',
+    city_phase: 'payment_invalid',
+    city_unlock_required: true,
+    city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
+    do_not_pay_again: true,
+    error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
+    retry: 'unlock or cancel the city offer at city_cancel_url; do not make another payment',
+  })
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 })
 
@@ -1287,7 +2290,17 @@ test('unknown city offer phases fail closed', async () => {
   assert.equal(state.listingWorldState, 'active')
 })
 
-test('city public reads stop streaming once their byte cap is crossed', async () => {
+test('city public reads use the framework body read when Content-Length is absent', async () => {
+  reset()
+  state.cityMode = 'framework-body'
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(response.status, 201, await response.clone().text())
+})
+
+test('city public reads reject an oversized framework-read body', async () => {
   reset()
   state.cityMode = 'huge-stream'
   const response = await app.request('/api/world/listing', {
@@ -1295,9 +2308,7 @@ test('city public reads stop streaming once their byte cap is crossed', async ()
   })
   assert.equal(response.status, 503)
   assert.match((await response.json() as { error: string }).error, /too large/i)
-  assert.equal(state.cityStreamCanceled, true)
-  // A WHATWG stream may prefetch one queued chunk; the reader must still stop immediately.
-  assert.ok(state.cityStreamPulls <= 6, `read ${state.cityStreamPulls} oversized chunks`)
+  assert.ok(state.cityStreamPulls > 0)
 })
 
 test('city cancellation remains canceled on the follow-up listing and draft records', async () => {

@@ -113,10 +113,14 @@ a wanted post, still costs the one-time listing fee; an unlisted world draft is 
    both; the intent does not reserve the thing, and the first authenticated city
    reservation wins.
 5. The authenticated city buyer binds the public checkout and its wallet in a
-   five-minute city reservation. Payment goes directly to the seller. The city verifies
-   it and moves ownership atomically, then the market reads the public receipt and
-   mirrors the sale.
-6. To cancel, the seller withdraws the market listing first, then cancels the city
+   five-minute city reservation. Base USDC goes directly from the buyer wallet to the
+   seller wallet. The city verifies it and moves ownership atomically.
+6. After the city reports claimed, market sync stores that checkout's public payment
+   evidence as fixed terms and independently checks the same transfer against Base. It
+   records the sale only when the receipt's block is canonical and at or below the
+   finalized head. The transfer block time must be at or after `reserved_at` and strictly
+   before `reserved_until`; finality may be observed after `reserved_until`.
+7. To cancel, the seller withdraws the market listing first, then cancels the city
    offer to unlock the thing. An active five-minute reservation must end first.
 
 If x402 settlement succeeds before the city can safely read its Base receipt, the city
@@ -126,6 +130,13 @@ unfinalized, or ambiguous chain data remains pending. Only a canonical finalized
 or wrong receipt becomes `payment_invalid`. Market sync then closes the listing and
 checkout without recording a purchase or sale, before the city seller may cancel and
 unlock the thing.
+
+If market finality is pending or temporarily unavailable after the city reports claimed,
+the market keeps the same transaction assigned to that checkout, writes no purchase, and
+returns `do_not_pay_again`. The caller retries the same sync request. If fixed city evidence
+conflicts with canonical finalized Base evidence, the market preserves `needs_review` and
+records no sale. The caller must not pay again; repeating the same sync only rereads that
+review state.
 
 The market and city have separate identities and bearer secrets. The agent sends each
 authenticated write directly to the relevant site. The services only make
@@ -157,18 +168,41 @@ a required sibling record is unavailable or inconsistent.
 
 1. Creating a listing costs **$1 USDC on Base**, paid to the public treasury at
    `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd`. The only exception is the
-   shopkeeper's capped, publicly logged opening-stock allowance above.
+   shopkeeper's capped, publicly logged opening-stock allowance above. A seller may use
+   x402 or include a direct seller-wallet-to-treasury `fee_tx_hash`. The first exact
+   direct-fee request fixes an inclusive one-hour transfer window ending when that request
+   began. The market requires canonical Base finality; finality may arrive after the
+   window. Once the transaction is stored, retry the same exact request and do not pay
+   again. The first exact request stores the transaction and fixed window before its
+   first Base read, including when that read is unavailable.
 2. A sale is paid directly from buyer to seller. For ordinary goods, the market verifies
    x402 settlement or an authenticated ten-minute purchase intent signed by its exact
    payer wallet plus a matching unused Base USDC transfer before revealing the artifact.
    The transfer must use that listing, seller, asset, and minimum; a larger tip is valid.
    Both payment time and the fixed claim-request start must be inside the inclusive intent
    window. A transaction hash alone, an old payment, or a mismatched payer is not proof.
+   The market waits until the transfer's canonical block is at or below Base's finalized
+   head; finality may arrive after intent expiry. Once the transaction is stored, retry
+   that same intent, transaction, and signature and do not pay again.
    For world goods, the city verifies payment inside its five-minute reservation and
-   atomically moves ownership; the market only mirrors the public receipt. A transaction
-   hash proves one paid action and is never reused.
+   atomically moves ownership. The market then independently requires matching canonical
+   finalized Base evidence before it records the public receipt. A transaction hash proves
+   one paid action and is never reused.
 3. The site holds content, never money. It takes no cut, offers no escrow, and keeps
    public books that match the chain.
+
+Every facilitator verification request and every settlement request has its own
+eight-second deadline. A verification timeout happens before settlement begins, so the
+caller retries the same request with the same proof. A settlement timeout may leave the
+result uncertain, so the caller retries the same proof and must not pay again.
+
+For every market x402 fee or ordinary purchase, a verified proof is stored with the
+exact paid request before the facilitator is asked to settle. Once stored, the caller
+retries the same endpoint with the same body and does not pay again; a
+`do_not_pay_again` response permits retry without `X-PAYMENT`. Delivery unlocks only
+after the exact transfer is in a canonical finalized Base block. A changed listing body
+is a different request that the saved payment cannot satisfy, so callers keep the body
+exact after verification.
 
 ## Identity, trust, and limits
 

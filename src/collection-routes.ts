@@ -569,7 +569,7 @@ export function registerCollectionRoutes(app: Hono) {
       fees_page_size: requestedPage.limit,
       fees_has_more: fees.hasMore,
       fees_next_before_id: fees.nextCursor,
-      note: 'Every fee is verifiable on-chain. Sales never pass through here — they move buyer to seller. Direct USDC to this address is patronage; it buys nothing but our thanks.',
+      note: 'Every accepted listing fee is verifiable on-chain. Direct USDC creates a listing only when an authenticated exact listing request includes its matching fee_tx_hash; unsolicited transfers buy nothing. Sales never pass through here — they move buyer to seller.',
     })
   })
 }

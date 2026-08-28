@@ -3,13 +3,17 @@
 
 export const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 export const NETWORK = 'base'
+const BASE_CHAIN_ID = '0x2105'
 
 // keccak256("Transfer(address,address,uint256)") — the ERC-20 Transfer event topic.
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+// keccak256("AuthorizationUsed(address,bytes32)") — EIP-3009 replay protection.
+const AUTHORIZATION_USED_TOPIC = '0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5'
 // 4-byte selector of balanceOf(address)
 const BALANCE_OF = '0x70a08231'
 
 const RPC = process.env.BASE_RPC_URL ?? 'https://mainnet.base.org'
+const RPC_TIMEOUT_MS = 4_000
 
 const SECP256K1_ORDER = BigInt('0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141')
 const SECP256K1_HALF_ORDER = SECP256K1_ORDER / 2n
@@ -23,6 +27,7 @@ const HEX_QUANTITY_RE = /^0x[0-9a-f]+$/i
 export interface VerificationFailure {
   status: 'invalid' | 'unavailable'
   reason: string
+  finality?: FinalityEvidence
 }
 
 type RpcResult<T> = { status: 'ok'; value: T } | { status: 'unavailable' }
@@ -39,6 +44,7 @@ async function rpc<T>(method: string, params: unknown[]): Promise<RpcResult<T>> 
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
+      signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
     })
   } catch {
     return { status: 'unavailable' }
@@ -55,6 +61,20 @@ async function rpc<T>(method: string, params: unknown[]): Promise<RpcResult<T>> 
     return { status: 'unavailable' }
   }
   return { status: 'ok', value: decoded.result as T }
+}
+
+async function rpcIsBase(): Promise<boolean> {
+  const chainId = await rpc<unknown>('eth_chainId', [])
+  return chainId.status === 'ok' && chainId.value === BASE_CHAIN_ID
+}
+
+/** Capture the Base head before a facilitator can verify or broadcast a payment. */
+export async function currentBaseBlockNumber(): Promise<bigint | null> {
+  const block = await rpc<unknown>('eth_blockNumber', [])
+  if (block.status === 'unavailable' || typeof block.value !== 'string' || !HEX_QUANTITY_RE.test(block.value)) {
+    return null
+  }
+  try { return BigInt(block.value) } catch { return null }
 }
 
 interface ParsedPersonalSignature {
@@ -85,7 +105,7 @@ type PersonalSignerProof =
 
 const signatureUnavailable = (): VerificationFailure => ({
   status: 'unavailable',
-  reason: 'Base RPC could not verify payer_signature; retry the same proof later; do not pay again',
+  reason: 'the market could not check payer_signature on Base; retry the same proof later',
 })
 
 async function recoverPersonalSignerProof(message: string, signature: string): Promise<PersonalSignerProof> {
@@ -185,12 +205,33 @@ const addrFromTopic = (topic: string) => '0x' + topic.slice(-40)
 
 interface Log { address: string; topics: string[]; data: string }
 
-export interface VerifiedTransfer {
+export interface FinalityEvidence {
+  blockTime: Date
+  blockNumber: bigint
+  blockHash: string
+  finalizedAt: Date
+}
+
+export interface VerifiedTransfer extends FinalityEvidence {
   from: string
   to: string
   amount: bigint
-  blockTime: Date
 }
+
+export interface ObservedTransfer {
+  from: string
+  to: string
+  amount: bigint
+  blockNumber: bigint
+  blockHash: string
+}
+
+export type TransferCheck =
+  | ({ state: 'matched' } & VerifiedTransfer)
+  | ({ state: 'matched_pending' } & ObservedTransfer)
+  | { state: 'pending' }
+  | { state: 'unavailable' }
+  | ({ state: 'invalid_final'; reason: 'failed_transaction' | 'confirmed_mismatch' } & FinalityEvidence)
 
 export type UsdcTransferVerification =
   | { status: 'verified'; transfer: VerifiedTransfer }
@@ -198,13 +239,201 @@ export type UsdcTransferVerification =
 
 const paymentUnavailable = (detail = 'this payment'): VerificationFailure => ({
   status: 'unavailable',
-  reason: `Base RPC could not verify ${detail}; retry the same proof later; do not pay again`,
+  reason: `the market could not check ${detail} on Base; retry the same proof later`,
 })
 
 function formatUsdc(units: bigint): string {
   const whole = units / 1_000_000n
   const fraction = (units % 1_000_000n).toString().padStart(6, '0')
   return `${whole}.${fraction}`
+}
+
+interface Receipt {
+  status: '0x0' | '0x1'
+  transactionHash: string
+  blockHash: string
+  blockNumber: string
+  logs: Log[]
+}
+
+function completeReceipt(value: unknown, expectedTransactionHash: string): Receipt | null {
+  if (!isRecord(value)) return null
+  if (
+    !['0x0', '0x1'].includes(String(value.status)) ||
+    typeof value.transactionHash !== 'string' || !HASH_RE.test(value.transactionHash) ||
+    value.transactionHash.toLowerCase() !== expectedTransactionHash.toLowerCase() ||
+    typeof value.blockHash !== 'string' || !HASH_RE.test(value.blockHash) ||
+    typeof value.blockNumber !== 'string' || !HEX_QUANTITY_RE.test(value.blockNumber) ||
+    !Array.isArray(value.logs)
+  ) return null
+  for (const log of value.logs) {
+    if (
+      !isRecord(log) || typeof log.address !== 'string' || !WALLET_RE.test(log.address) ||
+      !Array.isArray(log.topics) || log.topics.some(topic => typeof topic !== 'string' || !HASH_RE.test(topic)) ||
+      typeof log.data !== 'string' || !HEX_DATA_RE.test(log.data)
+    ) return null
+  }
+  return value as unknown as Receipt
+}
+
+type ReceiptFinality =
+  | ({ state: 'finalized' } & FinalityEvidence)
+  | { state: 'canonical_pending' | 'pending' | 'unavailable' }
+
+async function receiptFinality(receipt: Receipt): Promise<ReceiptFinality> {
+  const finalized = await rpc<unknown>('eth_getBlockByNumber', ['finalized', false])
+  if (finalized.status === 'unavailable') return { state: 'unavailable' }
+  if (
+    !isRecord(finalized.value) ||
+    typeof finalized.value.number !== 'string' || !HEX_QUANTITY_RE.test(finalized.value.number)
+  ) return { state: 'unavailable' }
+  if (BigInt(finalized.value.number) < BigInt(receipt.blockNumber)) {
+    return { state: 'canonical_pending' }
+  }
+
+  // Read the numbered block after observing a finalized head at or above it.
+  // Reversing these calls can accept a receipt orphaned between the two reads.
+  const canonical = await rpc<unknown>('eth_getBlockByNumber', [receipt.blockNumber, false])
+  if (canonical.status === 'unavailable') return { state: 'unavailable' }
+  if (canonical.value === null) return { state: 'pending' }
+  if (
+    !isRecord(canonical.value) ||
+    typeof canonical.value.hash !== 'string' || !HASH_RE.test(canonical.value.hash) ||
+    typeof canonical.value.number !== 'string' || !HEX_QUANTITY_RE.test(canonical.value.number)
+  ) return { state: 'unavailable' }
+  if (
+    canonical.value.hash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+    BigInt(canonical.value.number) !== BigInt(receipt.blockNumber)
+  ) return { state: 'pending' }
+
+  const blockResult = await rpc<unknown>('eth_getBlockByHash', [receipt.blockHash, false])
+  if (
+    blockResult.status === 'unavailable' || !isRecord(blockResult.value) ||
+    typeof blockResult.value.hash !== 'string' || !HASH_RE.test(blockResult.value.hash) ||
+    blockResult.value.hash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+    typeof blockResult.value.number !== 'string' || !HEX_QUANTITY_RE.test(blockResult.value.number) ||
+    BigInt(blockResult.value.number) !== BigInt(receipt.blockNumber) ||
+    typeof blockResult.value.timestamp !== 'string' || !HEX_QUANTITY_RE.test(blockResult.value.timestamp)
+  ) return { state: 'unavailable' }
+  const blockTime = new Date(Number(BigInt(blockResult.value.timestamp)) * 1000)
+  if (Number.isNaN(blockTime.getTime())) return { state: 'unavailable' }
+  return {
+    state: 'finalized',
+    blockTime,
+    blockNumber: BigInt(receipt.blockNumber),
+    blockHash: receipt.blockHash.toLowerCase(),
+    finalizedAt: new Date(),
+  }
+}
+
+/**
+ * Classify a Base USDC receipt only after its block is still canonical and the
+ * finalized head has reached it. A pre-finality mismatch is never treated as
+ * permanent because a reorg can still replace the receipt.
+ */
+export async function classifyUsdcTransfer(
+  txHash: string,
+  to: string,
+  minimum: bigint,
+  options: {
+    expectedFrom?: string
+    exactAmount?: boolean
+    expectedAuthorizationNonce?: string
+  } = {},
+): Promise<TransferCheck> {
+  if (!HASH_RE.test(txHash) || !WALLET_RE.test(to) || minimum <= 0n) return { state: 'pending' }
+  if (options.expectedFrom != null && !WALLET_RE.test(options.expectedFrom)) return { state: 'pending' }
+  if (
+    options.expectedAuthorizationNonce != null
+    && (!options.expectedFrom || !HASH_RE.test(options.expectedAuthorizationNonce))
+  ) return { state: 'pending' }
+
+  if (!await rpcIsBase()) return { state: 'unavailable' }
+  const receiptResult = await rpc<unknown>('eth_getTransactionReceipt', [txHash])
+  if (receiptResult.status === 'unavailable') return { state: 'unavailable' }
+  if (receiptResult.value === null) return { state: 'pending' }
+  const receipt = completeReceipt(receiptResult.value, txHash)
+  if (!receipt) return { state: 'unavailable' }
+
+  return classifyReceiptTransfer(receipt, to, minimum, options)
+}
+
+async function classifyReceiptTransfer(
+  receipt: Receipt,
+  to: string,
+  minimum: bigint,
+  options: {
+    expectedFrom?: string
+    exactAmount?: boolean
+    expectedAuthorizationNonce?: string
+  } = {},
+): Promise<TransferCheck> {
+
+  if (receipt.status === '0x0') {
+    const finality = await receiptFinality(receipt)
+    return finality.state === 'finalized'
+      ? { ...finality, state: 'invalid_final', reason: 'failed_transaction' }
+      : { state: finality.state === 'canonical_pending' ? 'pending' : finality.state }
+  }
+
+  const toTopic = pad32(to)
+  let hit: Log | null = null
+  for (const log of receipt.logs) {
+    if (
+      log.address.toLowerCase() !== USDC.toLowerCase() ||
+      log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC ||
+      log.topics.length < 3 || log.topics[2]!.toLowerCase() !== toTopic
+    ) continue
+    const from = addrFromTopic(log.topics[1]!)
+    if (options.expectedFrom != null && from.toLowerCase() !== options.expectedFrom.toLowerCase()) continue
+    if (!HASH_RE.test(log.data)) continue
+    const amount = BigInt(log.data)
+    if (options.exactAmount === true ? amount === minimum : amount >= minimum) {
+      hit = log
+      break
+    }
+  }
+
+  const authorizationUsed = options.expectedAuthorizationNonce == null
+    ? true
+    : receipt.logs.some(log =>
+        log.address.toLowerCase() === USDC.toLowerCase()
+        && log.topics.length === 3
+        && log.topics[0]?.toLowerCase() === AUTHORIZATION_USED_TOPIC
+        && log.topics[1]?.toLowerCase() === pad32(options.expectedFrom!)
+        && log.topics[2]?.toLowerCase() === options.expectedAuthorizationNonce!.toLowerCase()
+        && log.data === '0x',
+      )
+
+  if (!hit || !authorizationUsed) {
+    const finality = await receiptFinality(receipt)
+    return finality.state === 'finalized'
+      ? { ...finality, state: 'invalid_final', reason: 'confirmed_mismatch' }
+      : { state: finality.state === 'canonical_pending' ? 'pending' : finality.state }
+  }
+  const finality = await receiptFinality(receipt)
+  if (finality.state === 'canonical_pending') {
+    return {
+      state: 'matched_pending',
+      from: addrFromTopic(hit.topics[1]!),
+      to,
+      amount: BigInt(hit.data),
+      blockNumber: BigInt(receipt.blockNumber),
+      blockHash: receipt.blockHash.toLowerCase(),
+    }
+  }
+  if (finality.state !== 'finalized') return { state: finality.state }
+
+  return {
+    state: 'matched',
+    from: addrFromTopic(hit.topics[1]!),
+    to,
+    amount: BigInt(hit.data),
+    blockTime: finality.blockTime,
+    blockNumber: finality.blockNumber,
+    blockHash: finality.blockHash,
+    finalizedAt: finality.finalizedAt,
+  }
 }
 
 /**
@@ -225,75 +454,41 @@ export async function verifyUsdcTransfer(
   }
   if (minUnits <= 0n) return { status: 'invalid', reason: 'payment minimum must be positive' }
 
+  if (!await rpcIsBase()) return paymentUnavailable()
   const receiptResult = await rpc<unknown>('eth_getTransactionReceipt', [txHash])
   if (receiptResult.status === 'unavailable') return paymentUnavailable()
   if (receiptResult.value === null) {
     return {
       status: 'unavailable',
-      reason: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
+      reason: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later',
     }
   }
   if (!isRecord(receiptResult.value)) {
     return paymentUnavailable('this payment because it returned an unreadable transaction receipt')
   }
-  const receipt = receiptResult.value
-  if (receipt.status === '0x0') return { status: 'invalid', reason: 'transaction failed on Base' }
-  if (
-    receipt.status !== '0x1' || typeof receipt.blockHash !== 'string' || !HASH_RE.test(receipt.blockHash) ||
-    !Array.isArray(receipt.logs)
-  ) {
+  const receipt = completeReceipt(receiptResult.value, txHash)
+  if (!receipt) {
     return paymentUnavailable('this payment because it returned an unreadable transaction receipt')
   }
-
-  const toTopic = pad32(to)
-  let hit: Log | null = null
-  for (const candidate of receipt.logs) {
-    if (
-      !isRecord(candidate) || typeof candidate.address !== 'string' || !WALLET_RE.test(candidate.address) ||
-      !Array.isArray(candidate.topics) || candidate.topics.some(topic => typeof topic !== 'string' || !HASH_RE.test(topic)) ||
-      typeof candidate.data !== 'string' || !HEX_DATA_RE.test(candidate.data)
-    ) {
-      return paymentUnavailable('this payment because it returned an unreadable transaction receipt')
-    }
-    if (
-      candidate.address.toLowerCase() !== USDC.toLowerCase() ||
-      candidate.topics[0]?.toLowerCase() !== TRANSFER_TOPIC
-    ) continue
-    if (candidate.topics.length < 3 || !HASH_RE.test(candidate.data)) {
-      return paymentUnavailable('this payment because it returned an unreadable transaction receipt')
-    }
-    if (candidate.topics[2]!.toLowerCase() !== toTopic) continue
-    if (BigInt(candidate.data) >= minUnits) {
-      hit = {
-        address: candidate.address,
-        topics: candidate.topics as string[],
-        data: candidate.data,
-      }
-      break
-    }
+  const check = await classifyReceiptTransfer(receipt, to, minUnits)
+  if (check.state === 'pending' || check.state === 'matched_pending' || check.state === 'unavailable')
+    return paymentUnavailable()
+  if (check.state === 'invalid_final') {
+    return check.reason === 'failed_transaction'
+      ? {
+          status: 'invalid',
+          reason: 'transaction failed on Base',
+          finality: check,
+        }
+      : {
+          status: 'invalid',
+          reason: `transaction did not transfer at least ${formatUsdc(minUnits)} USDC on Base to ${to}`,
+          finality: check,
+        }
   }
-  if (!hit) {
-    return {
-      status: 'invalid',
-      reason: `transaction did not transfer at least ${formatUsdc(minUnits)} USDC on Base to ${to}`,
-    }
-  }
-
-  const blockResult = await rpc<unknown>('eth_getBlockByHash', [receipt.blockHash, false])
-  if (
-    blockResult.status === 'unavailable' || !isRecord(blockResult.value) ||
-    typeof blockResult.value.timestamp !== 'string' || !HEX_QUANTITY_RE.test(blockResult.value.timestamp)
-  ) return paymentUnavailable('this payment block')
-  const blockTime = new Date(Number(BigInt(blockResult.value.timestamp)) * 1000)
-  if (Number.isNaN(blockTime.getTime())) return paymentUnavailable('this payment block')
   return {
     status: 'verified',
-    transfer: {
-      from: addrFromTopic(hit.topics[1]!),
-      to,
-      amount: BigInt(hit.data),
-      blockTime,
-    },
+    transfer: check,
   }
 }
 

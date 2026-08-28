@@ -279,23 +279,11 @@ async function publicJson(path: string): Promise<PublicRecordResult<Record<strin
     const declaredLength = Number(response.headers.get('content-length'))
     if (Number.isFinite(declaredLength) && declaredLength > PUBLIC_RECORD_MAX_BYTES)
       return { ok: false, kind: 'invalid', message: 'city public record is too large' }
-    if (!response.body)
+    const text = await response.text()
+    if (text.length === 0)
       return { ok: false, kind: 'invalid', message: 'city returned an empty public record' }
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let bytes = 0
-    let text = ''
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      bytes += chunk.value.byteLength
-      if (bytes > PUBLIC_RECORD_MAX_BYTES) {
-        await reader.cancel().catch(() => undefined)
-        return { ok: false, kind: 'invalid', message: 'city public record is too large' }
-      }
-      text += decoder.decode(chunk.value, { stream: true })
-    }
-    text += decoder.decode()
+    if (new TextEncoder().encode(text).byteLength > PUBLIC_RECORD_MAX_BYTES)
+      return { ok: false, kind: 'invalid', message: 'city public record is too large' }
     let parsed: unknown
     try { parsed = JSON.parse(text) } catch {
       return { ok: false, kind: 'invalid', message: 'city returned invalid JSON' }

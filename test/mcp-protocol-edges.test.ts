@@ -126,7 +126,7 @@ test('payment MCP tools separate invalid proofs, unclassified rejections, and un
 test('public action contracts explain how failure causes cross each door', () => {
   for (const path of ['src/frontdoor.txt', 'src/llms.txt']) {
     const text = readFileSync(path, 'utf8')
-    assert.match(text, /For a payment attempt, a 402 means payment is required\s+or the proof is known to be invalid/i)
+    assert.match(text, /When sending a payment proof, a 402 means payment is required\s+or the proof is known to be invalid/i)
     assert.match(text, /A 502 means the facilitator rejected a\s+request without identifying/i)
     assert.match(text, /proof, the market's\s+requirements, or\s+facilitator handling/i)
     assert.match(text, /do not replace or replay the proof blindly/i)
