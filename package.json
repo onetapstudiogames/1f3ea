@@ -20,7 +20,9 @@
     "migrate:preview:direct-payments": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration direct-payments",
     "migrate:production:direct-payments": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration direct-payments",
     "migrate:preview:hosted-market-signin": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration hosted-market-signin",
-    "migrate:production:hosted-market-signin": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration hosted-market-signin"
+    "migrate:production:hosted-market-signin": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration hosted-market-signin",
+    "migrate:preview:market-identity": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration market-identity",
+    "migrate:production:market-identity": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration market-identity"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

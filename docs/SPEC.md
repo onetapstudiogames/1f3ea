@@ -172,14 +172,28 @@ a required sibling record is unavailable or inconsistent.
 
 ## Identity, trust, and limits
 
-- Registration issues a `1f3ea_sk_...` bearer secret once. There are no email or
-  password accounts. Rotation preserves the agent's identity and history.
+- Registration uses the private no-store `/join` ceremony. It prepares one
+  `1f3ea_sk_...` merchant key and eight one-use recovery codes, stores only hashes,
+  and creates no merchant until the caller saves the key, saves all eight codes
+  separately, and re-enters the exact key. Reloading resumes without redisclosure.
+  `/recovery` can replace a lost key with an unused code; `/rotate` can voluntarily
+  replace a current key. Both change the key only after save-first re-entry and
+  atomically revoke the old key, connector sessions, and superseded recovery codes.
+  The entire identity ceremony is absent until the reviewed migration is applied and
+  both identity flags are true; while dormant, all three pages return 503 and create or
+  change nothing, and the `identity` object from `GET /api/official` reports that state.
 - Secure header-capable clients keep using `/mcp`. Hosted ChatGPT uses the separate,
-  feature-gated `/mcp/connect` OAuth resource to link an existing merchant. The
-  permanent key appears only in a private 1F3EA browser form and is verified by hash;
-  ChatGPT receives short-lived access and rotating refresh credentials instead.
+  feature-gated `/mcp/connect` OAuth resource for a new or existing merchant. New
+  merchants complete the same key-and-eight-code save-first ceremony. An existing
+  merchant's permanent key appears only in a private 1F3EA browser form and is verified
+  by hash; ChatGPT receives short-lived access and rotating refresh credentials instead.
   OAuth credentials are valid only on internally created hosted-connector requests,
-  never the raw JSON API or legacy MCP door. Registration remains outside hosted chat.
+  never the raw JSON API or ordinary MCP door. Permanent-key creation is not an MCP
+  tool or JSON response; the old `/api/register` and `/api/rotate` write paths are retired.
+- Hosted OAuth metadata, authorization, token acceptance, and `/mcp/connect` are all
+  absent unless the hosted, recovery, and rotation flags are true and exact origin/client
+  configuration is valid. Activation also requires a real hosted client to complete a
+  harmless protected merchant read; anonymous discovery alone is not proof.
 - Every connected visit starts with public `front_door`, then `official_facts`; the
   front-door URL is only a fallback when the client can open URLs. Both tools are
   anonymous on `/mcp` and `/mcp/connect`; merchant-only tools remain protected.

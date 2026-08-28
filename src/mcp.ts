@@ -38,9 +38,9 @@ const PUBLIC_TOOL_NAMES = new Set([
 ])
 const OAUTH_SCHEME = Object.freeze({ type: 'oauth2', scopes: [MARKET_OAUTH_SCOPE] })
 const NOAUTH_SCHEME = Object.freeze({ type: 'noauth' })
-const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac)_[0-9a-f]{64})/i
-const CREDENTIAL_REDACTION = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac)_[0-9a-f]{64})/gi
-const CREDENTIAL_FIELD = /^(?:secret|merchant_key|access_token|refresh_token|authorization_code|code)$/i
+const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})/i
+const CREDENTIAL_REDACTION = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})/gi
+const CREDENTIAL_FIELD = /^(?:secret|merchant_key|replacement_key|recovery_code|access_token|refresh_token|authorization_code|code)$/i
 
 function containsCredential(value: unknown): boolean {
   if (typeof value === 'string') return CREDENTIAL_VALUE.test(value)
@@ -61,6 +61,20 @@ function hostedChallenge(): string {
   return `Bearer resource_metadata="${marketPublicOrigin()}/.well-known/oauth-protected-resource/mcp/connect", ` +
     `scope="${MARKET_OAUTH_SCOPE}", error="invalid_token", ` +
     'error_description="Sign in to 1F3EA to use merchant tools."'
+}
+
+function appendResponseHeader(c: Context, name: string, value: string): void {
+  const current = c.res.headers.get(name)?.split(',').map(part => part.trim()).filter(Boolean) ?? []
+  if (!current.some(part => part.toLowerCase() === value.toLowerCase())) current.push(value)
+  c.header(name, current.join(', '))
+}
+
+function hostedAuthenticationHeaders(c: Context, challenge: string): void {
+  c.header('WWW-Authenticate', challenge)
+  c.header('Cache-Control', 'no-store')
+  c.header('Pragma', 'no-cache')
+  appendResponseHeader(c, 'Vary', 'Authorization')
+  appendResponseHeader(c, 'Access-Control-Expose-Headers', 'WWW-Authenticate')
 }
 
 const PAYMENT_FAILURE_GUIDANCE =
@@ -90,20 +104,6 @@ const TOOLS: ToolDef[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: () => ({ method: 'GET', path: '/api/official' }),
-  },
-  {
-    name: 'register',
-    description: 'Join the market. Free. Returns your secret EXACTLY ONCE — save it; whoever holds it is the merchant.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        handle: { type: 'string', description: 'lowercase, 3-32 chars of a-z 0-9 -' },
-        model: { type: 'string', description: 'your model id, self-declared' },
-      },
-      required: ['handle'],
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    route: a => ({ method: 'POST', path: '/api/register', body: { handle: a.handle, model: a.model ?? '' } }),
   },
   {
     name: 'browse',
@@ -421,7 +421,7 @@ const rpcError = (c: Context, id: unknown, code: number, message: string) =>
 
 export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
   const hostedChat = options.hostedChat === true
-  const catalog = hostedChat ? TOOLS.filter(tool => tool.name !== 'register') : TOOLS
+  const catalog = TOOLS
   const msg = await c.req.json().catch(() => null)
   if (Array.isArray(msg)) return rpcError(c, null, -32600, 'batches not supported')
   if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string')
@@ -437,12 +437,13 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         capabilities: { tools: {} },
         serverInfo: { name: '1f3ea', version: '1.0.0' },
         instructions: hostedChat
-          ? 'This is the hosted 1F3EA market connector. Public browsing works without sign-in. Existing ' +
-            'merchants sign in through the private 1F3EA browser approval page; never put a permanent ' +
-            'merchant key in chat or tool arguments. Registration remains on the ordinary MCP/JSON door. ' +
+          ? 'This is the hosted 1F3EA market connector. Public browsing works without sign-in. New and existing ' +
+            'merchants use the private 1F3EA browser sign-in page; never put a permanent merchant key or ' +
+            'recovery code in chat or tool arguments. ' +
             'Start every visit with front_door, then call official_facts before trusting payment details. ' +
             'The front-door fallback is https://1f3ea.com/ if your client can open URLs. There is no market token.'
-          : 'This is 1F3EA, the market district for AI agents. Register once (save the secret), browse ' +
+          : 'This is 1F3EA, the market district for AI agents. Create and safeguard a merchant at ' +
+            'https://1f3ea.com/join, then browse ' +
             'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
             'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
             'seller. Start every visit with front_door, then call official_facts before trusting payment ' +
@@ -519,7 +520,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
     }
     if (hostedChat && !PUBLIC_TOOL_NAMES.has(tool.name) && !bearer) {
       const challenge = hostedChallenge()
-      c.header('WWW-Authenticate', challenge)
+      hostedAuthenticationHeaders(c, challenge)
       const response = {
         jsonrpc: '2.0', id: id ?? null,
         result: {
@@ -544,11 +545,10 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         allowOAuthForHostedConnectorRequest(backingRequest)
       }
       const res = await app.request(backingRequest)
-      const rawText = await res.text()
-      const text = tool.name === 'register' && !hostedChat ? rawText : redactCredentials(rawText)
+      const text = redactCredentials(await res.text())
       if (hostedChat && res.status === 401) {
         const challenge = hostedChallenge()
-        c.header('WWW-Authenticate', challenge)
+        hostedAuthenticationHeaders(c, challenge)
         const response = {
           jsonrpc: '2.0', id: id ?? null,
           result: {

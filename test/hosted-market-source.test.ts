@@ -30,14 +30,17 @@ test('OAuth storage schema keeps only hashed, bounded, one-use sign-in records',
 })
 
 test('source wires a separate feature-gated hosted door without replacing the Wave 6 door', async () => {
-  const [index, mcp, core, store] = await Promise.all([
+  const [index, mcp, core, store, readiness, config] = await Promise.all([
     source('src/index.ts'), source('src/mcp.ts'), source('src/core.ts'),
-    source('src/market-oauth-store.ts'),
+    source('src/market-oauth-store.ts'), source('src/hosted-market-readiness.ts'),
+    source('src/market-oauth-config.ts'),
   ])
   assert.match(index, /mountMarketOAuthRoutes\(app/)
   assert.match(index, /app\.post\('\/mcp\/connect'/)
   assert.match(index, /app\.post\('\/mcp'/)
-  assert.match(index, /HOSTED_MARKET_SIGNIN_ENABLED/)
+  assert.match(index, /hostedMarketSigninReadiness/)
+  assert.match(readiness, /hostedMarketSigninEnabled/)
+  assert.match(config, /HOSTED_MARKET_SIGNIN_ENABLED/)
   assert.match(mcp, /wrong 1F3EA connector address/i)
   assert.match(mcp, /mcp\/www_authenticate/)
   assert.match(core, /hostedConnectorRequests\s*=\s*new WeakSet<Request>/)
@@ -66,8 +69,34 @@ test('front doors and setup guide give the safe ChatGPT path and an exact wrong-
   assert.match(guide, /permanent merchant key[^\n]*(?:1F3EA|authorization|sign-in) page/i)
   assert.match(guide, /reconnect|connect again/i)
   assert.match(guide, /small screen|mobile/i)
-  assert.match(guide, /registration[^\n]*(?:not|separate|existing merchant)/i)
+  assert.match(guide, /create|register/i)
   assert.match(guide, /HOSTED_MARKET_SIGNIN_ENABLED/)
+})
+
+test('every identity guide states the save-first merchant contract and gated recovery paths', async () => {
+  const surfaces = await Promise.all([
+    source('src/frontdoor.txt'),
+    source('src/llms.txt'),
+    source('README.md'),
+    source('docs/HOSTED_CHATGPT_ACCESS.md'),
+    source('docs/SPEC.md'),
+    source('docs/DECISIONS.md'),
+    source('src/legal.ts'),
+  ])
+  for (const text of surfaces) {
+    assert.match(text, /\/join/i)
+    assert.match(text, /eight[^\n.]{0,100}recovery codes|8[^\n.]{0,100}recovery codes/i)
+    assert.match(text, /\/recovery/i)
+    assert.match(text, /\/rotate/i)
+    assert.doesNotMatch(text, /POST\s+(?:https:\/\/1f3ea\.com)?\/api\/(?:register|rotate)/i)
+    assert.doesNotMatch(text, /(?:GET\s+)?\/api\/official\.identity\b/i)
+  }
+  const guide = surfaces[3]!
+  assert.match(guide, /save[^\n.]{0,100}merchant key[\s\S]{0,600}save[^\n.]{0,120}(?:eight|8) recovery codes[\s\S]{0,600}re-enter/i)
+  assert.match(guide, /MARKET_IDENTITY_RECOVERY_ENABLED/)
+  assert.match(guide, /MARKET_IDENTITY_ROTATION_ENABLED/)
+  assert.match(guide, /protected[^\n.]{0,100}(?:me|merchant)[^\n.]{0,120}(?:real|live)/i)
+  assert.match(guide, /dormant|unavailable|disabled/i)
 })
 
 test('public visit guidance names connector-native opening reads before any web fallback', async () => {

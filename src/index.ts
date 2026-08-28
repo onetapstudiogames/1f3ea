@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { sql, logEvent } from './db.ts'
 import { FRONTDOOR, LLMS, ROBOTS, HUMANS } from './door.ts'
 import {
-  auth, dupHash, err, HANDLE_RE, newSecret, QUOTAS, sha256, spendQuota, WALLET_RE,
+  auth, dupHash, err, QUOTAS, spendQuota, WALLET_RE,
   type Merchant,
 } from './core.ts'
 import {
@@ -34,14 +34,16 @@ import { postgresUniqueConstraint } from './postgres-error.ts'
 import { countedPage, type CountedRow } from './public-pagination.ts'
 import { registerCollectionRoutes } from './collection-routes.ts'
 import { mountHumanPages } from './human-pages.ts'
+import { hostedMarketSigninReadiness } from './hosted-market-readiness.ts'
+import {
+  marketIdentityPublicFacts,
+  mountMarketIdentityRoutes,
+} from './market-identity-routes.ts'
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
 const SEED_CAP = 10
 const DUPE_WINDOW_DAYS = 7
-const REG_PER_IP_HOUR = 3
-const REG_GLOBAL_HOUR = 300
-const ROTATIONS_PER_DAY = 5
 const FEE_TX_CONSTRAINTS: readonly string[] = [
   'fees_tx_hash_key',
   'fees_tx_hash_lower_unique',
@@ -58,6 +60,7 @@ const OPEN_INTENT_CONSTRAINTS: readonly string[] = [
 ]
 
 const app = new Hono()
+const HOSTED_MARKET_SIGNIN = hostedMarketSigninReadiness()
 
 const missingShelf = () => ({
   error:
@@ -68,7 +71,7 @@ const missingShelf = () => ({
 
 const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
 app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
-mountMarketOAuthRoutes(app)
+if (HOSTED_MARKET_SIGNIN.ready) mountMarketOAuthRoutes(app)
 configureMarketOAuthMerchantResolver()
 app.onError((e, c) => {
   console.error(e)
@@ -121,53 +124,7 @@ registerCollectionRoutes(app)
 
 // ---------- Identity ----------
 
-app.post('/api/register', async c => {
-  const ip = (c.req.header('x-forwarded-for') ?? '').split(',')[0]!.trim() || 'unknown'
-  const ipHash = sha256('reg:' + ip)
-  await sql`DELETE FROM reg_log WHERE created_at < now() - interval '24 hours'`
-  const counts = (await sql`
-    SELECT count(*) FILTER (WHERE ip_hash = ${ipHash} AND created_at > now() - interval '1 hour')::int AS ip,
-           count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS all
-    FROM reg_log`) as { ip: number; all: number }[]
-  if (counts[0]!.ip >= REG_PER_IP_HOUR || counts[0]!.all >= REG_GLOBAL_HOUR)
-    return err(c, 429, 'the registrar is busy. Come back in an hour.')
-
-  const b = await c.req.json().catch(() => null)
-  const handle = String(b?.handle ?? '').toLowerCase().trim()
-  const model = String(b?.model ?? '').slice(0, 120)
-  if (!HANDLE_RE.test(handle)) return err(c, 400, 'handle must match ^[a-z0-9][a-z0-9-]{2,31}$')
-  const secret = newSecret()
-  let rows: { id: number }[]
-  try {
-    rows = (await sql`
-      INSERT INTO merchants (handle, model, secret_hash) VALUES (${handle}, ${model}, ${sha256(secret)})
-      RETURNING id`) as { id: number }[]
-  } catch (error) {
-    if (postgresUniqueConstraint(error) !== 'merchants_handle_key') throw error
-    return err(c, 409, 'handle taken')
-  }
-  await sql`INSERT INTO reg_log (ip_hash) VALUES (${ipHash})`
-  await logEvent('register', handle, { id: rows[0]!.id, model })
-  return c.json({
-    merchant_id: rows[0]!.id,
-    handle,
-    secret,
-    warning: 'Save this secret. It is shown exactly once. There is no recovery. Whoever holds it IS the merchant.',
-  }, 201)
-})
-
-app.post('/api/rotate', async c => {
-  const m = await auth(c)
-  if (!m) return err(c, 401, 'bad or missing bearer secret')
-  const n = (await sql`
-    SELECT count(*)::int AS n FROM events
-    WHERE kind = 'rotate' AND actor = ${m.handle} AND at > date_trunc('day', now() AT TIME ZONE 'utc')`) as { n: number }[]
-  if (n[0]!.n >= ROTATIONS_PER_DAY) return err(c, 429, `${ROTATIONS_PER_DAY} rotations per UTC day`)
-  const secret = newSecret()
-  await sql`UPDATE merchants SET secret_hash = ${sha256(secret)} WHERE id = ${m.id}`
-  await logEvent('rotate', m.handle, {})
-  return c.json({ handle: m.handle, secret, warning: 'Old key is dead. Save this one.' })
-})
+mountMarketIdentityRoutes(app, { hostedMarketSigninReady: HOSTED_MARKET_SIGNIN.ready })
 
 // ---------- Stores ----------
 
@@ -866,7 +823,7 @@ async function recordDirectPurchase(
 app.post('/api/purchase-intent/:id', async c => {
   const requestStartedAt = new Date()
   const merchant = await auth(c)
-  if (!merchant) return err(c, 401, 'register first — it is free. POST /api/register')
+  if (!merchant) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
   const listing = await getBuyable(c, merchant, Number(c.req.param('id')))
   if (listing instanceof Response) return listing
   if (listing.price_usdc === 0) return err(c, 409, 'this listing is free; use POST /api/buy/:id')
@@ -883,7 +840,7 @@ app.post('/api/purchase-intent/:id', async c => {
 
 app.post('/api/buy/:id', async c => {
   const m = await auth(c)
-  if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
+  if (!m) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
   const l = await getBuyable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
   const checkedAt = new Date(l.checked_at ?? '')
@@ -920,7 +877,7 @@ app.post('/api/buy/:id', async c => {
 app.post('/api/claim/:id', async c => {
   const requestStartedAt = new Date()
   const m = await auth(c)
-  if (!m) return err(c, 401, 'register first — it is free. POST /api/register')
+  if (!m) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
   const l = await getClaimable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
   if (l.price_usdc === 0) {
@@ -1074,6 +1031,7 @@ app.get('/api/official', c =>
     network: NETWORK,
     usdc_contract: USDC,
     token: null,
+    identity: marketIdentityPublicFacts(process.env, HOSTED_MARKET_SIGNIN.ready),
     statement:
       'There is no 1F3EA token, coin, or points program, and there never will be. ' +
       'Anyone selling one is lying to you. The treasury above is the only official address. ' +
@@ -1182,10 +1140,10 @@ registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID, se
 
 app.post('/mcp', c => mcp(c, app))
 app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
-if (process.env.HOSTED_MARKET_SIGNIN_ENABLED === 'true') {
+if (HOSTED_MARKET_SIGNIN.ready) {
   app.post('/mcp/connect', c => mcp(c, app, {
     hostedChat: true,
-    forwardUnauthorizedStatus: false,
+    forwardUnauthorizedStatus: true,
   }))
   app.get('/mcp/connect', c => c.text('Hosted MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
 }

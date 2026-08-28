@@ -182,13 +182,20 @@ test('every literal SQL row cap in the whole source tree matches the audited non
     return limits.length ? [[path, limits]] : []
   }))
   assert.deepEqual(actual, {
+    'src/market-identity-progress-store.ts': ['LIMIT 2'],
+    'src/market-identity-store.ts': ['LIMIT 1', 'LIMIT 1'],
     'src/market-oauth-store.ts': [
-      'LIMIT 1', 'LIMIT 1',
+      'LIMIT 1', 'LIMIT 1', 'LIMIT 1',
       'LIMIT 50', 'LIMIT 50', 'LIMIT 50', 'LIMIT 50',
     ],
     'src/world-routes.ts': ['LIMIT 1'],
   })
 
+  const identityStore = read('src/market-identity-store.ts')
+  const identityProgressStore = read('src/market-identity-progress-store.ts')
+  assert.match(identityProgressStore, /getMerchantRotationProgress[\s\S]*?LIMIT 2/)
+  assert.match(identityStore, /getMerchantRegistrationProgress[\s\S]*?LIMIT 1/)
+  assert.match(identityStore, /completed = \(await sql`[\s\S]*?LIMIT 1/)
   const oauthStore = read('src/market-oauth-store.ts')
   assert.match(oauthStore, /getAuthorizationRequest[\s\S]*?LIMIT 1/)
   assert.match(oauthStore, /getAuthorizationCode[\s\S]*?LIMIT 1/)

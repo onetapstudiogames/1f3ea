@@ -1,14 +1,17 @@
 # Release migrations
 
-The direct-payment and hosted-sign-in changes have two small, additive database
+The direct-payment, hosted-sign-in, and save-first identity changes have three additive database
 changes. Apply these files before the pull request containing the code that uses them
 is merged into GitHub `main`:
 
 1. `db/migrations/20260823_direct_payments.sql`
 2. `db/migrations/20260822_hosted_market_signin.sql`
+3. `db/migrations/20260827_market_identity.sql`
 
 Do not use the full `db/schema.sql` as a remote release migration. It contains the
-whole market history, while these two files contain only this release's additions.
+whole market history, while these three files contain only their reviewed additions.
+The market-identity migration extends the hosted-sign-in tables, so apply hosted sign-in
+before market identity on an environment that has neither.
 
 ## Required target facts
 
@@ -49,6 +52,7 @@ Run each command with the target facts above:
 ```text
 npm run migrate:preview:direct-payments -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
 npm run migrate:preview:hosted-market-signin -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
+npm run migrate:preview:market-identity -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
 ```
 
 The runner applies each file in one transaction, then checks that every required
@@ -68,9 +72,10 @@ Run:
 ```text
 npm run migrate:production:direct-payments -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
 npm run migrate:production:hosted-market-signin -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
+npm run migrate:production:market-identity -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
 ```
 
-Only merge the application pull request into GitHub `main` after both commands report
+Only merge the application pull request into GitHub `main` after all three commands report
 all checks passed. Vercel's GitHub integration then builds and deploys that exact merged
 commit; no local folder or provider command deploys the application. If a check fails,
 do not merge. These additions are safe for the old application to ignore, so the

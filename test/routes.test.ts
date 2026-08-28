@@ -6,6 +6,9 @@ import { Hono } from 'hono'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+delete process.env.HOSTED_MARKET_SIGNIN_ENABLED
+delete process.env.MARKET_IDENTITY_RECOVERY_ENABLED
+delete process.env.MARKET_IDENTITY_ROTATION_ENABLED
 
 const TREASURY = process.env.TREASURY_ADDRESS
 const SELLER = '0x1111111111111111111111111111111111111111'
@@ -83,8 +86,6 @@ const state = {
   duplicateWithdrawn: false,
   seedCount: 10,
   nextListingId: 42,
-  registrationInsertError: null as PostgresErrorFixture | null,
-  registrationEventError: null as PostgresErrorFixture | null,
   voteInsertErrorCode: null as string | null,
   voteInsertErrorConstraint: null as string | null,
   failFeeInsert: false,
@@ -345,14 +346,6 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       ...row, __aisles: JSON.stringify(state.aisleCounts),
     }))
   }
-  if (query.includes('DELETE FROM reg_log')) return []
-  if (query.includes('FROM reg_log')) return [{ ip: 0, all: 0 }]
-  if (query.includes('INSERT INTO merchants')) {
-    if (state.registrationInsertError)
-      throw postgresError(state.registrationInsertError, 'merchant insert failed')
-    return [{ id: 77 }]
-  }
-  if (query.includes('INSERT INTO reg_log')) return []
   if (query.includes('INSERT INTO votes')) {
     if (state.voteInsertErrorCode)
       throw Object.assign(new Error('vote insert failed'), {
@@ -439,11 +432,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return [editableListing()]
   }
   if (query.includes('DELETE FROM listings')) return []
-  if (query.includes('INSERT INTO events') && !query.includes('INSERT INTO purchases')) {
-    if (state.registrationEventError && params[0] === 'register')
-      throw postgresError(state.registrationEventError, 'registration event insert failed')
-    return []
-  }
+  if (query.includes('INSERT INTO events') && !query.includes('INSERT INTO purchases')) return []
   if (query.includes('UPDATE merchants SET storefront_line')) {
     state.storeLine = String(params[0] ?? '')
     return [{ line: state.storeLine }]
@@ -722,8 +711,6 @@ function reset() {
   state.duplicateWithdrawn = false
   state.seedCount = 10
   state.nextListingId = 42
-  state.registrationInsertError = null
-  state.registrationEventError = null
   state.voteInsertErrorCode = null
   state.voteInsertErrorConstraint = null
   state.failFeeInsert = false
@@ -778,72 +765,21 @@ function directClaimBody(intentId: number, txHash: string) {
   return JSON.stringify({ intent_id: intentId, tx_hash: txHash, payer_signature: SIGNATURE })
 }
 
-test('registration reports only a nested merchants_handle_key violation as a taken handle', async () => {
+test('private identity routes fail dormant without touching storage or returning credentials', async () => {
   reset()
-  state.registrationInsertError = {
-    code: '23505', constraint: 'merchants_handle_key', nested: true,
+  for (const [path, method] of [
+    ['/join', 'GET'], ['/recovery', 'GET'], ['/rotate', 'GET'],
+    ['/api/register', 'POST'], ['/api/rotate', 'POST'],
+  ] as const) {
+    const response = await app.request(path, { method })
+    assert.equal(response.status, 503, path)
+    assert.equal(response.headers.get('cache-control'), 'no-store', path)
+    assert.equal(response.headers.get('access-control-allow-origin'), null, path)
+    const text = await response.text()
+    assert.match(text, /private merchant identity.*unavailable.*no merchant or key was (?:created|changed)/iu, path)
+    assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac)_[0-9a-f]+/iu, path)
   }
-  const res = await app.request('/api/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ handle: 'taken-handle', model: 'test-model' }),
-  })
-  assert.equal(res.status, 409)
-  assert.deepEqual(await res.json(), { error: 'handle taken' })
-})
-
-test('registration does not misreport another merchant unique violation as a taken handle', async () => {
-  reset()
-  state.registrationInsertError = { code: '23505', constraint: 'merchants_pkey' }
-  const originalConsoleError = console.error
-  console.error = () => undefined
-  try {
-    const res = await app.request('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
-    })
-    assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
-  } finally {
-    console.error = originalConsoleError
-  }
-})
-
-test('registration reports a non-conflict database failure as internal', async () => {
-  reset()
-  state.registrationInsertError = { code: '08006' }
-  const originalConsoleError = console.error
-  console.error = () => undefined
-  try {
-    const res = await app.request('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
-    })
-    assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
-  } finally {
-    console.error = originalConsoleError
-  }
-})
-
-test('registration reports a late event unique violation as internal', async () => {
-  reset()
-  state.registrationEventError = { code: '23505', constraint: 'events_pkey' }
-  const originalConsoleError = console.error
-  console.error = () => undefined
-  try {
-    const res = await app.request('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle: 'new-handle', model: 'test-model' }),
-    })
-    assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
-  } finally {
-    console.error = originalConsoleError
-  }
+  assert.equal(sqlCalls().length, 0)
 })
 
 test('voting reports a unique vote conflict as a caller-correctable refusal', async () => {
@@ -895,15 +831,15 @@ test('voting reports a non-conflict database failure as internal', async () => {
 
 test('every market action route returns a caller-facing cause when it refuses a request', async () => {
   const cases = [
-    ['register', '/api/register', 'POST', { handle: 'x' }, /handle must match/iu],
-    ['rotate key', '/api/rotate', 'POST', {}, /bad or missing bearer secret/iu],
+    ['register', '/api/register', 'POST', { handle: 'x' }, /private merchant identity.*unavailable/iu],
+    ['rotate key', '/api/rotate', 'POST', {}, /private merchant identity.*unavailable/iu],
     ['set store', '/api/store', 'POST', {}, /bad or missing bearer secret/iu],
     ['list item', '/api/listing', 'POST', {}, /bad or missing bearer secret/iu],
     ['edit item', '/api/listing/1', 'PATCH', {}, /bad or missing bearer secret/iu],
     ['withdraw item', '/api/listing/1/withdraw', 'POST', {}, /bad or missing bearer secret/iu],
-    ['create purchase intent', '/api/purchase-intent/1', 'POST', {}, /register first/iu],
-    ['buy item', '/api/buy/1', 'POST', {}, /register first/iu],
-    ['claim purchase', '/api/claim/1', 'POST', {}, /register first/iu],
+    ['create purchase intent', '/api/purchase-intent/1', 'POST', {}, /open \/join first/iu],
+    ['buy item', '/api/buy/1', 'POST', {}, /open \/join first/iu],
+    ['claim purchase', '/api/claim/1', 'POST', {}, /open \/join first/iu],
     ['comment', '/api/comment', 'POST', {}, /bad or missing bearer secret/iu],
     ['vote', '/api/vote', 'POST', {}, /bad or missing bearer secret/iu],
     ['flag', '/api/flag', 'POST', {}, /need target_type.*target_id.*reason/iu],
@@ -2761,6 +2697,23 @@ test('MCP opening reads are byte-identical to the actual public web handlers', a
   )
   assert.equal(mcpOfficialBody.result.isError, false)
   assert.equal(mcpOfficialBody.result.content[0]!.text, webOfficialText)
+})
+
+test('/api/official states the dormant private-identity and hosted-sign-in contract', async () => {
+  const response = await app.request('/api/official')
+  assert.equal(response.status, 200)
+  const body = await response.json() as { identity: Record<string, unknown> }
+  assert.deepEqual(body.identity, {
+    join: null,
+    recovery: null,
+    recovery_enabled: false,
+    rotate: null,
+    rotation_enabled: false,
+    hosted_connector: null,
+    hosted_status: 'dormant',
+    legacy_registration: 'retired',
+    merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
+  })
 })
 
 test('missing HTTP routes give connector-first front-door recovery', async () => {

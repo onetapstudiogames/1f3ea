@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless'
 
 export type ReleaseTarget = 'preview' | 'production'
-export type ReleaseMigration = 'direct-payments' | 'hosted-market-signin'
+export type ReleaseMigration = 'direct-payments' | 'hosted-market-signin' | 'market-identity'
 type SqlMode = 'normal' | 'single-quote' | 'double-quote' | 'line-comment' | 'block-comment' | 'dollar-quote'
 
 type MigrationEnvironment = Readonly<Record<string, string | undefined>>
@@ -68,6 +68,35 @@ const MIGRATIONS = Object.freeze({
       { kind: 'relation', name: 'oauth_token_families_active' },
       { kind: 'relation', name: 'oauth_tokens_active_expiry' },
       { kind: 'relation', name: 'oauth_rate_limits_expiry' },
+    ],
+  },
+  'market-identity': {
+    file: 'db/migrations/20260827_market_identity.sql',
+    postconditions: [
+      { kind: 'column', table: 'merchants', name: 'recovery_generation' },
+      { kind: 'constraint', table: 'merchants', name: 'merchants_recovery_generation_nonnegative' },
+      { kind: 'relation', name: 'pending_merchant_registrations' },
+      { kind: 'relation', name: 'pending_merchant_registration_recovery_codes' },
+      { kind: 'relation', name: 'merchant_recovery_codes' },
+      { kind: 'constraint', table: 'merchant_recovery_codes', name: 'merchant_recovery_codes_ceremony_state' },
+      { kind: 'constraint', table: 'merchant_recovery_codes', name: 'merchant_recovery_codes_expiry_window' },
+      { kind: 'relation', name: 'merchant_recovery_ceremony_results' },
+      { kind: 'constraint', table: 'merchant_recovery_ceremony_results', name: 'merchant_recovery_ceremony_results_outcome_allowed' },
+      { kind: 'constraint', table: 'merchant_recovery_ceremony_results', name: 'merchant_recovery_ceremony_results_retention_window' },
+      { kind: 'relation', name: 'merchant_recovery_ceremony_results_expiry' },
+      { kind: 'relation', name: 'merchant_key_rotations' },
+      { kind: 'relation', name: 'merchant_identity_rate_limits' },
+      { kind: 'constraint', table: 'merchant_identity_rate_limits', name: 'merchant_identity_rate_limits_attempt_kind_allowed' },
+      { kind: 'relation', name: 'oauth_authorization_request_recovery_codes' },
+      { kind: 'column', table: 'oauth_authorization_requests', name: 'intent' },
+      { kind: 'column', table: 'oauth_authorization_requests', name: 'new_handle' },
+      { kind: 'column', table: 'oauth_authorization_requests', name: 'new_model' },
+      { kind: 'column', table: 'oauth_authorization_requests', name: 'new_secret_hash' },
+      { kind: 'column', table: 'oauth_authorization_requests', name: 'merchant_key_confirmed_at' },
+      { kind: 'constraint', table: 'oauth_authorization_requests', name: 'oauth_authorization_requests_intent_allowed' },
+      { kind: 'constraint', table: 'oauth_authorization_requests', name: 'oauth_authorization_requests_identity_values' },
+      { kind: 'constraint', table: 'oauth_authorization_requests', name: 'oauth_authorization_requests_identity_state' },
+      { kind: 'constraint', table: 'oauth_authorization_requests', name: 'oauth_authorization_requests_key_confirmation_time' },
     ],
   },
 } as const satisfies Readonly<Record<ReleaseMigration, Readonly<{
@@ -165,8 +194,14 @@ export function resolveReleaseMigration(
     throw new Error('release migration requires --target preview|production')
   }
   const migration = argumentsByName.get('migration')
-  if (migration !== 'direct-payments' && migration !== 'hosted-market-signin') {
-    throw new Error('release migration requires --migration direct-payments|hosted-market-signin')
+  if (
+    migration !== 'direct-payments' &&
+    migration !== 'hosted-market-signin' &&
+    migration !== 'market-identity'
+  ) {
+    throw new Error(
+      'release migration requires --migration direct-payments|hosted-market-signin|market-identity',
+    )
   }
   const databaseName = requireSafeDatabaseName(argumentsByName.get('database'))
   const endpoint = requireEndpoint(argumentsByName.get('endpoint'), 'endpoint')
