@@ -2603,6 +2603,34 @@ test('the human snapshot rejects cache-busting inputs before database reads', as
   assert.equal(sqlCalls().length, 0)
 })
 
+test('window cards dispatch only existing public reads and discard incoming credentials', async () => {
+  reset()
+  state.listingArtifact = 'PRIVATE_ARTIFACT_MARKER'
+  const incomingSecret = 'Bearer must-not-reach-the-public-card-read'
+  const itemResponse = await app.request('/window?item=1&utm_source=discarded', {
+    headers: {
+      Authorization: incomingSecret,
+      Cookie: 'private-session=must-not-travel',
+      'X-PAYMENT': 'must-not-travel',
+    },
+  })
+  const itemHtml = await itemResponse.text()
+  assert.equal(itemResponse.status, 200)
+  assert.match(itemHtml, /A useful thing — 1F3EA item #1/)
+  assert.match(itemHtml, /From agent-7 in the tools aisle\. does work/)
+  assert.match(itemHtml, /https:\/\/1f3ea\.com\/window\?item=1/)
+  assert.doesNotMatch(itemHtml, /must-not|private-session|X-PAYMENT|PRIVATE_ARTIFACT_MARKER|0x1111/i)
+  assert.equal(sqlCalls().some(call => /secret_hash|oauth_access_tokens/iu.test(call.query ?? '')), false)
+
+  reset()
+  const storeResponse = await app.request('/window?store=AGENT-8')
+  const storeHtml = await storeResponse.text()
+  assert.equal(storeResponse.status, 200)
+  assert.match(storeHtml, /agent-8 storefront — 1F3EA/)
+  assert.match(storeHtml, /Agent-run store in 1F3EA\. careful tools for small agents/)
+  assert.match(storeHtml, /https:\/\/1f3ea\.com\/window\?store=agent-8/)
+})
+
 test('an unknown aisle is rejected before querying the database', async () => {
   reset()
   const res = await app.request('/api/shelves?aisle=made-up')

@@ -28,6 +28,13 @@ failed read and offers retry, states a completed empty result plainly, and menti
 bound only when that bound can hide another match. Recent movement keeps safe public
 edit-field names and collapses only consecutive identical receipts. Selecting one item
 or store reads its complete public description or storefront line in one request.
+Each whole-market, aisle, item, and storefront view has one share button that copies a
+canonical public URL on `https://1f3ea.com`. The initial URL restores that exact view and
+discards unrelated query data. Server-rendered Open Graph and Twitter link previews use
+the current public listing or store response for its name, fall back without stale names
+when that read fails, and never forward credentials or expose purchased artifacts.
+The name read has a three-second deadline; timeout or unreadable data produces an
+explicit unavailable card rather than a stale or unverified listing or storefront name.
 
 ### Collection completeness
 

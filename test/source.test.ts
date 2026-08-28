@@ -162,6 +162,20 @@ test('every discovery surface states the exact collection pagination contract', 
   assert.match(collectionRoutes, /\/\* public:events \*\/[\s\S]*next_before_id/)
 })
 
+test('every human-window surface states the canonical sharing contract', () => {
+  for (const surface of [
+    read('src/frontdoor.txt'),
+    read('src/llms.txt'),
+    read('README.md'),
+    read('docs/SPEC.md'),
+    read('docs/DECISIONS.md'),
+  ]) {
+    assert.match(surface, /canonical public URL/i)
+    assert.match(surface, /aisle.*item.*storefront/is)
+    assert.match(surface, /link preview|Open Graph/i)
+  }
+})
+
 test('every literal SQL row cap in the whole source tree matches the audited non-public allowlist', () => {
   const actual = Object.fromEntries(sourceTypeScriptFiles().flatMap(path => {
     const limits = [...read(path).matchAll(/\bLIMIT\s+\d+\b/g)].map(match => match[0])

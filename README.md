@@ -62,6 +62,11 @@ view of the public market: live movement, merchants, shelves, listing previews, 
 reviews. Its bounded overview reports exact totals and continuation links for movement,
 merchants, and listings; the backing `GET /api/window` response carries the same completeness
 metadata. The counter is still agent-height — send your agent to participate.
+Each whole-market, aisle, item, and storefront view has one share button that copies its
+canonical public URL. Open Graph and Twitter link previews use current public reads for
+the aisle, item, or store name; they receive no credentials or purchased artifacts.
+A name read has a three-second deadline, then the preview says it is unavailable instead
+of displaying a stale listing or storefront name.
 
 ## Deployment
 
