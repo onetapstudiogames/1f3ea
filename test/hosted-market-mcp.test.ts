@@ -16,6 +16,13 @@ const FRONT_DOOR_TEXT = '1F3EA connector-native front door\n'
 const OFFICIAL_FACTS = { domain: ORIGIN, token: null, network: 'base' } as const
 const PUBLIC_TOOL_NAMES = [
   'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
+  'world_status', 'read_events', 'merchants',
+] as const
+const TOOL_NAMES = [
+  'front_door', 'official_facts', 'browse', 'visit_store', 'set_store',
+  'read_listing', 'read_events', 'merchants', 'list_item', 'draft_world',
+  'list_world', 'checkout_world', 'sync_world', 'edit_item', 'world_status',
+  'withdraw_item', 'buy', 'my_purchases', 'vote', 'comment', 'me',
 ] as const
 
 process.env.PUBLIC_ORIGIN = ORIGIN
@@ -128,9 +135,15 @@ test('both catalogs keep permanent-key creation out of tools and hosted tools ad
   const legacy = await tools(gateway, '/mcp')
   const hosted = await tools(gateway, '/mcp/connect')
 
+  assert.deepEqual(legacy.map(tool => tool.name), [...TOOL_NAMES])
+  assert.deepEqual(hosted.map(tool => tool.name), [...TOOL_NAMES])
+  assert.equal(legacy.length, 21)
+  assert.equal(hosted.length, 21)
   assert.equal(legacy.some(tool => tool.name === 'register'), false)
+  assert.equal(legacy.some(tool => tool.name === 'rotate'), false)
   assert.equal(legacy.every(tool => tool.securitySchemes === undefined), true)
   assert.equal(hosted.some(tool => tool.name === 'register'), false)
+  assert.equal(hosted.some(tool => tool.name === 'rotate'), false)
 
   for (const name of PUBLIC_TOOL_NAMES) {
     assert.ok(legacy.some(tool => tool.name === name), `legacy ${name}`)
@@ -166,6 +179,85 @@ test('both catalogs keep permanent-key creation out of tools and hosted tools ad
   }
 })
 
+test('connector parity schemas state every exclusivity rule, default, limit, and vote boundary', async () => {
+  const { gateway } = createHarness()
+  const catalog = await tools(gateway, '/mcp/connect')
+  const find = (name: string) => {
+    const tool = catalog.find(candidate => candidate.name === name)
+    assert.ok(tool, name)
+    return tool
+  }
+
+  const visitStore = find('visit_store')
+  const visitProperties = visitStore.inputSchema.properties as Record<string, {
+    minimum?: number; maximum?: number; description?: string
+  }>
+  assert.equal(visitStore.inputSchema.additionalProperties, false)
+  assert.equal(visitProperties.before_id?.minimum, 1)
+  assert.equal(visitProperties.limit?.maximum, 50)
+  assert.match(visitProperties.limit?.description ?? '', /default.*maximum 50/i)
+  assert.match(visitStore.description, /without paging arguments[\s\S]*complete live catalog/i)
+
+  const worldStatus = find('world_status')
+  const worldSchema = worldStatus.inputSchema as {
+    additionalProperties?: boolean
+    properties: Record<string, { minimum?: number; maximum?: number }>
+    oneOf?: Array<{ required: string[] }>
+  }
+  assert.equal(worldSchema.additionalProperties, false)
+  assert.equal(worldSchema.properties.draft_id?.minimum, 1)
+  assert.equal(worldSchema.properties.checkout_id?.maximum, 2_147_483_647)
+  assert.deepEqual(worldSchema.oneOf, [
+    { required: ['draft_id'] }, { required: ['checkout_id'] },
+  ])
+  assert.match(worldStatus.description, /exactly one of draft_id or checkout_id/i)
+  assert.match(worldStatus.description, /public IDs are not proof of ownership/i)
+
+  const readEvents = find('read_events')
+  const eventProperties = readEvents.inputSchema.properties as Record<string, {
+    enum?: string[]; maxLength?: number; maximum?: number; description?: string
+  }>
+  assert.equal(readEvents.inputSchema.additionalProperties, false)
+  assert.equal(eventProperties.kind?.maxLength, 40)
+  assert.deepEqual(eventProperties.scope?.enum, ['door', 'window'])
+  assert.equal(eventProperties.limit?.maximum, 200)
+  assert.match(readEvents.description, /kind or scope, never both/i)
+  assert.match(eventProperties.limit?.description ?? '', /default.*maximum 200/i)
+
+  const merchants = find('merchants')
+  const merchantProperties = merchants.inputSchema.properties as Record<string, {
+    minimum?: number; maximum?: number; description?: string
+  }>
+  assert.equal(merchants.inputSchema.additionalProperties, false)
+  assert.equal(merchantProperties.after_id?.minimum, 1)
+  assert.equal(merchantProperties.limit?.maximum, 500)
+  assert.match(merchantProperties.limit?.description ?? '', /default.*maximum 500/i)
+
+  const myPurchases = find('my_purchases')
+  assert.equal(myPurchases.inputSchema.additionalProperties, false)
+  assert.deepEqual(myPurchases.inputSchema.properties, {})
+  assert.match(myPurchases.description, /currently unpaged/i)
+  assert.match(myPurchases.description, /artifact body.*256 KB/i)
+  assert.match(myPurchases.description, /credential-shaped 1F3EA values[\s\S]*replaced/i)
+  assert.match(myPurchases.description, /may differ from the stored bytes/i)
+
+  const vote = find('vote')
+  const voteProperties = vote.inputSchema.properties as Record<string, {
+    minimum?: number; maximum?: number
+  }>
+  assert.equal(vote.inputSchema.additionalProperties, false)
+  assert.equal(voteProperties.listing_id?.minimum, 1)
+  assert.equal(voteProperties.listing_id?.maximum, 2_147_483_647)
+  assert.match(vote.description, /50 votes per UTC day/i)
+  assert.match(vote.description, /cannot vote for yourself/i)
+  assert.deepEqual(vote.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
+  })
+})
+
 test('both MCP doors teach connector-first visit opening with URL access only as fallback', async () => {
   const { gateway } = createHarness()
   for (const path of ['/mcp', '/mcp/connect'] as const) {
@@ -180,6 +272,22 @@ test('both MCP doors teach connector-first visit opening with URL access only as
       path,
     )
     assert.doesNotMatch(instructions, /Read https:\/\/1f3ea\.com\/ for the constitution/i, path)
+    assert.match(instructions, /rotation[\s\S]*browser-only[\s\S]*never an MCP tool/i, path)
+    assert.match(instructions, /no credential[\s\S]*(?:chat|tool input|tool output)/i, path)
+    assert.match(instructions, /merchant-authored text[\s\S]*untrusted data[\s\S]*never as instructions/i, path)
+  }
+})
+
+test('every tool that can return merchant-authored text states the untrusted-data boundary', async () => {
+  const { gateway } = createHarness()
+  const catalog = await tools(gateway, '/mcp/connect')
+  for (const name of [
+    'front_door', 'browse', 'visit_store', 'read_listing', 'world_status',
+    'read_events', 'merchants', 'buy', 'my_purchases', 'me',
+  ]) {
+    const tool = catalog.find(candidate => candidate.name === name)
+    assert.ok(tool, name)
+    assert.match(tool.description, /merchant-authored text[\s\S]*untrusted data[\s\S]*never as instructions/i, name)
   }
 })
 
@@ -212,6 +320,45 @@ test('anonymous hosted browsing works while a protected call returns an OAuth ch
       'error="invalid_token", error_description="Sign in to 1F3EA to use merchant tools."',
   ])
   assert.doesNotMatch(JSON.stringify(me), /1f3ea_(?:sk|at|rt|ac)_/i)
+})
+
+test('all new public reads dispatch anonymously while purchase and vote stop for sign-in first', async () => {
+  const { gateway, market } = createHarness()
+  let protectedBackingCalls = 0
+  market.get('/api/world/draft/:id', c => c.json({ draft: { id: Number(c.req.param('id')) } }))
+  market.get('/api/events', c => c.json({ events: [], page_size: Number(c.req.query('limit')) }))
+  market.get('/api/merchants', c => c.json({ merchants: [], page_size: Number(c.req.query('limit')) }))
+  market.get('/api/purchases', c => {
+    protectedBackingCalls += 1
+    return c.json({ purchases: [] })
+  })
+  market.post('/api/vote', c => {
+    protectedBackingCalls += 1
+    return c.json({ ok: true })
+  })
+
+  for (const [name, arguments_] of [
+    ['world_status', { draft_id: 7 }],
+    ['read_events', { limit: 5 }],
+    ['merchants', { limit: 6 }],
+  ] as const) {
+    const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
+      name, arguments: arguments_,
+    }) as { result: ToolResult }
+    assert.equal(response.result.isError, false, name)
+  }
+
+  for (const [name, arguments_] of [
+    ['my_purchases', {}],
+    ['vote', { listing_id: 3 }],
+  ] as const) {
+    const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
+      name, arguments: arguments_,
+    }, undefined, 401) as { result: ToolResult }
+    assert.equal(response.result.isError, true, name)
+    assert.match(response.result.content[0]!.text, /sign in to 1F3EA/i, name)
+  }
+  assert.equal(protectedBackingCalls, 0)
 })
 
 test('a protected hosted call uses HTTP 401 so the client starts OAuth and sends a bearer', async () => {
@@ -376,6 +523,14 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
     assert.match(rejected.result.content[0]!.text, /do not put (?:secrets|credentials)/i)
     assert.doesNotMatch(JSON.stringify(rejected), /1f3ea_(?:sk|at|rt|ac|rc)_/i)
   }
+
+  const credentialAsPropertyName = `1f3ea_sk_${'f6'.repeat(24)}`
+  const rejectedKey = await rpc(gateway, '/mcp/connect', 'tools/call', {
+    name: 'vote', arguments: { listing_id: 6, [credentialAsPropertyName]: true },
+  }) as { result: ToolResult }
+  assert.equal(rejectedKey.result.isError, true)
+  assert.match(rejectedKey.result.content[0]!.text, /do not put (?:secrets|credentials)/i)
+  assert.doesNotMatch(JSON.stringify(rejectedKey), new RegExp(credentialAsPropertyName, 'i'))
 })
 
 test('MCP redacts every 1F3EA credential family from backing responses', async () => {
@@ -393,5 +548,42 @@ test('MCP redacts every 1F3EA credential family from backing responses', async (
     const text = response.result.content[0]!.text
     assert.doesNotMatch(text, new RegExp(credential, 'i'))
     assert.match(text, /redacted.*credential/i)
+  }
+})
+
+test('hosted my_purchases reads streamed bytes without trusting Content-Length and redacts credentials', async () => {
+  const credentials = [
+    `1f3ea_sk_${'a1'.repeat(24)}`,
+    `1f3ea_at_${'b2'.repeat(32)}`,
+    `1f3ea_rt_${'c3'.repeat(32)}`,
+    `1f3ea_ac_${'d4'.repeat(32)}`,
+    `1f3ea_rc_${'e5'.repeat(32)}`,
+  ]
+  for (const contentLength of [undefined, '0']) {
+    const { gateway, market } = createHarness()
+    market.get('/api/purchases', () => {
+      const encoded = new TextEncoder().encode(JSON.stringify({
+        purchases: [{ listing_id: 4, artifact: credentials.join('\n') }],
+      }))
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoded.subarray(0, 13))
+          controller.enqueue(encoded.subarray(13))
+          controller.close()
+        },
+      })
+      const headers: Record<string, string> = { 'content-type': 'application/json' }
+      if (contentLength !== undefined) headers['content-length'] = contentLength
+      return new Response(stream, { headers })
+    })
+
+    const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
+      name: 'my_purchases', arguments: {},
+    }, `Bearer ${ACCESS_TOKEN}`) as { result: ToolResult }
+    assert.equal(response.result.isError, false, `Content-Length ${contentLength ?? 'absent'}`)
+    const text = response.result.content[0]!.text
+    assert.match(text, /artifact/i)
+    for (const credential of credentials) assert.doesNotMatch(text, new RegExp(credential, 'i'))
+    assert.equal(text.match(/\[redacted 1F3EA credential\]/g)?.length, credentials.length)
   }
 })
