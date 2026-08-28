@@ -32,6 +32,13 @@ interface IntentRow {
   expires_at: string
   superseded_at: string | null
   claimed_at: string | null
+  payment_tx_hash: string | null
+  payment_status: 'unsubmitted' | 'payment_pending' | 'completed' | 'needs_review' | 'legacy_completed'
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  payment_review_reason: string | null
 }
 
 interface DbCall { query: string; params: unknown[] }
@@ -51,6 +58,7 @@ const state = {
   ]),
   intents: [] as IntentRow[],
   paymentHashes: new Set<string>(),
+  paymentOwners: new Map<string, number>(),
   transferFrom: BUYER,
   transferTo: SELLER,
   transferToken: USDC,
@@ -58,14 +66,24 @@ const state = {
   transferBlockTime: new Date(),
   recoveredSigner: BUYER,
   intentInsertError: null as PostgresErrorFixture | null,
+  reserveInsertError: null as PostgresErrorFixture | null,
   purchaseInsertError: null as PostgresErrorFixture | null,
+  purchaseReturnsEmpty: false,
+  reviewWriteError: false,
+  reviewWriteNoop: false,
+  listingRemovedAt: null as Date | null,
   calls: [] as DbCall[],
   rpcMethods: [] as string[],
+  rpcFinalized: true,
 }
 
 const pad32 = (value: string) => '0x' + value.toLowerCase().replace(/^0x/, '').padStart(64, '0')
 const listingIdFrom = (params: unknown[]) => {
   const value = params.find(candidate => Number.isInteger(Number(candidate)) && state.listings.has(Number(candidate)))
+  return value === undefined ? undefined : Number(value)
+}
+const intentIdFrom = (params: unknown[]) => {
+  const value = params.find(candidate => state.intents.some(intent => intent.id === Number(candidate)))
   return value === undefined ? undefined : Number(value)
 }
 
@@ -85,8 +103,8 @@ function listingRow(id: number) {
     title: listing.title,
     price_usdc: listing.price,
     seller_wallet: listing.wallet,
-    removed: false,
-    removed_at: null,
+    removed: state.listingRemovedAt !== null,
+    removed_at: state.listingRemovedAt?.toISOString() ?? null,
     withdrawn: false,
     withdrawn_at: null,
     created_at: '2026-08-01T00:00:00.000Z',
@@ -119,6 +137,13 @@ function intentFromParams(params: unknown[]): IntentRow {
     expires_at: dates.at(-1) ?? new Date(state.requestNow.getTime() + 600_000).toISOString(),
     superseded_at: null,
     claimed_at: null,
+    payment_tx_hash: null,
+    payment_status: 'unsubmitted',
+    finalized_block_number: null,
+    finalized_block_hash: null,
+    finalized_block_time: null,
+    finalized_at: null,
+    payment_review_reason: null,
   }
 }
 
@@ -139,7 +164,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     const existing = state.intents.find(intent =>
       intent.listing_id === next.listing_id && intent.merchant_id === next.merchant_id)
     if (existing) {
-      const replaceable = existing.claimed_at === null
+      const replaceable = existing.claimed_at === null && existing.payment_status === 'unsubmitted'
         && (existing.superseded_at !== null || Date.parse(existing.expires_at) <= Date.parse(next.created_at))
       if (!replaceable) return []
       const refreshed = { ...next, id: existing.id }
@@ -149,11 +174,46 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.intents = [...state.intents, next]
     return [{ ...next }]
   }
+  if (query.includes('direct-payment-attempt:reserve')) {
+    if (state.reserveInsertError) throw postgresError(state.reserveInsertError, 'payment reservation failed')
+    const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value))) ?? '').toLowerCase()
+    const intentId = intentIdFrom(params) ?? -1
+    const intent = state.intents.find(candidate => candidate.id === intentId)
+    if (!intent || intent.payment_status !== 'unsubmitted') return intent ? [{ ...intent }] : []
+    const owner = state.paymentOwners.get(txHash)
+    if (state.paymentHashes.has(txHash) && owner !== intentId)
+      throw Object.assign(new Error('payment already used'), { code: '23505', constraint: 'payment_uses_pkey' })
+    state.paymentOwners.set(txHash, intentId)
+    state.paymentHashes.add(txHash)
+    const pending: IntentRow = { ...intent, payment_tx_hash: txHash, payment_status: 'payment_pending' }
+    state.intents = state.intents.map(candidate => candidate.id === intentId ? pending : candidate)
+    return [{ ...pending }]
+  }
+  if (query.includes('direct-payment-attempt:read')) {
+    const intentId = intentIdFrom(params) ?? -1
+    const intent = state.intents.find(candidate => candidate.id === intentId)
+    return intent ? [{ ...intent }] : []
+  }
+  if (query.includes('direct-payment-attempt:review')) {
+    if (state.reviewWriteError) throw new Error('review write unavailable')
+    if (state.reviewWriteNoop) return []
+    const intentId = intentIdFrom(params) ?? -1
+    const intent = state.intents.find(candidate => candidate.id === intentId)
+    if (!intent) return []
+    const reviewed: IntentRow = {
+      ...intent,
+      payment_status: intent.payment_status === 'payment_pending' ? 'needs_review' : intent.payment_status,
+      payment_review_reason: String(params[0] ?? 'review'),
+      finalized_block_number: params[1] == null ? null : String(params[1]),
+      finalized_block_hash: params[2] == null ? null : String(params[2]),
+      finalized_block_time: params[3] == null ? null : String(params[3]),
+      finalized_at: params[4] == null ? null : String(params[4]),
+    }
+    state.intents = state.intents.map(candidate => candidate.id === intentId ? reviewed : candidate)
+    return [{ ...reviewed }]
+  }
   if (query.includes('FROM direct_purchase_intents')) {
-    const rawIntentId = params.find(value =>
-      (typeof value === 'number' && Number.isInteger(value) && value >= 100)
-      || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100))
-    const intentId = rawIntentId === undefined ? undefined : Number(rawIntentId)
+    const intentId = intentIdFrom(params)
     const listingId = listingIdFrom(params)
     const payer = params.find(value => typeof value === 'string'
       && /^0x[0-9a-fA-F]{40}$/.test(value)
@@ -162,20 +222,30 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       && (listingId === undefined || intent.listing_id === listingId)
       && intent.merchant_id === 7
       && (payer === undefined || intent.payer_wallet === String(payer).toLowerCase())
-      && intent.claimed_at === null && intent.superseded_at === null)
+      && (query.includes('WHERE i.id') || (intent.claimed_at === null && intent.superseded_at === null)))
     return found ? [{ ...found }] : []
   }
   if (query.includes('INSERT INTO purchases')) {
     if (state.purchaseInsertError) throw postgresError(state.purchaseInsertError, 'purchase failed')
+    if (state.purchaseReturnsEmpty) return []
     const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value))) ?? '').toLowerCase()
-    if (state.paymentHashes.has(txHash))
+    const intentId = intentIdFrom(params) ?? -1
+    if (state.paymentHashes.has(txHash) && state.paymentOwners.get(txHash) !== intentId)
       throw Object.assign(new Error('payment already used'), { code: '23505', constraint: 'payment_uses_pkey' })
-    const intentId = Number(params.find(value => Number(value) >= 100))
     const intent = state.intents.find(candidate => candidate.id === intentId)
     if (!intent || intent.claimed_at || intent.superseded_at) return []
     state.paymentHashes.add(txHash)
+    state.paymentOwners.set(txHash, intentId)
     state.intents = state.intents.map(candidate => candidate.id === intentId
-      ? { ...candidate, claimed_at: state.requestNow.toISOString() }
+      ? {
+          ...candidate,
+          claimed_at: state.requestNow.toISOString(),
+          payment_status: 'completed',
+          finalized_block_number: '256',
+          finalized_block_hash: '0x' + 'bb'.repeat(32),
+          finalized_block_time: state.transferBlockTime.toISOString(),
+          finalized_at: state.requestNow.toISOString(),
+        }
       : candidate)
     return [{ listing_id: intent.listing_id }]
   }
@@ -224,13 +294,15 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
   if (url.includes('/sql')) return json(neonEncode(dbRespond(body.query ?? '', body.params ?? [])))
   if (url.includes('mainnet.base.org')) {
     state.rpcMethods.push(body.method ?? '')
+    if (body.method === 'eth_chainId') return json({ jsonrpc: '2.0', id: body.id, result: '0x2105' })
     if (body.method === 'web3_sha3') return json({ jsonrpc: '2.0', id: body.id, result: '0x' + 'aa'.repeat(32) })
     if (body.method === 'eth_call') return json({
       jsonrpc: '2.0', id: body.id, result: '0x' + '00'.repeat(12) + state.recoveredSigner.slice(2),
     })
     if (body.method === 'eth_getTransactionReceipt') return json({
       jsonrpc: '2.0', id: body.id, result: {
-        status: '0x1', blockHash: '0x' + 'bb'.repeat(32),
+        status: '0x1', transactionHash: String(body.params?.[0]).toLowerCase(),
+        blockHash: '0x' + 'bb'.repeat(32), blockNumber: '0x100',
         logs: [{
           address: state.transferToken,
           topics: [TRANSFER_TOPIC, pad32(state.transferFrom), pad32(state.transferTo)],
@@ -238,9 +310,19 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
         }],
       },
     })
+    if (body.method === 'eth_getBlockByNumber') return json({
+      jsonrpc: '2.0', id: body.id,
+      result: body.params?.[0] === 'finalized'
+        ? { number: state.rpcFinalized ? '0x100' : '0xff' }
+        : { hash: '0x' + 'bb'.repeat(32), number: '0x100' },
+    })
     if (body.method === 'eth_getBlockByHash') return json({
       jsonrpc: '2.0', id: body.id,
-      result: { timestamp: `0x${Math.floor(state.transferBlockTime.getTime() / 1000).toString(16)}` },
+      result: {
+        hash: '0x' + 'bb'.repeat(32),
+        number: '0x100',
+        timestamp: `0x${Math.floor(state.transferBlockTime.getTime() / 1000).toString(16)}`,
+      },
     })
   }
   throw new Error(`unexpected fetch: ${url}`)
@@ -254,6 +336,7 @@ const reset = () => {
   state.requestNow = new Date()
   state.intents = []
   state.paymentHashes = new Set()
+  state.paymentOwners = new Map()
   state.transferFrom = BUYER
   state.transferTo = SELLER
   state.transferToken = USDC
@@ -261,9 +344,15 @@ const reset = () => {
   state.transferBlockTime = new Date(state.requestNow.getTime() + 1_000)
   state.recoveredSigner = BUYER
   state.intentInsertError = null
+  state.reserveInsertError = null
   state.purchaseInsertError = null
+  state.purchaseReturnsEmpty = false
+  state.reviewWriteError = false
+  state.reviewWriteNoop = false
+  state.listingRemovedAt = null
   state.calls = []
   state.rpcMethods = []
+  state.rpcFinalized = true
 }
 
 async function openIntent(listingId = 1, payerWallet = BUYER) {
@@ -311,8 +400,61 @@ test('a signed ten-minute intent accepts a fresh voluntary tip once', async () =
   assert.equal(state.paymentHashes.size, 1)
 
   const replay = await claim(1, body.purchase_intent.id, TX_UPPER)
-  assert.equal(replay.status, 409)
+  assert.equal(replay.status, 200)
   assert.equal(state.paymentHashes.size, 1)
+})
+
+test('a signed direct payment completes with the same tx after finality outlives its intent', async () => {
+  reset()
+  const opened = await openIntent()
+  const intent = (await opened.json() as { purchase_intent: IntentRow }).purchase_intent
+  const now = Date.now()
+  const createdAt = new Date(now - 2_000).toISOString()
+  const expiresAt = new Date(now + 100).toISOString()
+  state.intents = state.intents.map(row => row.id === intent.id
+    ? { ...row, created_at: createdAt, expires_at: expiresAt }
+    : row)
+  state.transferBlockTime = new Date(now - 1_000)
+  state.rpcFinalized = false
+
+  const waiting = await claim(1, intent.id)
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.equal((await waiting.json() as { do_not_pay_again: boolean }).do_not_pay_again, true)
+  assert.equal(state.intents[0]?.payment_status, 'payment_pending')
+
+  await new Promise(resolve => setTimeout(resolve, 150))
+  state.rpcFinalized = true
+  const completed = await claim(1, intent.id)
+  assert.equal(completed.status, 200, await completed.clone().text())
+  assert.equal(state.intents[0]?.payment_status, 'completed')
+  assert.equal(state.paymentHashes.size, 1)
+})
+
+test('a payment after listing removal is preserved for review and never asks the buyer to pay again', async () => {
+  reset()
+  const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+  const createdAt = Date.parse(intent.created_at)
+  state.listingRemovedAt = new Date(createdAt + 2_000)
+  state.transferBlockTime = new Date(createdAt + 3_000)
+
+  const response = await claim(1, intent.id)
+  assert.equal(response.status, 409)
+  assert.equal((await response.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.intents[0]?.payment_status, 'needs_review')
+  assert.equal(state.intents[0]?.finalized_block_number, '256')
+  assert.equal(state.intents[0]?.finalized_block_hash, '0x' + 'bb'.repeat(32))
+  assert.equal(
+    state.intents[0]?.finalized_block_time,
+    new Date(Math.floor(state.transferBlockTime.getTime() / 1000) * 1000).toISOString(),
+  )
+  assert.ok(state.intents[0]?.finalized_at)
+  assert.equal(state.paymentHashes.size, 1)
+
+  const rpcCalls = state.rpcMethods.length
+  const replay = await claim(1, intent.id)
+  assert.equal(replay.status, 409)
+  assert.equal((await replay.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.rpcMethods.length, rpcCalls)
 })
 
 test('concurrent intent retries return one stable challenge and cannot switch its payer', async () => {
@@ -401,14 +543,14 @@ test('direct proof rejects payments before the intent, after it, or requested af
   let intent = (await opened.json() as { purchase_intent: IntentRow }).purchase_intent
   state.transferBlockTime = new Date(Date.parse(intent.created_at) - 1_000)
   let response = await claim(1, intent.id)
-  assert.equal(response.status, 402)
+  assert.equal(response.status, 402, await response.clone().text())
 
   reset()
   opened = await openIntent()
   intent = (await opened.json() as { purchase_intent: IntentRow }).purchase_intent
   state.transferBlockTime = new Date(Date.parse(intent.expires_at) + 1_000)
   response = await claim(1, intent.id)
-  assert.equal(response.status, 402)
+  assert.equal(response.status, 402, await response.clone().text())
 
   reset()
   opened = await openIntent()
@@ -470,6 +612,20 @@ test('a transaction already used for a listing fee cannot satisfy a direct purch
   assert.deepEqual([...state.paymentHashes], [TX_LOWER])
 })
 
+test('direct reservation reports both exact transaction ownership races without exposing database names', async () => {
+  for (const constraint of ['payment_uses_pkey', 'direct_purchase_intents_payment_tx_unique']) {
+    reset()
+    state.reserveInsertError = { code: '23505', constraint, nested: true }
+    const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+    const response = await claim(1, intent.id)
+    assert.equal(response.status, 409, constraint)
+    assert.deepEqual(await response.json(), {
+      error: 'this transaction hash was already used or reserved by another market payment; do not pay again',
+      do_not_pay_again: true,
+    }, constraint)
+  }
+})
+
 test('intent claim and purchase are atomic across a database failure and safe retry', async () => {
   reset()
   const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
@@ -478,12 +634,13 @@ test('intent claim and purchase are atomic across a database failure and safe re
   console.error = () => undefined
   try {
     const failed = await claim(1, intent.id)
-    assert.equal(failed.status, 500)
+    assert.equal(failed.status, 503)
+    assert.equal((await failed.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
   } finally {
     console.error = originalConsoleError
   }
   assert.equal(state.intents.find(row => row.id === intent.id)?.claimed_at, null)
-  assert.equal(state.paymentHashes.size, 0)
+  assert.equal(state.paymentHashes.size, 1)
 
   state.purchaseInsertError = null
   const retried = await claim(1, intent.id)
@@ -491,14 +648,73 @@ test('intent claim and purchase are atomic across a database failure and safe re
   assert.ok(state.intents.find(row => row.id === intent.id)?.claimed_at)
 })
 
+test('a finalized direct payment enters review when delivery state changes before the atomic write', async () => {
+  reset()
+  const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+  state.purchaseReturnsEmpty = true
+  const response = await claim(1, intent.id)
+  assert.equal(response.status, 409)
+  const body = await response.json() as { error?: string; do_not_pay_again?: boolean }
+  assert.match(body.error ?? '', /needs review/i)
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(state.intents[0]?.payment_status, 'needs_review')
+  assert.equal(state.intents[0]?.finalized_block_number, '256')
+  assert.equal(
+    state.intents[0]?.finalized_block_time,
+    new Date(Math.floor(state.transferBlockTime.getTime() / 1000) * 1000).toISOString(),
+  )
+})
+
+test('a direct review write outage keeps the same-payment no-pay instruction', async () => {
+  reset()
+  const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+  state.purchaseReturnsEmpty = true
+  state.reviewWriteError = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await claim(1, intent.id)
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not confirm this purchase review; retry this same claim; do not pay again',
+      retry: 'retry this same claim with the same intent, transaction, and signature',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.equal(state.paymentHashes.size, 1)
+})
+
+test('a direct review write with no confirmed state keeps the same-payment no-pay instruction', async () => {
+  reset()
+  const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
+  state.purchaseReturnsEmpty = true
+  state.reviewWriteNoop = true
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    const response = await claim(1, intent.id)
+    assert.equal(response.status, 503)
+    assert.deepEqual(await response.json(), {
+      error: 'the market could not confirm this purchase review; retry this same claim; do not pay again',
+      retry: 'retry this same claim with the same intent, transaction, and signature',
+      do_not_pay_again: true,
+    })
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.equal(state.intents[0]?.payment_status, 'payment_pending')
+})
+
 test('direct claim names only committed purchase, intent replay, and used payment constraints', async () => {
   const cases = [
-    { constraint: 'purchases_listing_id_merchant_id_key', reason: /already purchased/i, status: 409 },
-    { constraint: 'purchases_direct_intent_unique', reason: /purchase intent was already used/i, status: 409 },
-    { constraint: 'purchases_tx_hash_key', reason: /transaction hash was already used/i, status: 409 },
-    { constraint: 'purchases_tx_hash_lower_unique', reason: /transaction hash was already used/i, status: 409 },
-    { constraint: 'payment_uses_pkey', reason: /transaction hash was already used/i, status: 409 },
-    { constraint: 'purchases_pkey', reason: /^internal market failure; retry later$/i, status: 500 },
+    { constraint: 'purchases_listing_id_merchant_id_key', reason: /needs review/i, status: 409 },
+    { constraint: 'purchases_direct_intent_unique', reason: /needs review/i, status: 409 },
+    { constraint: 'purchases_tx_hash_key', reason: /needs review/i, status: 409 },
+    { constraint: 'purchases_tx_hash_lower_unique', reason: /needs review/i, status: 409 },
+    { constraint: 'payment_uses_pkey', reason: /needs review/i, status: 409 },
+    { constraint: 'purchases_pkey', reason: /retry this same claim/i, status: 503 },
   ]
   const originalConsoleError = console.error
   console.error = () => undefined
@@ -509,7 +725,9 @@ test('direct claim names only committed purchase, intent replay, and used paymen
       state.purchaseInsertError = { code: '23505', constraint: expected.constraint }
       const response = await claim(1, intent.id)
       assert.equal(response.status, expected.status)
-      assert.match(((await response.json()) as { error: string }).error, expected.reason)
+      const body = await response.json() as { error: string; do_not_pay_again?: boolean }
+      assert.match(body.error, expected.reason)
+      assert.equal(body.do_not_pay_again, true)
     }
   } finally {
     console.error = originalConsoleError

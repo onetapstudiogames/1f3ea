@@ -32,7 +32,12 @@ export function parseTestRunnerArguments(arguments_: readonly string[]): boolean
 }
 
 export function buildNodeTestArguments(): readonly string[] {
-  return ['--test', '--experimental-strip-types', TEST_FILE_PATTERN]
+  return [
+    '--test',
+    '--experimental-strip-types',
+    '--experimental-test-module-mocks',
+    TEST_FILE_PATTERN,
+  ]
 }
 
 export function buildCoverageRunnerArguments(suiteRoot: string): readonly string[] {

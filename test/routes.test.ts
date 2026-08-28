@@ -15,6 +15,7 @@ const SELLER = '0x1111111111111111111111111111111111111111'
 const STRANGER = '0x2222222222222222222222222222222222222222'
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+const AUTHORIZATION_USED_TOPIC = '0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5'
 const SECRET = '1f3ea_sk_' + 'ab'.repeat(24)
 const TX1 = '0x' + '11'.repeat(32)
 const TX2 = '0x' + '22'.repeat(32)
@@ -40,6 +41,65 @@ interface PurchaseIntentRow {
   expires_at: string
   superseded_at: string | null
   claimed_at: string | null
+  payment_tx_hash: string | null
+  payment_status: 'unsubmitted' | 'payment_pending' | 'completed' | 'needs_review' | 'legacy_completed'
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  payment_review_reason: string | null
+}
+
+interface FeeAttemptRow {
+  id: number
+  merchant_id: number
+  listing_id: number | null
+  tx_hash: string
+  fee_request_kind: 'artifact_listing' | 'world_listing'
+  fee_request_hash: string
+  payer_wallet: string
+  payee_wallet: string
+  asset: string
+  minimum_block_time: string
+  maximum_block_time: string
+  payment_status: 'payment_pending' | 'completed' | 'needs_review'
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  payment_review_reason: string | null
+  world_draft_id: number | null
+  world_offer_id: number | null
+  world_seller_handle: string | null
+}
+
+interface X402AttemptRow {
+  operation_key: string
+  operation_kind: 'listing_fee' | 'world_listing_fee' | 'purchase'
+  proof_digest: string
+  requirements_digest: string
+  network: 'base'
+  asset: string
+  payer_wallet: string
+  payee_wallet: string
+  amount_units: string
+  resource: string
+  authorization_nonce: string
+  authorization_valid_after: string
+  authorization_valid_before: string
+  start_block: string
+  status: 'settling' | 'settled' | 'verified' | 'needs_review'
+  tx_hash: string | null
+  review_reason: string | null
+  operation_started_at: string
+  settlement_started_at: string
+  settled_at: string | null
+  finalized_block_number: string | null
+  finalized_block_hash: string | null
+  finalized_block_time: string | null
+  finalized_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 interface DbCall { url: string; query?: string; params?: unknown[] }
@@ -92,6 +152,10 @@ const state = {
   feeInsertErrorCode: '23505',
   feeInsertErrorConstraint: 'fees_tx_hash_lower_unique',
   paymentHashes: new Set<string>(),
+  nextFeeAttemptId: 200,
+  feeAttempts: [] as FeeAttemptRow[],
+  x402Attempts: [] as X402AttemptRow[],
+  x402ListingByTx: new Map<string, number>(),
   nextIntentId: 100,
   purchaseIntents: [] as PurchaseIntentRow[],
   failPurchaseInsert: false,
@@ -102,11 +166,14 @@ const state = {
   facilitatorVerifyHttpStatus: 200,
   facilitatorVerifyBody: null as Record<string, unknown> | null,
   facilitatorSettle: false,
+  facilitatorSettleUnavailable: false,
   facilitatorSettleHttpStatus: 200,
   facilitatorSettleReason: 'settlement failed (test)',
   facilitatorTransaction: TX_CASE_UPPER,
   rpcUnavailableMethod: null as string | null,
   rpcReceiptMissing: false,
+  rpcFinalized: true,
+  mutateDuringVerify: null as 'withdraw' | null,
   mutateDuringSettle: null as 'edit' | 'remove' | 'withdraw' | null,
   storeExists: true,
   storeLine: 'careful tools for small agents',
@@ -377,6 +444,237 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   }
   if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id'))
     return [{ n: state.seedCount }]
+  if (query.includes('x402-payment-attempt:read-operation')) {
+    const operationKey = String(params[0])
+    const attempt = state.x402Attempts.find(candidate => candidate.operation_key === operationKey)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('x402-payment-attempt:read')) {
+    const operationKey = String(params[0])
+    const proofDigest = String(params[1])
+    const payerWallet = params[2] == null ? null : String(params[2]).toLowerCase()
+    const nonce = params[3] == null ? null : String(params[3]).toLowerCase()
+    const attempt = state.x402Attempts.find(candidate =>
+      candidate.operation_key === operationKey
+      || candidate.proof_digest === proofDigest
+      || (payerWallet != null && nonce != null
+        && candidate.payer_wallet === payerWallet
+        && candidate.authorization_nonce === nonce))
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('x402-payment-attempt:reserve')) {
+    const operationKey = String(params[0])
+    const operationKind = String(params[1]) as X402AttemptRow['operation_kind']
+    const proofDigest = String(params[2])
+    const payerWallet = String(params[8]).toLowerCase()
+    const nonce = String(params[9]).toLowerCase()
+    const existing = state.x402Attempts.find(candidate =>
+      candidate.operation_key === operationKey
+      || candidate.proof_digest === proofDigest
+      || (candidate.payer_wallet === payerWallet && candidate.authorization_nonce === nonce))
+    if (existing) return []
+    const now = state.mutateDuringVerify === 'withdraw' && state.listingWithdrawnAt
+      ? new Date(Date.parse(state.listingWithdrawnAt) + 1_000).toISOString()
+      : new Date().toISOString()
+    const attempt: X402AttemptRow = {
+      operation_key: operationKey,
+      operation_kind: operationKind,
+      proof_digest: proofDigest,
+      requirements_digest: String(params[3]),
+      network: 'base',
+      asset: String(params[4]).toLowerCase(),
+      payee_wallet: String(params[5]).toLowerCase(),
+      amount_units: String(params[6]),
+      resource: String(params[7]),
+      payer_wallet: payerWallet,
+      authorization_nonce: nonce,
+      authorization_valid_after: String(params[10]),
+      authorization_valid_before: String(params[11]),
+      start_block: String(params[12]),
+      status: 'settling',
+      tx_hash: null,
+      review_reason: null,
+      operation_started_at: new Date(String(params[13])).toISOString(),
+      settlement_started_at: now,
+      settled_at: null,
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      created_at: now,
+      updated_at: now,
+    }
+    state.x402Attempts = [...state.x402Attempts, attempt]
+    return [{ ...attempt }]
+  }
+  if (query.includes('x402-payment-attempt:review')) {
+    const operationKey = String(params[0])
+    const proofDigest = String(params[1])
+    const reason = String(params[2])
+    state.x402Attempts = state.x402Attempts.map(candidate =>
+      candidate.operation_key === operationKey
+      && candidate.proof_digest === proofDigest
+      && candidate.status === 'settling'
+        ? {
+            ...candidate,
+            status: 'needs_review' as const,
+            review_reason: reason,
+            updated_at: new Date().toISOString(),
+          }
+        : candidate)
+    const attempt = state.x402Attempts.find(candidate =>
+      candidate.operation_key === operationKey && candidate.proof_digest === proofDigest)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('x402-payment-attempt:finality')) {
+    const operationKey = String(params[0])
+    const proofDigest = String(params[1])
+    const txHash = String(params[2]).toLowerCase()
+    const status = String(params[3]) as 'verified' | 'needs_review'
+    const blockTime = new Date(String(params[6])).toISOString()
+    const finalizedAt = new Date(String(params[7])).toISOString()
+    state.x402Attempts = state.x402Attempts.map(candidate =>
+      candidate.operation_key === operationKey
+      && candidate.proof_digest === proofDigest
+      && candidate.tx_hash === txHash
+      && candidate.status === 'settled'
+        ? {
+            ...candidate,
+            status,
+            finalized_block_number: String(params[4]),
+            finalized_block_hash: String(params[5]).toLowerCase(),
+            finalized_block_time: blockTime,
+            finalized_at: finalizedAt,
+            review_reason: params[8] == null ? null : String(params[8]),
+            updated_at: new Date().toISOString(),
+          }
+        : candidate)
+    const attempt = state.x402Attempts.find(candidate =>
+      candidate.operation_key === operationKey && candidate.proof_digest === proofDigest)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('x402-payment-attempt:settled')) {
+    const operationKey = String(params[0])
+    const proofDigest = String(params[1])
+    const txHash = String(params[2]).toLowerCase()
+    const payerWallet = String(params[3]).toLowerCase()
+    const now = new Date().toISOString()
+    state.x402Attempts = state.x402Attempts.map(candidate =>
+      candidate.operation_key === operationKey
+      && candidate.proof_digest === proofDigest
+      && (candidate.status === 'settling' || candidate.status === 'needs_review')
+      && candidate.payer_wallet === payerWallet
+      && (candidate.tx_hash == null || candidate.tx_hash === txHash)
+        ? {
+            ...candidate,
+            status: 'settled' as const,
+            tx_hash: txHash,
+            settled_at: candidate.settled_at ?? now,
+            updated_at: now,
+          }
+        : candidate)
+    const attempt = state.x402Attempts.find(candidate =>
+      candidate.operation_key === operationKey && candidate.proof_digest === proofDigest)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('x402-listing:completed')) {
+    const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/u.test(String(value))) ?? '').toLowerCase()
+    const id = state.x402ListingByTx.get(txHash)
+    return id == null ? [] : [{ id }]
+  }
+  if (query.includes('listing-fee-attempt:read-by-id')) {
+    const id = Number(params.find(value => Number(value) >= 200))
+    const attempt = state.feeAttempts.find(candidate => candidate.id === id)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('listing-fee-attempt:read')) {
+    const kind = params.find(value => value === 'artifact_listing' || value === 'world_listing')
+    const requestHash = params.find(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value))
+    const attempt = state.feeAttempts.find(candidate =>
+      candidate.merchant_id === state.merchantId
+      && candidate.fee_request_kind === kind
+      && candidate.fee_request_hash === requestHash)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('listing-fee-attempt:reserve')) {
+    if (state.failFeeInsert)
+      throw Object.assign(new Error('fee attempt insert failed'), {
+        code: state.feeInsertErrorCode,
+        constraint: state.feeInsertErrorConstraint,
+      })
+    const kind = params.find(value => value === 'artifact_listing' || value === 'world_listing') as FeeAttemptRow['fee_request_kind']
+    const requestHash = String(params.find(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)))
+    const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))).toLowerCase()
+    const existing = state.feeAttempts.find(candidate =>
+      candidate.merchant_id === state.merchantId
+      && candidate.fee_request_kind === kind
+      && candidate.fee_request_hash === requestHash)
+    if (existing) return []
+    if (state.paymentHashes.has(txHash))
+      throw Object.assign(new Error('duplicate fee payment use'), { code: '23505', constraint: 'payment_uses_pkey' })
+    const wallets = params.filter(value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)) as string[]
+    const timestamps = params.filter(value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) as string[]
+    const attempt: FeeAttemptRow = {
+      id: state.nextFeeAttemptId++,
+      merchant_id: state.merchantId,
+      listing_id: null,
+      tx_hash: txHash,
+      fee_request_kind: kind,
+      fee_request_hash: requestHash,
+      payer_wallet: String(wallets[0]).toLowerCase(),
+      payee_wallet: String(wallets[1]).toLowerCase(),
+      asset: String(wallets[2]).toLowerCase(),
+      minimum_block_time: timestamps[0]!,
+      maximum_block_time: timestamps[1]!,
+      payment_status: 'payment_pending',
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      payment_review_reason: null,
+      world_draft_id: null,
+      world_offer_id: null,
+      world_seller_handle: null,
+    }
+    state.paymentHashes.add(txHash)
+    state.feeAttempts = [...state.feeAttempts, attempt]
+    return [{ ...attempt }]
+  }
+  if (query.includes('listing-fee-attempt:review')) {
+    const id = Number(params.find(value => state.feeAttempts.some(attempt => attempt.id === Number(value))))
+    const reason = String(params[0] ?? 'review')
+    state.feeAttempts = state.feeAttempts.map(attempt => attempt.id === id && attempt.payment_status === 'payment_pending'
+      ? {
+          ...attempt,
+          payment_status: 'needs_review' as const,
+          payment_review_reason: reason,
+          finalized_block_number: params[1] == null ? null : String(params[1]),
+          finalized_block_hash: params[2] == null ? null : String(params[2]),
+          finalized_block_time: params[3] == null ? null : String(params[3]),
+          finalized_at: params[4] == null ? null : String(params[4]),
+        }
+      : attempt)
+    const attempt = state.feeAttempts.find(candidate => candidate.id === id)
+    return attempt ? [{ ...attempt }] : []
+  }
+  if (query.includes('locked_fee_attempt') && query.includes('INSERT INTO listings')) {
+    const attemptId = Number(params.find(value => Number(value) >= 200))
+    const attempt = state.feeAttempts.find(candidate => candidate.id === attemptId)
+    if (!attempt || attempt.payment_status !== 'payment_pending') return []
+    const id = state.nextListingId++
+    state.feeAttempts = state.feeAttempts.map(candidate => candidate.id === attemptId
+      ? {
+          ...candidate,
+          listing_id: id,
+          payment_status: 'completed' as const,
+          finalized_block_number: '256',
+          finalized_block_hash: '0x' + 'bb'.repeat(32),
+          finalized_block_time: new Date(Date.now() - state.feeAgeSeconds * 1000).toISOString(),
+          finalized_at: new Date().toISOString(),
+        }
+      : candidate)
+    return [{ id }]
+  }
   if (query.includes('INSERT INTO listings')) {
     const id = state.nextListingId++
     if (query.includes('INSERT INTO fees')) {
@@ -390,6 +688,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       if (state.paymentHashes.has(hash))
         throw Object.assign(new Error('duplicate fee'), { code: '23505', constraint: 'payment_uses_pkey' })
       state.paymentHashes.add(hash)
+      state.x402ListingByTx.set(hash, id)
     }
     return [{ id }]
   }
@@ -477,12 +776,45 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       expires_at: dates.at(-1)!,
       superseded_at: null,
       claimed_at: null,
+      payment_tx_hash: null,
+      payment_status: 'unsubmitted',
+      finalized_block_number: null,
+      finalized_block_hash: null,
+      finalized_block_time: null,
+      finalized_at: null,
+      payment_review_reason: null,
     }
     state.purchaseIntents = state.purchaseIntents.map(intent => intent.claimed_at || intent.superseded_at
       ? intent
       : { ...intent, superseded_at: next.created_at })
     state.purchaseIntents = [...state.purchaseIntents, next]
     return [{ ...next }]
+  }
+  if (query.includes('direct-payment-attempt:reserve')) {
+    const intentId = Number(params.find(value => Number(value) >= 100 && Number(value) < 200))
+    const txHash = String(params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))).toLowerCase()
+    const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
+    if (!intent || intent.payment_status !== 'unsubmitted') return intent ? [{ ...intent }] : []
+    if (state.paymentHashes.has(txHash))
+      throw Object.assign(new Error('duplicate direct payment use'), { code: '23505', constraint: 'payment_uses_pkey' })
+    const pending: PurchaseIntentRow = {
+      ...intent,
+      payment_tx_hash: txHash,
+      payment_status: 'payment_pending',
+    }
+    state.paymentHashes.add(txHash)
+    state.purchaseIntents = state.purchaseIntents.map(candidate => candidate.id === intentId ? pending : candidate)
+    return [{ ...pending }]
+  }
+  if (query.includes('direct-payment-attempt:review')) {
+    const intentId = Number(params.find(value =>
+      state.purchaseIntents.some(intent => intent.id === Number(value))))
+    const reason = String(params.find(value => typeof value === 'string' && !/^0x[0-9a-f]+$/i.test(value)) ?? 'review')
+    state.purchaseIntents = state.purchaseIntents.map(intent => intent.id === intentId && intent.payment_status === 'payment_pending'
+      ? { ...intent, payment_status: 'needs_review' as const, payment_review_reason: reason }
+      : intent)
+    const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
+    return intent ? [{ ...intent }] : []
   }
   if (query.includes('FROM direct_purchase_intents')) {
     const intentId = Number(params.find(value =>
@@ -514,21 +846,31 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
         code: state.purchaseInsertErrorCode,
         constraint: state.purchaseInsertErrorConstraint,
       })
+    const intentId = Number(params.find(value =>
+      (typeof value === 'number' && Number.isInteger(value) && value >= 100 && value < 200)
+      || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100 && Number(value) < 200)))
+    const intent = Number.isInteger(intentId)
+      ? state.purchaseIntents.find(candidate => candidate.id === intentId)
+      : undefined
     const rawHash = params.find(value => /^0x[0-9a-fA-F]{64}$/.test(String(value)))
     if (rawHash) {
       const hash = String(rawHash).toLowerCase()
-      if (state.paymentHashes.has(hash))
+      if (state.paymentHashes.has(hash) && intent?.payment_tx_hash !== hash)
         throw Object.assign(new Error('duplicate payment use'), { code: '23505', constraint: 'payment_uses_pkey' })
       state.paymentHashes.add(hash)
     }
-    const intentId = Number(params.find(value =>
-      (typeof value === 'number' && Number.isInteger(value) && value >= 100)
-      || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100)))
     if (Number.isInteger(intentId)) {
-      const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
       if (!intent || intent.claimed_at || intent.superseded_at) return []
       state.purchaseIntents = state.purchaseIntents.map(candidate => candidate.id === intentId
-        ? { ...candidate, claimed_at: new Date().toISOString() }
+        ? {
+            ...candidate,
+            claimed_at: new Date().toISOString(),
+            payment_status: 'completed' as const,
+            finalized_block_number: '256',
+            finalized_block_hash: '0x' + 'bb'.repeat(32),
+            finalized_block_time: new Date(Date.now() - state.feeAgeSeconds * 1000).toISOString(),
+            finalized_at: new Date().toISOString(),
+          }
         : candidate)
     }
     const terminalAt = [state.listingRemovedAt, state.listingWithdrawnAt]
@@ -568,23 +910,48 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   throw new Error(`unhandled query: ${query}`)
 }
 
-function chainRespond(method: string): unknown {
+function chainRespond(method: string, params: unknown[] = []): unknown {
+  if (method === 'eth_blockNumber') return '0x100'
+  if (method === 'eth_chainId') return '0x2105'
   if (method === 'web3_sha3') return '0x' + 'aa'.repeat(32)
   if (method === 'eth_call') return '0x' + '00'.repeat(12) + state.feeFrom.toLowerCase().slice(2)
   if (method === 'eth_getTransactionReceipt') {
     if (state.rpcReceiptMissing) return null
+    const transaction = String(params[0] ?? '').toLowerCase()
+    const x402Attempt = state.x402Attempts.find(attempt => attempt.tx_hash === transaction)
+    const payer = x402Attempt?.payer_wallet ?? state.feeFrom
+    const payee = x402Attempt?.payee_wallet ?? TREASURY
+    const amount = BigInt(x402Attempt?.amount_units ?? '1000000')
+    const transfer = {
+      address: USDC,
+      topics: [TRANSFER_TOPIC, pad32(payer), pad32(payee)],
+      data: pad32(`0x${amount.toString(16)}`),
+    }
     return {
       status: '0x1',
+      transactionHash: transaction,
       blockHash: '0x' + 'bb'.repeat(32),
-      logs: [{
-        address: USDC,
-        topics: [TRANSFER_TOPIC, pad32(state.feeFrom), pad32(TREASURY)],
-        data: pad32('0x0f4240'),
-      }],
+      blockNumber: '0x100',
+      logs: x402Attempt
+        ? [{
+            address: USDC,
+            topics: [AUTHORIZATION_USED_TOPIC, pad32(payer), x402Attempt.authorization_nonce],
+            data: '0x',
+          }, transfer]
+        : [transfer],
     }
   }
+  if (method === 'eth_getBlockByNumber') {
+    if (params[0] === 'finalized' && !state.rpcFinalized)
+      return { hash: '0x' + 'aa'.repeat(32), number: '0xff' }
+    return { hash: '0x' + 'bb'.repeat(32), number: '0x100' }
+  }
   if (method === 'eth_getBlockByHash') {
-    return { timestamp: '0x' + Math.floor((Date.now() - state.feeAgeSeconds * 1000) / 1000).toString(16) }
+    return {
+      hash: String(params[0]).toLowerCase(),
+      number: '0x100',
+      timestamp: '0x' + Math.floor((Date.now() - state.feeAgeSeconds * 1000) / 1000).toString(16),
+    }
   }
   throw new Error(`unhandled rpc: ${method}`)
 }
@@ -634,14 +1001,21 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
   if (url.includes('mainnet.base.org'))
     return state.rpcUnavailableMethod === body.method
       ? new Response('Base RPC unavailable', { status: 503 })
-      : jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method) })
-  if (url.includes('/verify')) return state.facilitatorVerifyUnavailable
-    ? new Response('facilitator unavailable', { status: 503 })
-    : jsonRes(state.facilitatorVerifyBody ?? (state.facilitatorVerify
-      ? { isValid: true }
-      : { isValid: false, invalidReason: 'facilitator says no (test)' }),
-    state.facilitatorVerifyHttpStatus)
+      : jsonRes({ jsonrpc: '2.0', id: body.id, result: chainRespond(body.method, body.params) })
+  if (url.includes('/verify')) {
+    if (state.mutateDuringVerify === 'withdraw') {
+      state.listingWithdrawn = true
+      state.listingWithdrawnAt = new Date().toISOString()
+    }
+    return state.facilitatorVerifyUnavailable
+      ? new Response('facilitator unavailable', { status: 503 })
+      : jsonRes(state.facilitatorVerifyBody ?? (state.facilitatorVerify
+        ? { isValid: true }
+        : { isValid: false, invalidReason: 'facilitator says no (test)' }),
+      state.facilitatorVerifyHttpStatus)
+  }
   if (url.includes('/settle')) {
+    if (state.facilitatorSettleUnavailable) throw new Error('facilitator settlement timed out (test)')
     if (!state.facilitatorSettle)
       return jsonRes({ success: false, errorReason: state.facilitatorSettleReason },
         state.facilitatorSettleHttpStatus)
@@ -655,7 +1029,8 @@ globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
       state.listingRemoved = true
       state.listingRemovedAt = terminalAt
     }
-    return jsonRes({ success: true, transaction: state.facilitatorTransaction, payer: SELLER })
+    const payer = body?.paymentPayload?.payload?.authorization?.from ?? SELLER
+    return jsonRes({ success: true, transaction: state.facilitatorTransaction, payer })
   }
   throw new Error(`unexpected fetch: ${url}`)
 }) as typeof fetch
@@ -684,6 +1059,25 @@ const listingBody = (feeTx?: string, extra: Record<string, unknown> = {}) => JSO
   ...(feeTx ? { fee_tx_hash: feeTx } : {}),
   ...extra,
 })
+
+function x402Header(payTo: string, usdc: number, payer = STRANGER): string {
+  return Buffer.from(JSON.stringify({
+    x402Version: 1,
+    scheme: 'exact',
+    network: 'base',
+    payload: {
+      signature: `0x${'99'.repeat(65)}`,
+      authorization: {
+        from: payer,
+        to: payTo,
+        value: String(Math.round(usdc * 1_000_000)),
+        validAfter: '0',
+        validBefore: '1788000000',
+        nonce: `0x${'44'.repeat(32)}`,
+      },
+    },
+  })).toString('base64')
+}
 
 function reset() {
   state.authValid = true
@@ -717,6 +1111,10 @@ function reset() {
   state.feeInsertErrorCode = '23505'
   state.feeInsertErrorConstraint = 'fees_tx_hash_lower_unique'
   state.paymentHashes = new Set()
+  state.nextFeeAttemptId = 200
+  state.feeAttempts = []
+  state.x402Attempts = []
+  state.x402ListingByTx = new Map()
   state.nextIntentId = 100
   state.purchaseIntents = []
   state.failPurchaseInsert = false
@@ -727,11 +1125,14 @@ function reset() {
   state.facilitatorVerifyHttpStatus = 200
   state.facilitatorVerifyBody = null
   state.facilitatorSettle = false
+  state.facilitatorSettleUnavailable = false
   state.facilitatorSettleHttpStatus = 200
   state.facilitatorSettleReason = 'settlement failed (test)'
   state.facilitatorTransaction = TX_CASE_UPPER
   state.rpcUnavailableMethod = null
   state.rpcReceiptMissing = false
+  state.rpcFinalized = true
+  state.mutateDuringVerify = null
   state.mutateDuringSettle = null
   state.storeExists = true
   state.storeLine = 'careful tools for small agents'
@@ -910,6 +1311,8 @@ test('hosted paid listing, buy, and direct-claim routes stop before payment work
     assert.equal(claim.status, 503)
 
     assert.equal(state.calls.some(call => /facilitator|mainnet\.base/i.test(call.url)), false)
+    assert.equal(sqlCalls().some(call => call.query?.includes('listing_fee_attempts')), false)
+    assert.equal(sqlCalls().some(call => call.query?.includes('direct-payment-attempt:')), false)
     assert.equal(inserted('fees'), 0)
     assert.equal(inserted('purchases'), 0)
   } finally {
@@ -1092,12 +1495,41 @@ test('an x402 request that passed the live check before withdrawal or removal st
     state.mutateDuringSettle = terminalAction
     const res = await app.request('/api/buy/1', {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
     })
     assert.equal(res.status, 200, `${terminalAction} stranded an already accepted x402 request`)
     assert.equal(((await res.json()) as { artifact: string }).artifact, 'the goods')
     assert.equal(inserted('purchases'), 1)
+
+    state.priorPurchase = true
+    state.calls = []
+    const replay = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+    assert.equal(replay.status, 200, `${terminalAction} blocked an already-recorded x402 purchase replay`)
+    assert.equal(((await replay.json()) as { artifact: string }).artifact, 'the goods')
+    assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
   }
+})
+
+test('an x402 operation received before withdrawal during verification uses its durable operation start', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 1
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.mutateDuringVerify = 'withdraw'
+
+  const response = await app.request('/api/buy/1', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(((await response.json()) as { artifact: string }).artifact, 'the goods')
+  const attempt = state.x402Attempts[0]!
+  assert.ok(state.listingWithdrawnAt)
+  assert.ok(Date.parse(attempt.operation_started_at) <= Date.parse(state.listingWithdrawnAt))
+  assert.ok(Date.parse(attempt.settlement_started_at) > Date.parse(state.listingWithdrawnAt))
+  assert.equal(inserted('purchases'), 1)
 })
 
 test('an x402 request that passed the live check before a concurrent safe edit still settles and delivers', async () => {
@@ -1109,7 +1541,7 @@ test('an x402 request that passed the live check before a concurrent safe edit s
   state.mutateDuringSettle = 'edit'
   const res = await app.request('/api/buy/1', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
   })
   assert.equal(res.status, 200)
   assert.equal(((await res.json()) as { artifact: string }).artifact, 'the goods')
@@ -1416,27 +1848,92 @@ test('DELETE /api/listing/:id is an idempotent alias for owner withdrawal', asyn
   assert.equal(inserted('events'), 1)
 })
 
-test('a fee paid from a stranger wallet is rejected without writes', async () => {
+test('a fee paid from a stranger wallet is preserved for review without market writes', async () => {
   reset()
   state.feeFrom = STRANGER
   const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody(TX1) })
-  assert.equal(res.status, 402)
-  assert.match(((await res.json()) as { error: string }).error, /same wallet you list as seller_wallet/)
+  assert.equal(res.status, 409)
+  const body = await res.json() as { error: string; do_not_pay_again?: boolean }
+  assert.match(body.error, /needs review/i)
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(state.feeAttempts[0]?.payment_status, 'needs_review')
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
 })
 
-test('an old direct fee is rejected without writes', async () => {
+test('an old direct fee is preserved for review without market writes', async () => {
   reset()
   state.feeAgeSeconds = 2 * 3600
   const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody(TX1) })
-  assert.equal(res.status, 402)
-  assert.equal(((await res.json()) as { error: string }).error,
-    'transaction was paid before this payment window opened')
+  assert.equal(res.status, 409)
+  const body = await res.json() as { error: string; do_not_pay_again?: boolean }
+  assert.match(body.error, /needs review/i)
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(state.feeAttempts[0]?.payment_status, 'needs_review')
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
+})
+
+test('a direct listing fee is stored once and creates one listing after Base finality', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(waiting.status, 202, await waiting.clone().text())
+  assert.equal((await waiting.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.feeAttempts[0]?.payment_status, 'payment_pending')
+  assert.equal(inserted('listings'), 0)
+
+  state.rpcFinalized = true
+  const created = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(created.status, 201, await created.clone().text())
+  assert.equal(state.feeAttempts[0]?.payment_status, 'completed')
+  assert.equal(inserted('listing_fee_attempts'), 1)
+  assert.equal(inserted('listings'), 1)
+  assert.equal(inserted('fees'), 1)
+  assert.equal(state.paymentHashes.size, 1)
+})
+
+test('one listing request cannot switch from a preserved direct fee to x402', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(waiting.status, 202)
+  assert.equal(state.feeAttempts.length, 1)
+
+  state.calls = []
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  const switched = await app.request('/api/listing', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
+    body: listingBody(),
+  })
+  assert.equal(switched.status, 409)
+  assert.equal((await switched.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+})
+
+test('a first listing request with both fee rails is refused before either can charge', async () => {
+  reset()
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  const response = await app.request('/api/listing', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
+    body: listingBody(TX1),
+  })
+  assert.equal(response.status, 400)
+  assert.match((await response.json() as { error: string }).error, /choose exactly one listing fee method/i)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle') ||
+    call.url.includes('mainnet.base.org')), false)
 })
 
 test('one merchant may pay for two listings on the same UTC day', async () => {
@@ -1456,24 +1953,24 @@ test('one merchant may pay for two listings on the same UTC day', async () => {
   assert.equal(hasSql(/listings_today|releaseListingQuota/), false)
 })
 
-test('a reused listing fee rolls back one atomic listing write without cleanup machinery', async () => {
+test('a reused listing fee stops before listing creation without cleanup machinery', async () => {
   reset()
   state.failFeeInsert = true
+  state.feeInsertErrorConstraint = 'payment_uses_pkey'
   const res = await app.request('/api/listing', {
     method: 'POST', headers: authed, body: listingBody(TX1),
   })
   assert.equal(res.status, 409)
   assert.match(((await res.json()) as { error: string }).error, /fee transaction was already used/)
-  const write = sqlCalls().find(call => call.query?.includes('INSERT INTO listings'))
-  assert.match(write?.query ?? '', /INSERT INTO fees/)
-  assert.match(write?.query ?? '', /INSERT INTO events/)
+  assert.equal(sqlCalls().some(call => call.query?.includes('INSERT INTO listings')), false)
+  assert.equal(sqlCalls().some(call => call.query?.includes('listing-fee-attempt:reserve')), true)
   assert.equal(sqlCalls().filter(call => call.query?.includes('DELETE FROM listings')).length, 0)
 })
 
 test('paid listing reports only fee transaction unique constraints as already used', async () => {
   const accepted = [
-    'fees_tx_hash_key',
-    'fees_tx_hash_lower_unique',
+    'listing_fee_attempts_tx_hash_key',
+    'listing_fee_attempt_request_unique',
     'payment_uses_pkey',
   ]
   for (const constraint of accepted) {
@@ -1496,8 +1993,12 @@ test('paid listing reports only fee transaction unique constraints as already us
     const res = await app.request('/api/listing', {
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
-    assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
+    assert.equal(res.status, 503)
+    assert.deepEqual(await res.json(), {
+      error: 'the market could not preserve this fee payment; retry the same listing request and transaction; do not pay again',
+      retry: 'retry the same listing request with the same fee transaction',
+      do_not_pay_again: true,
+    })
   } finally {
     console.error = originalConsoleError
   }
@@ -1513,8 +2014,12 @@ test('a database outage is not misreported as a reused payment', async () => {
     const res = await app.request('/api/listing', {
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
-    assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
+    assert.equal(res.status, 503)
+    assert.deepEqual(await res.json(), {
+      error: 'the market could not preserve this fee payment; retry the same listing request and transaction; do not pay again',
+      retry: 'retry the same listing request with the same fee transaction',
+      do_not_pay_again: true,
+    })
   } finally {
     console.error = originalConsoleError
   }
@@ -1622,7 +2127,7 @@ test('a successful x402 listing settlement stores one canonical fee and response
   state.facilitatorSettle = true
   const res = await app.request('/api/listing', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
     body: listingBody(),
   })
   assert.equal(res.status, 201)
@@ -1633,49 +2138,383 @@ test('a successful x402 listing settlement stores one canonical fee and response
   assert.ok(sqlCalls().find(call => call.query?.includes('INSERT INTO fees'))?.params?.includes(TX_CASE_LOWER))
 })
 
-test('x402 verification success followed by settlement failure writes nothing', async () => {
+test('an x402 listing waits for Base finality, then a headerless retry creates it without settling twice', async () => {
+  reset()
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.rpcFinalized = false
+  const header = x402Header(TREASURY, 1)
+
+  const waiting = await app.request('/api/listing', {
+    method: 'POST', headers: { ...authed, 'X-PAYMENT': header }, body: listingBody(),
+  })
+  assert.equal(waiting.status, 503)
+  const waitingBody = await waiting.json() as { do_not_pay_again?: boolean; retry?: string }
+  assert.equal(waitingBody.do_not_pay_again, true)
+  assert.equal(waitingBody.retry, 'retry this same request without X-PAYMENT')
+  assert.equal(state.x402Attempts[0]?.status, 'settled')
+  assert.equal(inserted('listings'), 0)
+  assert.equal(state.calls.filter(call => call.url.includes('/settle')).length, 1)
+
+  state.rpcFinalized = true
+  state.calls = []
+  const completed = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(),
+  })
+  assert.equal(completed.status, 201)
+  assert.equal(inserted('listings'), 1)
+  assert.equal(inserted('fees'), 1)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+})
+
+test('artifact listing refuses every mismatched saved x402 public term before payment or listing work', async () => {
+  const mismatches: ReadonlyArray<readonly [
+    string,
+    (attempt: X402AttemptRow) => X402AttemptRow,
+    number,
+    RegExp,
+  ]> = [
+    ['kind', attempt => ({ ...attempt, operation_kind: 'purchase' }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['requirements identity', attempt => ({ ...attempt, requirements_digest: 'ef'.repeat(32) }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['asset', attempt => ({ ...attempt, asset: STRANGER.toLowerCase() }), 503, /could not read this saved payment/i],
+    ['recipient', attempt => ({ ...attempt, payee_wallet: STRANGER.toLowerCase() }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['amount', attempt => ({ ...attempt, amount_units: '2000000' }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['resource', attempt => ({ ...attempt, resource: 'https://1f3ea.com/api/listing/stale' }), 409, /saved payment.*recipient.*amount.*route/i],
+  ]
+
+  for (const [label, mismatch, expectedStatus, expectedError] of mismatches) {
+    reset()
+    state.facilitatorVerify = true
+    state.facilitatorSettle = true
+    state.rpcFinalized = false
+    const body = listingBody()
+    const waiting = await app.request('/api/listing', {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) }, body,
+    })
+    assert.equal(waiting.status, 503, label)
+    assert.equal(state.x402Attempts[0]?.status, 'settled', label)
+    state.x402Attempts = [mismatch(state.x402Attempts[0]!)]
+    state.rpcFinalized = true
+    state.calls = []
+
+    const refused = await app.request('/api/listing', { method: 'POST', headers: authed, body })
+    assert.equal(refused.status, expectedStatus, label)
+    const response = await refused.json() as Record<string, unknown>
+    assert.equal(response.do_not_pay_again, true, label)
+    assert.match(String(response.error), expectedError, label)
+    assert.doesNotMatch(String(response.error), /digest|custody|operation_kind|requirements_digest/i, label)
+    assert.equal(state.calls.some(call =>
+      call.url.includes('/verify') || call.url.includes('/settle') || call.url.includes('mainnet.base.org')),
+    false, label)
+    assert.equal(inserted('listings'), 0, label)
+    assert.equal(inserted('fees'), 0, label)
+  }
+})
+
+test('an x402 purchase reserved while live finishes after withdrawal on a headerless finality retry', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 2
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.rpcFinalized = false
+  state.mutateDuringSettle = 'withdraw'
+  const header = x402Header(state.listingWallet, state.listingPrice)
+
+  const waiting = await app.request('/api/buy/1', {
+    method: 'POST', headers: { ...authed, 'X-PAYMENT': header },
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal((await waiting.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.listingWithdrawn, true)
+  assert.equal(inserted('purchases'), 0)
+  assert.equal(state.calls.filter(call => call.url.includes('/settle')).length, 1)
+  assert.equal(state.x402Attempts[0]?.payee_wallet, state.listingWallet.toLowerCase())
+  assert.equal(state.x402Attempts[0]?.amount_units, '2000000')
+
+  state.rpcFinalized = true
+  state.calls = []
+  const completed = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+  assert.equal(completed.status, 200)
+  assert.equal((await completed.json() as { artifact: string }).artifact, 'the goods')
+  assert.equal(inserted('purchases'), 1)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+})
+
+test('artifact buy refuses stale or corrupted x402 public terms before payment or delivery work', async () => {
+  const mismatches: ReadonlyArray<readonly [
+    string,
+    (attempt: X402AttemptRow) => X402AttemptRow,
+    number,
+    RegExp,
+  ]> = [
+    ['kind', attempt => ({ ...attempt, operation_kind: 'listing_fee' }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['requirements identity', attempt => ({ ...attempt, requirements_digest: 'ef'.repeat(32) }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['asset', attempt => ({ ...attempt, asset: TREASURY.toLowerCase() }), 503, /could not read this saved payment/i],
+    ['recipient', attempt => ({ ...attempt, payee_wallet: TREASURY.toLowerCase() }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['amount', attempt => ({ ...attempt, amount_units: '3000000' }), 409, /saved payment.*recipient.*amount.*route/i],
+    ['resource', attempt => ({ ...attempt, resource: 'https://1f3ea.com/api/buy/2' }), 409, /saved payment.*recipient.*amount.*route/i],
+  ]
+
+  for (const [label, mismatch, expectedStatus, expectedError] of mismatches) {
+    reset()
+    state.listingOwner = 8
+    state.listingPrice = 2
+    state.facilitatorVerify = true
+    state.facilitatorSettle = true
+    state.rpcFinalized = false
+    const waiting = await app.request('/api/buy/1', {
+      method: 'POST',
+      headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
+    })
+    assert.equal(waiting.status, 503, label)
+    assert.equal(state.x402Attempts[0]?.status, 'settled', label)
+    state.x402Attempts = [mismatch(state.x402Attempts[0]!)]
+    state.rpcFinalized = true
+    state.calls = []
+
+    const refused = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+    assert.equal(refused.status, expectedStatus, label)
+    const response = await refused.json() as Record<string, unknown>
+    assert.equal(response.do_not_pay_again, true, label)
+    assert.equal('artifact' in response, false, label)
+    assert.match(String(response.error), expectedError, label)
+    assert.doesNotMatch(String(response.error), /digest|custody|operation_kind|requirements_digest/i, label)
+    assert.equal(state.calls.some(call =>
+      call.url.includes('/verify') || call.url.includes('/settle') || call.url.includes('mainnet.base.org')),
+    false, label)
+    assert.equal(inserted('purchases'), 0, label)
+  }
+})
+
+test('artifact buy validates saved x402 terms before replaying an already-recorded delivery', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 2
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/buy/1', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
+  })
+  assert.equal(waiting.status, 503)
+  state.x402Attempts = [{
+    ...state.x402Attempts[0]!,
+    payee_wallet: TREASURY.toLowerCase(),
+  }]
+  state.priorPurchase = true
+  state.rpcFinalized = true
+  state.calls = []
+
+  const refused = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+  assert.equal(refused.status, 409)
+  const response = await refused.json() as Record<string, unknown>
+  assert.equal(response.do_not_pay_again, true)
+  assert.equal('artifact' in response, false)
+  assert.match(String(response.error), /saved payment.*recipient.*amount.*route/i)
+  assert.equal(state.calls.some(call =>
+    call.url.includes('/verify') || call.url.includes('/settle') || call.url.includes('mainnet.base.org')),
+  false)
+})
+
+test('x402 facilitator timeouts stay in custody and headerless retries never return another 402', async () => {
+  for (const action of ['listing', 'buy'] as const) {
+    reset()
+    if (action === 'buy') {
+      state.listingOwner = 8
+      state.listingPrice = 1
+    }
+    state.facilitatorVerify = true
+    state.facilitatorSettleUnavailable = true
+    const path = action === 'listing' ? '/api/listing' : '/api/buy/1'
+    const header = x402Header(action === 'listing' ? TREASURY : state.listingWallet, 1)
+    const body = action === 'listing' ? listingBody() : undefined
+
+    const first = await app.request(path, {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': header }, ...(body ? { body } : {}),
+    })
+    assert.equal(first.status, 409, action)
+    assert.equal((await first.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true, action)
+    assert.equal(state.x402Attempts[0]?.status, 'needs_review', action)
+    assert.equal(state.calls.filter(call => call.url.includes('/settle')).length, 1, action)
+
+    state.calls = []
+    const retry = await app.request(path, {
+      method: 'POST', headers: authed, ...(body ? { body } : {}),
+    })
+    assert.equal(retry.status, 409, action)
+    assert.notEqual(retry.status, 402, action)
+    assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true, action)
+    assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false, action)
+  }
+})
+
+test('a lost successful listing response replays the listing tied to its stored x402 transaction', async () => {
+  reset()
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  const first = await app.request('/api/listing', {
+    method: 'POST', headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) }, body: listingBody(),
+  })
+  assert.equal(first.status, 201)
+  const created = await first.json() as { listing_id: number }
+  state.duplicateId = created.listing_id
+  state.calls = []
+
+  const replay = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(),
+  })
+  assert.equal(replay.status, 200)
+  assert.equal((await replay.json() as { listing_id: number }).listing_id, created.listing_id)
+  assert.equal(inserted('listings'), 0)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+  const completedLookup = sqlCalls().findIndex(call => call.query?.includes('x402-listing:completed'))
+  const duplicateLookup = sqlCalls().findIndex(call => call.query?.includes('SELECT id FROM listings WHERE dup_hash'))
+  assert.ok(completedLookup >= 0)
+  assert.ok(duplicateLookup < 0 || completedLookup < duplicateLookup)
+})
+
+test('listing write failures after x402 custody always return an exact no-pay retry', async () => {
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    for (const [constraint, status] of [
+      ['payment_uses_pkey', 409],
+      ['fees_unrelated_test_constraint', 503],
+    ] as const) {
+      reset()
+      state.facilitatorVerify = true
+      state.facilitatorSettle = true
+      state.failFeeInsert = true
+      state.feeInsertErrorConstraint = constraint
+
+      const response = await app.request('/api/listing', {
+        method: 'POST',
+        headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
+        body: listingBody(),
+      })
+
+      assert.equal(response.status, status, constraint)
+      const body = await response.json() as { retry: string; do_not_pay_again: boolean }
+      assert.equal(body.do_not_pay_again, true, constraint)
+      assert.equal(body.retry, 'retry this exact listing request without X-PAYMENT', constraint)
+      assert.equal(state.x402Attempts[0]?.status, 'verified', constraint)
+    }
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('purchase write conflicts after x402 custody never lose the same-operation retry', async () => {
+  const originalConsoleError = console.error
+  console.error = () => undefined
+  try {
+    for (const [constraint, status] of [
+      ['payment_uses_pkey', 409],
+      ['purchases_unrelated_test_constraint', 503],
+    ] as const) {
+      reset()
+      state.listingOwner = 8
+      state.listingPrice = 1
+      state.facilitatorVerify = true
+      state.facilitatorSettle = true
+      state.failPurchaseInsert = true
+      state.purchaseInsertErrorConstraint = constraint
+
+      const response = await app.request('/api/buy/1', {
+        method: 'POST',
+        headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
+      })
+
+      assert.equal(response.status, status, constraint)
+      const body = await response.json() as { retry: string; do_not_pay_again: boolean }
+      assert.equal(body.do_not_pay_again, true, constraint)
+      assert.match(body.retry, /POST \/api\/buy\/1 without X-PAYMENT/i, constraint)
+      assert.equal(state.x402Attempts[0]?.status, 'verified', constraint)
+    }
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
+test('terminal-time refusal keeps the exact saved payment and says do not pay again', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 1
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.rpcFinalized = false
+  state.mutateDuringSettle = 'withdraw'
+
+  const waiting = await app.request('/api/buy/1', {
+    method: 'POST',
+    headers: { ...authed, 'X-PAYMENT': x402Header(state.listingWallet, state.listingPrice) },
+  })
+  assert.equal(waiting.status, 503)
+  assert.ok(state.listingWithdrawnAt)
+  const stored = state.x402Attempts[0]!
+  state.x402Attempts = [{
+    ...stored,
+    operation_started_at: new Date(Date.parse(state.listingWithdrawnAt!) + 1_000).toISOString(),
+  }]
+
+  state.rpcFinalized = true
+  state.calls = []
+  const refused = await app.request('/api/buy/1', { method: 'POST', headers: authed })
+  assert.equal(refused.status, 409)
+  const body = await refused.json() as { retry: string; do_not_pay_again: boolean }
+  assert.equal(body.do_not_pay_again, true)
+  assert.match(body.retry, /exact paid request/i)
+  assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
+})
+
+test('x402 verification success followed by settlement uncertainty preserves review and writes no listing', async () => {
   reset()
   state.facilitatorVerify = true
   const res = await app.request('/api/listing', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
     body: listingBody(),
   })
-  assert.equal(res.status, 502)
-  assert.deepEqual(await res.json(), {
-    error: 'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
-      'caller-correctable cause; do not retry or replay this proof blindly; do not pay again',
-  })
+  assert.equal(res.status, 409)
+  const body = await res.json() as { error: string; retry: string; do_not_pay_again: boolean }
+  assert.match(body.error, /did not conclusively confirm settlement.*manual review/i)
+  assert.equal(body.retry, 'retry this same request without X-PAYMENT')
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(state.x402Attempts[0]?.status, 'needs_review')
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
   assert.equal(inserted('events'), 0)
 })
 
-test('x402 settlement distinguishes a known caller failure from an unexpected facilitator failure', async () => {
+test('every facilitator rejection after x402 custody stays in headerless review', async () => {
   reset()
   state.facilitatorVerify = true
   state.facilitatorSettleHttpStatus = 400
   state.facilitatorSettleReason = 'insufficient_funds'
   const invalid = await app.request('/api/listing', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
     body: listingBody(),
   })
-  assert.equal(invalid.status, 402)
-  assert.equal((await invalid.json() as { error: string }).error,
-    'payer wallet does not have enough USDC for this payment')
+  assert.equal(invalid.status, 409)
+  const invalidBody = await invalid.json() as { retry: string; do_not_pay_again: boolean }
+  assert.equal(invalidBody.retry, 'retry this same request without X-PAYMENT')
+  assert.equal(invalidBody.do_not_pay_again, true)
 
   reset()
   state.facilitatorVerify = true
   state.facilitatorSettleReason = 'unexpected_settle_error'
   const unavailable = await app.request('/api/listing', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
     body: listingBody(),
   })
-  assert.equal(unavailable.status, 503)
-  assert.match((await unavailable.json() as { error: string }).error,
-    /did not confirm settlement.*retry.*same X-PAYMENT proof.*do not pay again/i)
+  assert.equal(unavailable.status, 409)
+  const unavailableBody = await unavailable.json() as { retry: string; do_not_pay_again: boolean }
+  assert.equal(unavailableBody.retry, 'retry this same request without X-PAYMENT')
+  assert.equal(unavailableBody.do_not_pay_again, true)
   assert.equal(inserted('listings'), 0)
   assert.equal(inserted('fees'), 0)
 })
@@ -1692,7 +2531,7 @@ test('facilitator rejection writes nothing and runs no listing quota SQL', async
   reset()
   const res = await app.request('/api/listing', {
     method: 'POST',
-    headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+    headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) },
     body: listingBody(),
   })
   assert.equal(res.status, 502)
@@ -1715,6 +2554,10 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     }
     const path = action === 'listing' ? '/api/listing' : '/api/buy/1'
     const body = action === 'listing' ? listingBody() : '{}'
+    const paymentHeader = () => x402Header(
+      action === 'listing' ? TREASURY : state.listingWallet,
+      1,
+    )
     const invalid = await app.request(path, {
       method: 'POST', headers: { ...authed, 'X-PAYMENT': 'not-json' }, body,
     })
@@ -1734,7 +2577,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyHttpStatus = 400
     const rejected = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(rejected.status, 502, action)
@@ -1750,7 +2593,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyHttpStatus = 402
     const terminal = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(terminal.status, 502, action)
@@ -1767,7 +2610,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyBody = { error: 'invalid_payment_requirements' }
     const ambiguous = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(ambiguous.status, 502, action)
@@ -1787,7 +2630,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyBody = { isValid: false, invalidReason: 'invalid_payload' }
     const rateLimited = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(rateLimited.status, 503, action)
@@ -1804,7 +2647,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyBody = { isValid: false, invalidReason: 'invalid_payload' }
     const unauthorizedUpstream = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(unauthorizedUpstream.status, 502, action)
@@ -1822,12 +2665,14 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     state.facilitatorVerifyUnavailable = true
     const unavailable = await app.request(path, {
       method: 'POST',
-      headers: { ...authed, 'X-PAYMENT': Buffer.from('{}').toString('base64') },
+      headers: { ...authed, 'X-PAYMENT': paymentHeader() },
       body,
     })
     assert.equal(unavailable.status, 503, action)
     assert.deepEqual(await unavailable.json(), {
       error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
+      retry: 'retry this same request with the same X-PAYMENT proof',
+      do_not_pay_again: true,
     }, action)
   }
 })
@@ -1840,7 +2685,9 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(fee.status, 503)
   assert.deepEqual(await fee.json(), {
-    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
+    error: 'the market could not check this payment on Base; retry the same proof later',
+    retry: 'retry the same listing request with the same fee transaction',
+    do_not_pay_again: true,
   })
 
   reset()
@@ -1850,7 +2697,9 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(pendingFee.status, 503)
   assert.deepEqual(await pendingFee.json(), {
-    error: 'transaction is not yet visible or finalized on Base; retry the same tx_hash later; do not pay again',
+    error: 'the market could not check this payment on Base; retry the same proof later',
+    retry: 'retry the same listing request with the same fee transaction',
+    do_not_pay_again: true,
   })
 
   reset()
@@ -1864,7 +2713,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(signature.status, 503)
   assert.deepEqual(await signature.json(), {
-    error: 'Base RPC could not verify payer_signature; retry the same proof later; do not pay again',
+    error: 'the market could not check payer_signature on Base; retry the same proof later',
   })
 
   reset()
@@ -1878,7 +2727,9 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   })
   assert.equal(payment.status, 503)
   assert.deepEqual(await payment.json(), {
-    error: 'Base RPC could not verify this payment; retry the same proof later; do not pay again',
+    error: 'the market could not check this payment on Base; retry the same proof later',
+    retry: 'retry this same claim before the purchase intent expires',
+    payment_preserved: false,
   })
 })
 
@@ -2251,7 +3102,11 @@ test('treasury fees and bounded storefronts expose exact continuation metadata',
     const books = await treasury.json() as {
       recent_fees: Array<{ id: number }>; fees_count: number; fees_returned: number
       fees_page_size: number; fees_has_more: boolean; fees_next_before_id: number | null
+      note: string
     }
+    assert.match(books.note, /direct USDC creates a listing only when.*exact listing request.*fee_tx_hash/iu)
+    assert.match(books.note, /unsolicited transfers buy nothing/iu)
+    assert.match(books.note, /sales never pass through.*buyer to seller/iu)
     assert.equal(books.fees_count, total)
     assert.equal(books.fees_returned, 50)
     assert.equal(books.fees_has_more, total === 51)

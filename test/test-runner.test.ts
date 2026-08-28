@@ -44,6 +44,7 @@ test('test runner keeps the existing top-level unit-test surface', () => {
   assert.deepEqual(buildNodeTestArguments(), [
     '--test',
     '--experimental-strip-types',
+    '--experimental-test-module-mocks',
     'test/*.test.ts',
   ])
 })
@@ -62,11 +63,12 @@ test('coverage runner preserves the existing src and api coverage surface', () =
     '--statements', '80',
     '--reporter', 'text',
   ])
-  assert.deepEqual(arguments_.slice(-5), [
+  assert.deepEqual(arguments_.slice(-6), [
     '--',
     process.execPath,
     '--test',
     '--experimental-strip-types',
+    '--experimental-test-module-mocks',
     'test/*.test.ts',
   ])
   assert.match(arguments_.join(' '), /coverage-report/)

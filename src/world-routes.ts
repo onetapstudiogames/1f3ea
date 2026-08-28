@@ -1,36 +1,43 @@
 import type { Hono } from 'hono'
-import { auth, dupHash, err, HANDLE_RE, WALLET_RE } from './core.ts'
+import { auth, dupHash, err, sha256 } from './core.ts'
 import { sql } from './db.ts'
 import {
-  canonicalTxHash,
   challenge402,
   LISTING_FEE_USDC,
   paymentReadinessResponse,
   paymentResponseHeader,
   requirements,
+  resumeX402PaymentForTerms,
   settleX402,
   TREASURY,
-  verifyDirectPayment,
+  type FinalizedX402Payment,
+  type X402NoPayResult,
 } from './pay.ts'
 import {
   CITY_ORIGIN,
-  cityCancelUrl,
-  cityClaimUrl,
   cityOfferMatchesDraft,
-  cityOfferMatchesListing,
   cityOfferUrl,
   fetchCityOffer,
-  fetchCityResident,
-  isCityOfferAvailable,
   validWorldActivation,
-  validWorldCheckout,
   validWorldDraft,
-  type CityOffer,
-  type ListingBinding,
-  type PublicRecordResult,
   type WorldDraftInput,
 } from './world.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
+import {
+  readListingFeeAttempt,
+  resolveListingFeePayment,
+  reviewListingFeePayment,
+  type ListingFeeResolution,
+} from './listing-fee-payment.ts'
+import {
+  readX402PaymentAttempt,
+  x402PaymentAttemptMatches,
+  type X402PaymentAttempt,
+} from './x402-payment-attempts.ts'
+import { registerWorldCheckoutRoutes } from './world-checkout-routes.ts'
+import { dateIsPast, positiveId, upstreamStatus } from './world-route-shared.ts'
+
+export { requireValidWorldReceipt } from './world-payment-sync.ts'
 
 interface WorldRouteConfig {
   marketOrigin: string
@@ -49,57 +56,6 @@ interface WorldDraftRow extends WorldDraftInput {
   created_at: string
   expires_at: string
   canceled_at: string | null
-}
-
-interface WorldListingRow extends ListingBinding {
-  merchant_id: number
-  market_seller: string
-  title: string
-  delivery_kind: 'artifact' | 'city_ownership'
-  world_origin: string
-  world_state: 'active' | 'sold' | 'canceled' | 'stale'
-  removed: boolean
-  removed_at: string | null
-  withdrawn: boolean
-  withdrawn_at: string | null
-  created_at: string
-}
-
-interface WorldCheckoutRow {
-  id: number
-  status: 'active' | 'expired' | 'completed'
-  listing_id: number
-  world_offer_id: number
-  market_draft_id: number
-  merchant_id: number
-  market_buyer: string
-  city_handle: string
-  expires_at: string
-  created_at: string
-}
-
-interface WorldPurchaseRow {
-  purchase_id: number
-  listing_id: number
-  world_checkout_id: number
-  amount_usdc: number
-  tx_hash: string
-  world_receipt: Record<string, unknown> | string
-  created_at: string
-}
-
-function positiveId(value: string): number | null {
-  const id = Number(value)
-  return Number.isSafeInteger(id) && id > 0 ? id : null
-}
-
-function dateIsPast(value: string): boolean {
-  const date = new Date(value)
-  return !Number.isNaN(date.getTime()) && date <= new Date()
-}
-
-function upstreamStatus(result: Extract<PublicRecordResult<unknown>, { ok: false }>): 409 | 503 {
-  return result.kind === 'not_found' ? 409 : 503
 }
 
 function publicDraftStatus(row: WorldDraftRow) {
@@ -131,24 +87,6 @@ function draftEnvelope(row: WorldDraftRow) {
   }
 }
 
-function checkoutPublicStatus(row: WorldCheckoutRow) {
-  return row.status === 'active' && dateIsPast(row.expires_at) ? 'expired' as const : row.status
-}
-
-function checkoutEnvelope(row: WorldCheckoutRow) {
-  return {
-    id: Number(row.id),
-    status: checkoutPublicStatus(row),
-    listing_id: Number(row.listing_id),
-    world_offer_id: Number(row.world_offer_id),
-    market_draft_id: Number(row.market_draft_id),
-    market_buyer: row.market_buyer,
-    city_handle: row.city_handle,
-    expires_at: row.expires_at,
-    created_at: row.created_at,
-  }
-}
-
 async function readDraft(id: number): Promise<WorldDraftRow | null> {
   const rows = (await sql`
     SELECT d.id, d.merchant_id, d.thing_id, d.title, d.description, d.preview,
@@ -161,130 +99,19 @@ async function readDraft(id: number): Promise<WorldDraftRow | null> {
   return rows[0] ?? null
 }
 
-async function readWorldListing(id: number): Promise<WorldListingRow | null> {
-  const rows = (await sql`
-    SELECT l.id, l.merchant_id, m.handle AS market_seller, l.title,
-      l.price_usdc::float8 AS price_usdc, l.seller_wallet,
-      l.delivery_kind, l.world_origin, l.world_offer_id, l.world_asset_id,
-      l.world_seller_handle, l.world_draft_id, l.world_state,
-      l.removed, l.removed_at, l.withdrawn, l.withdrawn_at, l.created_at
-    FROM listings l JOIN merchants m ON m.id = l.merchant_id
-    WHERE l.id = ${id}`) as WorldListingRow[]
-  return rows[0] ?? null
+function x402AttemptFitsDraft(attempt: X402PaymentAttempt, draft: WorldDraftRow): boolean {
+  const createdAt = new Date(draft.created_at)
+  const expiresAt = new Date(draft.expires_at)
+  const operationStartedAt = new Date(attempt.operation_started_at)
+  const blockTime = new Date(attempt.finalized_block_time ?? '')
+  if ([createdAt, expiresAt, operationStartedAt, blockTime]
+    .some(value => Number.isNaN(value.getTime()))) return false
+  const lowerBound = Math.floor(createdAt.getTime() / 1_000) * 1_000
+  return operationStartedAt.getTime() >= lowerBound
+    && operationStartedAt <= expiresAt
+    && blockTime.getTime() >= lowerBound
+    && blockTime <= expiresAt
 }
-
-async function readCheckout(id: number): Promise<WorldCheckoutRow | null> {
-  const rows = (await sql`
-    SELECT c.id, c.status, c.listing_id, l.world_offer_id,
-      l.world_draft_id AS market_draft_id, c.merchant_id,
-      m.handle AS market_buyer, c.city_handle, c.expires_at, c.created_at
-    FROM world_checkouts c
-    JOIN listings l ON l.id = c.listing_id
-    JOIN merchants m ON m.id = c.merchant_id
-    WHERE c.id = ${id}`) as WorldCheckoutRow[]
-  return rows[0] ?? null
-}
-
-function parseReceipt(value: unknown): Record<string, unknown> | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-    } catch { /* validation below reports one safe internal failure */ }
-  }
-  return null
-}
-
-export function requireValidWorldReceipt(value: unknown): Record<string, unknown> {
-  const receipt = parseReceipt(value)
-  const offerId = receipt?.city_offer_id
-  const assetId = receipt?.city_asset_id
-  const cityHandle = receipt?.city_handle
-  const marketBuyer = receipt?.market_buyer
-  const buyerWallet = receipt?.buyer_wallet
-  const verifiedVia = receipt?.city_verified_via
-  const blockTime = receipt?.city_block_time
-  const paymentFrom = receipt?.payment_from
-  const paymentTo = receipt?.payment_to
-  const receiptUrl = receipt?.city_receipt_url
-  if (!receipt || receipt.city_origin !== CITY_ORIGIN ||
-      !Number.isSafeInteger(offerId) || Number(offerId) <= 0 ||
-      !Number.isSafeInteger(assetId) || Number(assetId) <= 0 ||
-      typeof cityHandle !== 'string' || !HANDLE_RE.test(cityHandle) ||
-      typeof marketBuyer !== 'string' || !HANDLE_RE.test(marketBuyer) ||
-      typeof buyerWallet !== 'string' || !WALLET_RE.test(buyerWallet) ||
-      !['x402', 'claim'].includes(String(verifiedVia)) ||
-      typeof blockTime !== 'string' || Number.isNaN(new Date(blockTime).getTime()) ||
-      typeof paymentFrom !== 'string' || !WALLET_RE.test(paymentFrom) ||
-      paymentFrom.toLowerCase() !== buyerWallet.toLowerCase() ||
-      typeof paymentTo !== 'string' || !WALLET_RE.test(paymentTo) ||
-      receiptUrl !== cityOfferUrl(Number(offerId)))
-    throw new Error('stored world purchase receipt is incomplete or invalid')
-  return receipt
-}
-
-function receiptEnvelope(row: WorldPurchaseRow) {
-  const city = requireValidWorldReceipt(row.world_receipt)
-  const purchaseId = Number(row.purchase_id)
-  const listingId = Number(row.listing_id)
-  const checkoutId = Number(row.world_checkout_id)
-  const amount = Number(row.amount_usdc)
-  const txHash = canonicalTxHash(row.tx_hash)
-  if (![purchaseId, listingId, checkoutId].every(id => Number.isSafeInteger(id) && id > 0) ||
-      !Number.isFinite(amount) || amount < 0 || !txHash || Number.isNaN(new Date(row.created_at).getTime()))
-    throw new Error('stored world purchase row is incomplete or invalid')
-  return {
-    purchase_id: purchaseId,
-    listing_id: listingId,
-    checkout_id: checkoutId,
-    delivery_kind: 'city_ownership' as const,
-    city_origin: CITY_ORIGIN,
-    city_offer_id: Number(city.city_offer_id),
-    city_asset_id: Number(city.city_asset_id),
-    city_handle: String(city.city_handle ?? ''),
-    amount_usdc: amount,
-    tx_hash: txHash,
-    verified_via: 'world' as const,
-    city_verified_via: String(city.city_verified_via ?? ''),
-    city_receipt_url: cityOfferUrl(Number(city.city_offer_id)),
-    created_at: row.created_at,
-  }
-}
-
-async function priorWorldPurchase(listingId: number): Promise<WorldPurchaseRow | null> {
-  const rows = (await sql`
-    SELECT p.id AS purchase_id, p.listing_id, p.world_checkout_id,
-      p.amount_usdc::float8 AS amount_usdc, p.tx_hash, p.world_receipt, p.created_at
-    FROM purchases p WHERE p.listing_id = ${listingId} AND p.verified_via = 'world'
-    LIMIT 1`) as WorldPurchaseRow[]
-  return rows[0] ?? null
-}
-
-function receiptFields(offer: CityOffer) {
-  const nested = offer.receipt && typeof offer.receipt === 'object' ? offer.receipt : {}
-  const pick = (key: string) => (offer as unknown as Record<string, unknown>)[key] ?? nested[key]
-  return {
-    txHash: canonicalTxHash(pick('tx_hash')),
-    buyerWallet: String(pick('buyer_wallet') ?? ''),
-    via: String(pick('verified_via') ?? ''),
-    blockTime: String(pick('block_time') ?? ''),
-    paymentFrom: String(pick('from') ?? ''),
-    paymentTo: String(pick('to') ?? ''),
-  }
-}
-
-async function emptyBody(request: { text(): Promise<string> }): Promise<boolean> {
-  const raw = (await request.text()).trim()
-  if (!raw) return true
-  try {
-    const value = JSON.parse(raw)
-    return Boolean(value && typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length)
-  } catch {
-    return false
-  }
-}
-
 export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
   app.post('/api/world/draft', async c => {
     const merchant = await auth(c)
@@ -331,6 +158,7 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
   })
 
   app.post('/api/world/listing', async c => {
+    const requestStartedAt = new Date()
     const merchant = await auth(c)
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const parsed = validWorldActivation(await c.req.json().catch(() => null))
@@ -338,58 +166,398 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     const draft = await readDraft(parsed.draft_id)
     if (!draft) return err(c, 404, 'no such world draft')
     if (draft.merchant_id !== merchant.id) return err(c, 403, 'only the market merchant that made this draft may list it')
-    if (draft.state !== 'pending' || dateIsPast(draft.expires_at))
-      return err(c, 409, 'world draft is not pending and unexpired')
-
+    const feeRequestHash = sha256(JSON.stringify({
+      version: 1,
+      merchant_id: merchant.id,
+      kind: 'world_listing',
+      draft_id: draft.id,
+      city_offer_id: parsed.city_offer_id,
+      thing_id: draft.thing_id,
+      title: draft.title,
+      description: draft.description,
+      preview: draft.preview,
+      price_usdc: draft.price_usdc,
+      seller_wallet: draft.seller_wallet.toLowerCase(),
+      tags: draft.tags,
+    }))
+    const x402OperationKey = `world-listing-fee:merchant:${merchant.id}:request:${feeRequestHash}`
+    const x402Operation = {
+      operationKey: x402OperationKey,
+      operationKind: 'world_listing_fee' as const,
+      operationStartedAt: requestStartedAt,
+    }
+    const feeRequirements = requirements(
+      TREASURY,
+      LISTING_FEE_USDC,
+      `${config.marketOrigin}/api/world/listing`,
+      '1F3EA world listing fee',
+    )
+    const retryRecordedX402 =
+      'retry this same world listing request without X-PAYMENT; do not pay again'
+    const reviewRecordedX402 =
+      'do not pay again; ask the market owner to review the recorded fee for this same world listing request'
+    const refuseRecordedX402 = (
+      error: string,
+      status: 409 | 503,
+      retry: string,
+    ) => c.json({ error, retry, do_not_pay_again: true as const }, status)
+    const refuseResumedX402 = (failure: X402NoPayResult) => refuseRecordedX402(
+      failure.status === 'conflict'
+        ? 'the recorded world listing fee does not match this exact listing request'
+        : failure.reason,
+      failure.status === 'unavailable' ? 503 : 409,
+      failure.status === 'conflict' ? reviewRecordedX402 : failure.retry,
+    )
+    const confirmRecordedX402 = async (payment: FinalizedX402Payment) => {
+      try {
+        const attempt = await readX402PaymentAttempt(x402OperationKey)
+        if (
+          !attempt
+          || attempt.status !== 'verified'
+          || attempt.tx_hash !== payment.transaction
+          || attempt.payer_wallet !== payment.payer.toLowerCase()
+          || !x402PaymentAttemptMatches(attempt, {
+            operationKey: x402OperationKey,
+            operationKind: 'world_listing_fee',
+            requirements: feeRequirements,
+          })
+        ) return { state: 'mismatch' as const }
+        if (!x402AttemptFitsDraft(attempt, draft)) return { state: 'outside_draft' as const }
+        return { state: 'matched' as const, attempt }
+      } catch (error) {
+        console.error('recorded world listing x402 terms could not be read', error)
+        return { state: 'unavailable' as const }
+      }
+    }
+    const paymentHeader = c.req.header('x-payment')
+    let x402Payment: FinalizedX402Payment | null = null
+    let x402Attempt: X402PaymentAttempt | null = null
+    const resumedX402 = await resumeX402PaymentForTerms(
+      x402OperationKey, 'world_listing_fee', feeRequirements,
+    )
+    if (resumedX402) {
+      if (resumedX402.status === 'verified') {
+        x402Payment = resumedX402
+      } else if ('retry' in resumedX402) {
+        return refuseResumedX402(resumedX402)
+      } else {
+        return c.json({
+          error: resumedX402.reason,
+          retry: reviewRecordedX402,
+          do_not_pay_again: true,
+        }, resumedX402.status === 'unclassified' ? 502 : 409)
+      }
+    }
+    const unavailable = paymentReadinessResponse(c)
+    if (unavailable) {
+      return x402Payment
+        ? refuseRecordedX402(
+            'the market cannot finish this recorded world listing fee right now',
+            503,
+            retryRecordedX402,
+          )
+        : c.json({
+            error: 'world listing payments are temporarily unavailable',
+            retry: 'retry this same world listing request later and wait for new payment instructions',
+          }, 503)
+    }
+    const preservedFee = x402Payment
+      ? null
+      : await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
+    if (x402Payment) {
+      const confirmation = await confirmRecordedX402(x402Payment)
+      if (confirmation.state === 'unavailable') {
+        return refuseRecordedX402(
+          'the market could not confirm the recorded terms for this world listing fee',
+          503,
+          retryRecordedX402,
+        )
+      }
+      if (confirmation.state === 'mismatch') {
+        return refuseRecordedX402(
+          'the recorded world listing fee does not match this exact listing request',
+          409,
+          reviewRecordedX402,
+        )
+      }
+      if (confirmation.state === 'outside_draft') {
+        return refuseRecordedX402(
+          'the recorded world listing fee was not accepted and transferred inside this draft window',
+          409,
+          reviewRecordedX402,
+        )
+      }
+      x402Attempt = confirmation.attempt
+    }
+    if (x402Payment && parsed.fee_tx_hash) {
+      return refuseRecordedX402(
+        'this world listing request already has a recorded X-PAYMENT fee; remove fee_tx_hash and do not pay again',
+        409,
+        'retry this same world listing request without X-PAYMENT or fee_tx_hash; do not pay again',
+      )
+    }
+    if (!preservedFee && paymentHeader && parsed.fee_tx_hash) {
+      return err(c, 400,
+        'choose exactly one world listing fee method: X-PAYMENT or fee_tx_hash; neither fee was processed')
+    }
+    if (preservedFee && paymentHeader) {
+      return c.json({
+        error: 'this world listing request already has a direct fee transaction; remove X-PAYMENT and retry; do not pay again',
+        retry: 'retry the same world listing body without X-PAYMENT',
+        fee_tx_hash: preservedFee.tx_hash,
+        do_not_pay_again: true,
+      }, 409)
+    }
+    let directFee: Extract<ListingFeeResolution, { state: 'verified' }> | null = null
+    let worldSellerHandle: string
+    const hasRecordedFee = Boolean(preservedFee || x402Payment)
+    const paidDraftUnavailable = hasRecordedFee && !['pending', 'expired'].includes(draft.state)
+    const unpaidDraftUnavailable = !hasRecordedFee &&
+      (draft.state !== 'pending' || dateIsPast(draft.expires_at))
+    if (paidDraftUnavailable || unpaidDraftUnavailable) {
+      if (!preservedFee) {
+        return x402Payment
+          ? refuseRecordedX402(
+              'the world draft is no longer pending and unexpired; its recorded fee needs review',
+              409,
+              reviewRecordedX402,
+            )
+          : err(c, 409, 'world draft is not pending and unexpired')
+      }
+      const reviewed = await reviewListingFeePayment(
+        preservedFee.id,
+        'the world draft expired before its fee reached finality',
+      )
+      if (reviewed.state === 'completed') {
+        return c.json({
+          listing_id: reviewed.listingId,
+          url: `${config.marketOrigin}/api/listing/${reviewed.listingId}`,
+          delivery_kind: 'city_ownership',
+          city_offer_url: cityOfferUrl(parsed.city_offer_id),
+          fee_tx: preservedFee.tx_hash,
+        })
+      }
+      return c.json(reviewed.body, reviewed.status)
+    }
     const cityRecord = await fetchCityOffer(parsed.city_offer_id)
-    if (!cityRecord.ok) return err(c, upstreamStatus(cityRecord), cityRecord.message)
+    if (!cityRecord.ok) {
+      if (!preservedFee) {
+        if (!x402Payment) return err(c, upstreamStatus(cityRecord), cityRecord.message)
+        const status = upstreamStatus(cityRecord)
+        return refuseRecordedX402(
+          cityRecord.message,
+          status,
+          status === 503 ? retryRecordedX402 : reviewRecordedX402,
+        )
+      }
+      if (cityRecord.kind !== 'not_found') {
+        return c.json({
+          error: `${cityRecord.message}; retry the same world listing request; do not pay again`,
+          retry: 'retry the same world listing body and direct fee transaction',
+          do_not_pay_again: true,
+        }, 503)
+      }
+      const reviewed = await reviewListingFeePayment(
+        preservedFee.id,
+        'the city offer disappeared before its fee reached finality',
+      )
+      return reviewed.state === 'completed'
+        ? c.json({
+            listing_id: reviewed.listingId,
+            url: `${config.marketOrigin}/api/listing/${reviewed.listingId}`,
+            delivery_kind: 'city_ownership',
+            city_offer_url: cityOfferUrl(parsed.city_offer_id),
+            fee_tx: preservedFee.tx_hash,
+          })
+        : c.json(reviewed.body, reviewed.status)
+    }
     const mismatch = cityOfferMatchesDraft(cityRecord.value, draft, parsed.city_offer_id, config.marketOrigin)
-    if (mismatch) return err(c, 409, mismatch)
+    if (mismatch) {
+      if (!preservedFee) {
+        return x402Payment
+          ? refuseRecordedX402(mismatch, 409, reviewRecordedX402)
+          : err(c, 409, mismatch)
+      }
+      const reviewed = await reviewListingFeePayment(
+        preservedFee.id,
+        `the city could no longer keep this world listing locked: ${mismatch}`,
+      )
+      return reviewed.state === 'completed'
+        ? c.json({
+            listing_id: reviewed.listingId,
+            url: `${config.marketOrigin}/api/listing/${reviewed.listingId}`,
+            delivery_kind: 'city_ownership',
+            city_offer_url: cityOfferUrl(parsed.city_offer_id),
+            fee_tx: preservedFee.tx_hash,
+          })
+        : c.json(reviewed.body, reviewed.status)
+    }
+    worldSellerHandle = cityRecord.value.seller
+    if (preservedFee) {
+      const resolved = await resolveListingFeePayment({
+        merchantId: merchant.id,
+        requestKind: 'world_listing',
+        requestHash: feeRequestHash,
+        txHash: parsed.fee_tx_hash ?? preservedFee.tx_hash,
+        payerWallet: draft.seller_wallet,
+        requestStartedAt,
+        world: {
+          draftId: draft.id,
+          offerId: parsed.city_offer_id,
+          sellerHandle: worldSellerHandle,
+        },
+      })
+      if (resolved.state === 'response') return c.json(resolved.body, resolved.status)
+      if (resolved.state === 'completed') {
+        return c.json({
+          listing_id: resolved.listingId,
+          url: `${config.marketOrigin}/api/listing/${resolved.listingId}`,
+          delivery_kind: 'city_ownership',
+          city_offer_url: cityOfferUrl(parsed.city_offer_id),
+          fee_tx: preservedFee.tx_hash,
+        })
+      }
+      directFee = resolved
+    }
 
-    const countRows = (await sql`
-      SELECT count(*)::int AS n FROM listings WHERE merchant_id = ${merchant.id}`) as { n: number }[]
-    const isSeed = merchant.id === config.maintainerId && Number(countRows[0]!.n) < config.seedCap
+    let isSeed = false
+    if (!x402Payment) {
+      const countRows = (await sql`
+        SELECT count(*)::int AS n FROM listings WHERE merchant_id = ${merchant.id}`) as { n: number }[]
+      isSeed = merchant.id === config.maintainerId && Number(countRows[0]!.n) < config.seedCap
+    }
     let feeTx: string | null = null
     let responseHeader: string | null = null
     if (!isSeed) {
-      const unavailable = paymentReadinessResponse(c)
-      if (unavailable) return unavailable
-      const feeRequirements = requirements(
-        TREASURY, LISTING_FEE_USDC, `${config.marketOrigin}/api/world/listing`, '1F3EA world listing fee',
-      )
-      const paymentHeader = c.req.header('x-payment')
-      if (!paymentHeader && !parsed.fee_tx_hash)
+      if (x402Payment) {
+        feeTx = x402Payment.transaction
+      } else if (!paymentHeader && !parsed.fee_tx_hash && !directFee) {
         return challenge402(c, feeRequirements, 'world listing costs $1 USDC — pay via x402 or include fee_tx_hash')
-      if (paymentHeader) {
-        const settled = await settleX402(paymentHeader, feeRequirements)
+      } else if (paymentHeader) {
+        const settled = await settleX402(paymentHeader, feeRequirements, x402Operation)
         if (settled.status !== 'verified') {
-          return settled.status === 'invalid'
-            ? challenge402(c, feeRequirements, settled.reason)
-            : err(c, settled.status === 'unclassified' ? 502 : 503, settled.reason)
+          if (settled.status === 'invalid') {
+            const current = await resumeX402PaymentForTerms(
+              x402OperationKey, 'world_listing_fee', feeRequirements,
+            )
+            if (!current) return challenge402(c, feeRequirements, settled.reason)
+            if (current.status === 'verified') {
+              x402Payment = current
+              feeTx = current.transaction
+            } else if ('retry' in current) {
+              return refuseResumedX402(current)
+            } else {
+              return c.json({
+                error: current.reason,
+                retry: reviewRecordedX402,
+                do_not_pay_again: true,
+              }, current.status === 'unclassified' ? 502 : 409)
+            }
+          } else if ('retry' in settled) {
+            return c.json({
+              error: settled.reason,
+              retry: settled.retry,
+              do_not_pay_again: true,
+            }, settled.status === 'unavailable' ? 503 : 409)
+          } else {
+            return err(c, 502, settled.reason)
+          }
+        } else {
+          x402Payment = settled
+          feeTx = settled.transaction
+          if (settled.raw) {
+            responseHeader = paymentResponseHeader({
+              status: 'verified',
+              transaction: settled.transaction,
+              payer: settled.payer,
+              raw: settled.raw,
+            })
+          }
         }
-        feeTx = settled.transaction
-        responseHeader = paymentResponseHeader(settled)
       } else {
-        const direct = await verifyDirectPayment(
-          parsed.fee_tx_hash!, TREASURY, LISTING_FEE_USDC, new Date(Date.now() - 3600e3),
-        )
-        if (direct.status !== 'verified')
-          return err(c, direct.status === 'invalid' ? 402 : 503, direct.reason)
-        if (direct.from.toLowerCase() !== draft.seller_wallet.toLowerCase())
-          return err(c, 402, 'the fee must be paid from the same wallet as the world draft seller_wallet')
-        feeTx = parsed.fee_tx_hash!
+        if (!directFee) {
+          const resolved = await resolveListingFeePayment({
+            merchantId: merchant.id,
+            requestKind: 'world_listing',
+            requestHash: feeRequestHash,
+            txHash: parsed.fee_tx_hash!,
+            payerWallet: draft.seller_wallet,
+            requestStartedAt,
+            world: {
+              draftId: draft.id,
+              offerId: parsed.city_offer_id,
+              sellerHandle: worldSellerHandle,
+            },
+          })
+          if (resolved.state === 'response') return c.json(resolved.body, resolved.status)
+          if (resolved.state === 'completed') {
+            return c.json({
+              listing_id: resolved.listingId,
+              url: `${config.marketOrigin}/api/listing/${resolved.listingId}`,
+              delivery_kind: 'city_ownership',
+              city_offer_url: cityOfferUrl(parsed.city_offer_id),
+              fee_tx: parsed.fee_tx_hash,
+            })
+          }
+          directFee = resolved
+        }
+        feeTx = directFee.txHash
       }
+    }
+
+    if (x402Payment && !x402Attempt) {
+      const confirmation = await confirmRecordedX402(x402Payment)
+      if (confirmation.state === 'unavailable') {
+        return refuseRecordedX402(
+          'the market could not confirm the recorded terms for this world listing fee',
+          503,
+          retryRecordedX402,
+        )
+      }
+      if (confirmation.state === 'mismatch') {
+        return refuseRecordedX402(
+          'the recorded world listing fee does not match this exact listing request',
+          409,
+          reviewRecordedX402,
+        )
+      }
+      if (confirmation.state === 'outside_draft') {
+        return refuseRecordedX402(
+          'the recorded world listing fee was not accepted and transferred inside this draft window',
+          409,
+          reviewRecordedX402,
+        )
+      }
+      x402Attempt = confirmation.attempt
     }
 
     const listingHash = dupHash(draft.title, `city:${draft.thing_id}:offer:${parsed.city_offer_id}`)
     try {
-      const rows = feeTx
-        ? await sql`
-          WITH locked_world_draft AS (
-            SELECT id FROM world_drafts
-            WHERE id = ${draft.id} AND merchant_id = ${merchant.id}
-              AND state = 'pending' AND expires_at > now()
+      let rows: Record<string, unknown>[]
+      if (directFee) {
+        const { finality } = directFee
+        rows = await sql`
+          WITH locked_fee_attempt AS (
+            SELECT id, world_seller_handle, minimum_block_time, maximum_block_time,
+              ${finality.blockTime.toISOString()}::timestamptz AS verified_block_time
+            FROM listing_fee_attempts
+            WHERE id = ${directFee.attemptId} AND merchant_id = ${merchant.id}
+              AND fee_request_kind = 'world_listing'
+              AND fee_request_hash = ${feeRequestHash}
+              AND tx_hash = ${directFee.txHash} AND payment_status = 'payment_pending'
+              AND world_draft_id = ${draft.id} AND world_offer_id = ${parsed.city_offer_id}
             FOR UPDATE
+          ), locked_world_draft AS (
+            SELECT draft.id, attempt.world_seller_handle
+            FROM world_drafts draft
+            JOIN locked_fee_attempt attempt ON TRUE
+            WHERE draft.id = ${draft.id} AND draft.merchant_id = ${merchant.id}
+              AND draft.state IN ('pending', 'expired')
+              AND attempt.maximum_block_time >= date_trunc('second', draft.created_at)
+              AND attempt.maximum_block_time <= draft.expires_at
+              AND attempt.verified_block_time >= date_trunc('second', draft.created_at)
+              AND attempt.verified_block_time <= draft.expires_at
+            FOR UPDATE OF draft
           ), new_listing AS (
             INSERT INTO listings (
               merchant_id, title, description, preview, artifact, price_usdc, seller_wallet,
@@ -399,15 +567,88 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             SELECT ${merchant.id}, ${draft.title}, ${draft.description}, ${draft.preview}, '',
               ${draft.price_usdc}, ${draft.seller_wallet}, ${draft.tags}, 'world', ${listingHash},
               'city_ownership', ${CITY_ORIGIN}, ${parsed.city_offer_id}, ${draft.thing_id},
-              ${cityRecord.value.seller}, id, 'active'
+              world_seller_handle, id, 'active'
+            FROM locked_world_draft
+            RETURNING id, title, price_usdc, world_draft_id
+          ), activated_world_draft AS (
+            UPDATE world_drafts draft SET state = 'active', listing_id = listing.id
+            FROM new_listing listing WHERE draft.id = listing.world_draft_id
+          ), completed_attempt AS (
+            UPDATE listing_fee_attempts attempt SET
+              payment_status = 'completed', listing_id = listing.id,
+              finalized_block_number = ${finality.blockNumber.toString()},
+              finalized_block_hash = ${finality.blockHash},
+              finalized_block_time = ${finality.blockTime.toISOString()},
+              finalized_at = ${finality.finalizedAt.toISOString()}
+            FROM new_listing listing
+            WHERE attempt.id = ${directFee.attemptId} AND attempt.payment_status = 'payment_pending'
+            RETURNING attempt.id, attempt.listing_id
+          ), new_fee AS (
+            INSERT INTO fees (
+              merchant_id, listing_id, amount_usdc, tx_hash,
+              listing_fee_attempt_id, verification_method
+            )
+            SELECT ${merchant.id}, listing.id, ${LISTING_FEE_USDC},
+              ${directFee.txHash}, attempt.id, 'direct'
+            FROM new_listing listing
+            JOIN completed_attempt attempt ON attempt.listing_id = listing.id
+            RETURNING listing_id, listing_fee_attempt_id
+          ), new_event AS (
+            INSERT INTO events (kind, actor, detail)
+            SELECT 'listing', ${merchant.handle}, jsonb_build_object(
+              'listing_id', listing.id, 'title', listing.title,
+              'price_usdc', listing.price_usdc, 'delivery_kind', 'city_ownership'
+            )
+            FROM new_listing listing
+            JOIN new_fee fee ON fee.listing_id = listing.id
+          )
+          SELECT listing.id FROM new_listing listing
+          JOIN completed_attempt attempt ON attempt.listing_id = listing.id
+          JOIN new_fee fee ON fee.listing_id = listing.id`
+      } else {
+        rows = feeTx
+          ? await sql`
+          WITH locked_x402_attempt AS (
+            SELECT operation_started_at, finalized_block_time
+            FROM x402_payment_attempts
+            WHERE operation_key = ${x402OperationKey}
+              AND operation_kind = 'world_listing_fee' AND status = 'verified'
+              AND proof_digest = ${x402Attempt!.proof_digest}
+              AND tx_hash = ${feeTx} AND payer_wallet = ${x402Payment!.payer.toLowerCase()}
+              AND network = 'base' AND asset = ${feeRequirements.asset.toLowerCase()}
+              AND payee_wallet = ${feeRequirements.payTo.toLowerCase()}
+              AND amount_units = ${feeRequirements.maxAmountRequired}
+              AND resource = ${feeRequirements.resource}
+            FOR UPDATE
+          ), locked_world_draft AS (
+            SELECT draft.id FROM world_drafts draft
+            JOIN locked_x402_attempt attempt ON TRUE
+            WHERE draft.id = ${draft.id} AND draft.merchant_id = ${merchant.id}
+              AND draft.state IN ('pending', 'expired')
+              AND attempt.operation_started_at >= date_trunc('second', draft.created_at)
+              AND attempt.operation_started_at <= draft.expires_at
+              AND attempt.finalized_block_time >= date_trunc('second', draft.created_at)
+              AND attempt.finalized_block_time <= draft.expires_at
+            FOR UPDATE OF draft
+          ), new_listing AS (
+            INSERT INTO listings (
+              merchant_id, title, description, preview, artifact, price_usdc, seller_wallet,
+              tags, aisle, dup_hash, delivery_kind, world_origin, world_offer_id,
+              world_asset_id, world_seller_handle, world_draft_id, world_state
+            )
+            SELECT ${merchant.id}, ${draft.title}, ${draft.description}, ${draft.preview}, '',
+              ${draft.price_usdc}, ${draft.seller_wallet}, ${draft.tags}, 'world', ${listingHash},
+              'city_ownership', ${CITY_ORIGIN}, ${parsed.city_offer_id}, ${draft.thing_id},
+              ${worldSellerHandle}, id, 'active'
             FROM locked_world_draft
             RETURNING id, title, price_usdc, world_draft_id
           ), activated_world_draft AS (
             UPDATE world_drafts d SET state = 'active', listing_id = l.id
             FROM new_listing l WHERE d.id = l.world_draft_id
           ), new_fee AS (
-            INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash)
-            SELECT ${merchant.id}, id, ${LISTING_FEE_USDC}, ${feeTx} FROM new_listing
+            INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash,
+              x402_payment_operation_key, verification_method)
+            SELECT ${merchant.id}, id, ${LISTING_FEE_USDC}, ${feeTx}, ${x402OperationKey}, 'x402' FROM new_listing
           ), new_event AS (
             INSERT INTO events (kind, actor, detail)
             SELECT 'listing', ${merchant.handle}, jsonb_build_object(
@@ -431,7 +672,7 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             SELECT ${merchant.id}, ${draft.title}, ${draft.description}, ${draft.preview}, '',
               ${draft.price_usdc}, ${draft.seller_wallet}, ${draft.tags}, 'world', ${listingHash},
               'city_ownership', ${CITY_ORIGIN}, ${parsed.city_offer_id}, ${draft.thing_id},
-              ${cityRecord.value.seller}, id, 'active'
+              ${worldSellerHandle}, id, 'active'
             FROM locked_world_draft
             RETURNING id, title, price_usdc, world_draft_id
           ), activated_world_draft AS (
@@ -445,7 +686,33 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             ) FROM new_listing
           )
           SELECT id FROM new_listing`
-      if (!rows.length) return err(c, 409, 'world draft changed before the listing could be activated')
+      }
+      if (!rows.length) {
+        if (directFee) {
+          const reviewed = await reviewListingFeePayment(
+            directFee.attemptId,
+            'the world draft changed before its finalized fee could create the listing',
+            directFee.finality,
+          )
+          if (reviewed.state === 'completed') {
+            return c.json({
+              listing_id: reviewed.listingId,
+              url: `${config.marketOrigin}/api/listing/${reviewed.listingId}`,
+              delivery_kind: 'city_ownership',
+              city_offer_url: cityOfferUrl(parsed.city_offer_id),
+              fee_tx: directFee.txHash,
+            })
+          }
+          return c.json(reviewed.body, reviewed.status)
+        }
+        return x402Payment
+          ? refuseRecordedX402(
+              'the world draft changed before the listing could be activated; its recorded fee needs review',
+              409,
+              reviewRecordedX402,
+            )
+          : err(c, 409, 'world draft changed before the listing could be activated')
+      }
       const listingId = Number((rows[0] as { id: number }).id)
       if (responseHeader) c.header('X-PAYMENT-RESPONSE', responseHeader)
       return c.json({
@@ -457,6 +724,61 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
       }, 201)
     } catch (error) {
       const details = postgresErrorDetails(error)
+      if (directFee) {
+        const knownConflict = details.code === '23505' && [
+          'listings_world_offer_unique',
+          'listings_world_draft_unique',
+          'fees_tx_hash_key',
+          'fees_tx_hash_lower_unique',
+          'payment_uses_pkey',
+        ].includes(details.constraint ?? '')
+        if (knownConflict) {
+          const reviewed = await reviewListingFeePayment(
+            directFee.attemptId,
+            'the finalized fee could not create this world listing because its draft, city offer, or payment was already used',
+            directFee.finality,
+          )
+          if (reviewed.state === 'completed') {
+            return c.json({
+              listing_id: reviewed.listingId,
+              url: `${config.marketOrigin}/api/listing/${reviewed.listingId}`,
+              delivery_kind: 'city_ownership',
+              city_offer_url: cityOfferUrl(parsed.city_offer_id),
+              fee_tx: directFee.txHash,
+            })
+          }
+          return c.json(reviewed.body, reviewed.status)
+        }
+        console.error('world listing activation failed after its fee was preserved', error)
+        return c.json({
+          error: 'the market could not finish this listing; retry the same request and fee transaction; do not pay again',
+          retry: 'retry the same listing request with the same fee transaction',
+          do_not_pay_again: true,
+        }, 503)
+      }
+      if (x402Payment) {
+        const knownConflict = details.code === '23505' && [
+          'listings_world_offer_unique',
+          'listings_world_draft_unique',
+          'fees_tx_hash_key',
+          'fees_tx_hash_lower_unique',
+          'payment_uses_pkey',
+        ].includes(details.constraint ?? '')
+        if (knownConflict) {
+          const conflict = details.constraint === 'listings_world_offer_unique'
+            ? 'that city offer was already used by another market listing'
+            : details.constraint === 'listings_world_draft_unique'
+              ? 'that world draft was already used by another market listing'
+              : 'that fee transaction was already used'
+          return refuseRecordedX402(conflict, 409, reviewRecordedX402)
+        }
+        console.error('world listing activation failed after its X-PAYMENT fee was recorded', error)
+        return refuseRecordedX402(
+          'the market could not finish this world listing after recording its fee',
+          503,
+          retryRecordedX402,
+        )
+      }
       if (details.code !== '23505') throw error
       switch (details.constraint) {
         case 'listings_world_offer_unique':
@@ -473,284 +795,5 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     }
   })
 
-  app.post('/api/world/checkout/:listingId', async c => {
-    const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'register in the market first — it is free')
-    const listingId = positiveId(c.req.param('listingId'))
-    if (!listingId) return err(c, 400, 'listing id must be a positive integer')
-    const parsed = validWorldCheckout(await c.req.json().catch(() => null))
-    if (typeof parsed === 'string') return err(c, 400, parsed)
-    const listing = await readWorldListing(listingId)
-    if (!listing) return err(c, 404, 'no such listing')
-    if (listing.delivery_kind !== 'city_ownership') return err(c, 409, 'this is an artifact listing; use POST /api/buy/:id')
-    if (listing.merchant_id === merchant.id) return err(c, 403, 'you cannot buy your own goods')
-    if (listing.removed || listing.withdrawn || listing.world_state !== 'active')
-      return err(c, 409, 'world listing is not live')
-
-    const resident = await fetchCityResident(parsed.city_handle)
-    if (!resident.ok) {
-      if (resident.kind === 'not_found')
-        return err(c, 409,
-          'not a city resident: register in the city and choose your own name before checkout or payment')
-      return err(c, 503, resident.message)
-    }
-    const cityRecord = await fetchCityOffer(listing.world_offer_id)
-    if (!cityRecord.ok) return err(c, upstreamStatus(cityRecord), cityRecord.message)
-    const mismatch = cityOfferMatchesListing(cityRecord.value, listing, config.marketOrigin)
-    if (mismatch) return err(c, 409, mismatch)
-    if (!isCityOfferAvailable(cityRecord.value)) return err(c, 409, 'city offer is not available for a new checkout')
-    if (cityRecord.value.seller === parsed.city_handle)
-      return err(c, 403, 'the city seller cannot buy their own thing')
-
-    try {
-      const rows = (await sql`
-        WITH expired_checkouts AS (
-          UPDATE world_checkouts SET status = 'expired'
-          WHERE listing_id = ${listing.id} AND status = 'active' AND expires_at <= now()
-        ), still_live AS (
-          SELECT id FROM listings WHERE id = ${listing.id} AND merchant_id <> ${merchant.id}
-            AND delivery_kind = 'city_ownership' AND world_state = 'active'
-            AND NOT removed AND NOT withdrawn
-          FOR UPDATE
-        ), new_checkout AS (
-          INSERT INTO world_checkouts (listing_id, merchant_id, city_handle)
-          SELECT id, ${merchant.id}, ${parsed.city_handle} FROM still_live
-          RETURNING id, expires_at
-        )
-        SELECT id, expires_at FROM new_checkout`) as { id: number; expires_at: string }[]
-      if (!rows.length) return err(c, 409, 'world listing changed before checkout could be bound')
-      const checkout = rows[0]!
-      return c.json({
-        checkout_id: Number(checkout.id),
-        url: `${config.marketOrigin}/api/world/checkout/${checkout.id}`,
-        expires_at: checkout.expires_at,
-        city_claim_url: cityClaimUrl(listing.world_offer_id),
-        note: 'This market checkout is only a public intent and does not reserve the thing. ' +
-          'Authenticate to the city with your city bearer; the first city reservation wins before payment.',
-      }, 201)
-    } catch (error) {
-      const details = postgresErrorDetails(error)
-      if (details.code === '23505' && details.constraint === 'world_checkouts_one_active_per_buyer')
-        return err(c, 409, 'you already have an active checkout for this listing; wait for its ten-minute expiry')
-      throw error
-    }
-  })
-
-  app.get('/api/world/checkout/:id', async c => {
-    const id = positiveId(c.req.param('id'))
-    if (!id) return err(c, 400, 'checkout id must be a positive integer')
-    const checkout = await readCheckout(id)
-    if (!checkout) return err(c, 404, 'no such world checkout')
-    c.header('Cache-Control', 'public, max-age=2, s-maxage=5')
-    return c.json({ checkout: checkoutEnvelope(checkout) })
-  })
-
-  app.post('/api/world/sync/:listingId', async c => {
-    const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
-    if (!(await emptyBody(c.req))) return err(c, 400, 'sync accepts only an empty JSON object or no body')
-    const listingId = positiveId(c.req.param('listingId'))
-    if (!listingId) return err(c, 400, 'listing id must be a positive integer')
-
-    const prior = await priorWorldPurchase(listingId)
-    if (prior) return c.json({ receipt: receiptEnvelope(prior) })
-    const listing = await readWorldListing(listingId)
-    if (!listing) return err(c, 404, 'no such listing')
-    if (listing.delivery_kind !== 'city_ownership') return err(c, 409, 'not a world listing')
-
-    const cityRecord = await fetchCityOffer(listing.world_offer_id)
-    if (!cityRecord.ok) return err(c, upstreamStatus(cityRecord), cityRecord.message)
-    const mismatch = cityOfferMatchesListing(cityRecord.value, listing, config.marketOrigin)
-    if (mismatch) return err(c, 409, mismatch)
-
-    if (cityRecord.value.phase === 'canceled') {
-      const rows = await sql`
-        WITH canceled_listing AS (
-          UPDATE listings SET world_state = 'canceled', withdrawn = TRUE,
-            withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = 'city offer canceled'
-          WHERE id = ${listing.id} AND delivery_kind = 'city_ownership'
-            AND world_state = 'active' AND NOT removed
-          RETURNING id, world_draft_id
-        ), canceled_draft AS (
-          UPDATE world_drafts d SET state = 'canceled', canceled_at = now(),
-            canceled_reason = 'city offer canceled'
-          FROM canceled_listing l WHERE d.id = l.world_draft_id
-        ), expired_checkouts AS (
-          UPDATE world_checkouts SET status = 'expired'
-          WHERE listing_id IN (SELECT id FROM canceled_listing) AND status = 'active'
-        ), new_event AS (
-          INSERT INTO events (kind, actor, detail)
-          SELECT 'world_canceled', ${listing.market_seller}, jsonb_build_object(
-            'listing_id', id, 'city_offer_id', ${listing.world_offer_id}
-          ) FROM canceled_listing
-        )
-        SELECT id FROM canceled_listing`
-      return c.json({
-        listing_id: listing.id,
-        status: rows.length ? 'canceled' : listing.world_state,
-        city_offer_url: cityOfferUrl(listing.world_offer_id),
-      })
-    }
-    const checkoutBoundPhases = ['reserved', 'payment_pending', 'payment_invalid', 'claimed']
-    let checkout: WorldCheckoutRow | null = null
-    if (checkoutBoundPhases.includes(cityRecord.value.phase)) {
-      if (cityRecord.value.market_listing_id !== listing.id)
-        return err(c, 409, 'city offer is not bound to this market listing')
-      const checkoutId = cityRecord.value.market_checkout_id
-      if (!checkoutId) return err(c, 409, 'city offer has no market checkout binding')
-      checkout = await readCheckout(checkoutId)
-      if (!checkout || checkout.listing_id !== listing.id ||
-          checkout.market_draft_id !== listing.world_draft_id ||
-          checkout.world_offer_id !== listing.world_offer_id)
-        return err(c, 409, 'city offer points to a checkout for different terms')
-      if (cityRecord.value.buyer !== checkout.city_handle)
-        return err(c, 409, 'city buyer does not match the market checkout')
-      if (cityRecord.value.market_buyer !== checkout.market_buyer)
-        return err(c, 409, 'city market buyer does not match the market checkout')
-    }
-
-    if (cityRecord.value.phase === 'payment_invalid') {
-      const rows = await sql`
-        WITH invalid_payment_listing AS (
-          UPDATE listings SET world_state = 'stale', withdrawn = TRUE,
-            withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = 'city payment invalid'
-          WHERE id = ${listing.id} AND delivery_kind = 'city_ownership'
-            AND world_state = 'active' AND NOT removed
-          RETURNING id, world_draft_id
-        ), invalid_payment_draft AS (
-          UPDATE world_drafts SET state = 'canceled', canceled_at = now(),
-            canceled_reason = 'city payment invalid'
-          WHERE id = ${listing.world_draft_id} AND state <> 'sold'
-        ), expired_checkouts AS (
-          UPDATE world_checkouts SET status = 'expired'
-          WHERE listing_id = ${listing.id} AND status = 'active'
-        ), new_event AS (
-          INSERT INTO events (kind, actor, detail)
-          SELECT 'world_canceled', ${listing.market_seller}, jsonb_build_object(
-            'listing_id', id, 'city_offer_id', ${listing.world_offer_id},
-            'reason', 'city payment invalid'
-          ) FROM invalid_payment_listing
-        )
-        SELECT id FROM invalid_payment_listing`
-      const status = rows.length ? 'stale' : (await readWorldListing(listing.id))?.world_state ?? 'stale'
-      return c.json({
-        listing_id: listing.id,
-        status,
-        city_phase: 'payment_invalid' as const,
-        city_unlock_required: true,
-        city_cancel_url: cityCancelUrl(listing.world_offer_id),
-      })
-    }
-    if (cityRecord.value.phase !== 'claimed')
-      return c.json({ listing_id: listing.id, status: listing.world_state, city_phase: cityRecord.value.phase })
-    if (!checkout) return err(c, 409, 'claimed city offer has no valid market checkout')
-    const reservedAt = new Date(cityRecord.value.reserved_at ?? '')
-    const reservedUntil = new Date(cityRecord.value.reserved_until ?? '')
-    const checkoutExpiry = new Date(checkout.expires_at)
-    if (Number.isNaN(reservedAt.getTime()) || Number.isNaN(reservedUntil.getTime()) ||
-        Number.isNaN(checkoutExpiry.getTime()) || reservedAt > checkoutExpiry || reservedUntil <= reservedAt)
-      return err(c, 409, 'city reservation did not begin within the market checkout window')
-    const claimedAt = new Date(cityRecord.value.claimed_at ?? '')
-    if (Number.isNaN(claimedAt.getTime())) return err(c, 409, 'claimed city offer has no valid claimed_at')
-    if (listing.removed) {
-      const removedAt = new Date(listing.removed_at ?? '')
-      if (Number.isNaN(removedAt.getTime()) || reservedAt > removedAt)
-        return err(c, 409, 'market listing was removed before the city reservation began')
-    }
-    if (listing.withdrawn) {
-      const withdrawnAt = new Date(listing.withdrawn_at ?? '')
-      if (Number.isNaN(withdrawnAt.getTime()) || reservedAt > withdrawnAt)
-        return err(c, 409, 'market listing was withdrawn before the city reservation began')
-    }
-
-    const evidence = receiptFields(cityRecord.value)
-    if (!evidence.txHash || !WALLET_RE.test(evidence.buyerWallet) || !WALLET_RE.test(evidence.paymentFrom) ||
-        !WALLET_RE.test(evidence.paymentTo) ||
-        evidence.paymentFrom.toLowerCase() !== evidence.buyerWallet.toLowerCase() ||
-        evidence.paymentTo.toLowerCase() !== listing.seller_wallet.toLowerCase() ||
-        !['x402', 'claim'].includes(evidence.via) || Number.isNaN(new Date(evidence.blockTime).getTime()))
-      return err(c, 409, 'claimed city offer has incomplete or mismatched public payment evidence')
-    const paymentAt = new Date(evidence.blockTime)
-    if (paymentAt < reservedAt || paymentAt > reservedUntil)
-      return err(c, 409, 'city payment evidence falls outside the city reservation window')
-
-    const receipt = {
-      city_origin: CITY_ORIGIN,
-      city_offer_id: listing.world_offer_id,
-      city_asset_id: listing.world_asset_id,
-      city_handle: checkout.city_handle,
-      market_buyer: checkout.market_buyer,
-      buyer_wallet: evidence.buyerWallet,
-      city_verified_via: evidence.via,
-      city_block_time: evidence.blockTime,
-      payment_from: evidence.paymentFrom.toLowerCase(),
-      payment_to: evidence.paymentTo.toLowerCase(),
-      city_receipt_url: cityOfferUrl(listing.world_offer_id),
-    }
-    try {
-      const rows = (await sql`
-        WITH locked_sale AS (
-          SELECT l.id, l.world_draft_id, c.id AS checkout_id, c.merchant_id
-          FROM listings l JOIN world_checkouts c ON c.id = ${checkout.id} AND c.listing_id = l.id
-          WHERE l.id = ${listing.id} AND l.delivery_kind = 'city_ownership'
-            AND (NOT l.removed OR ${reservedAt.toISOString()}::timestamptz <= l.removed_at)
-            AND (NOT l.withdrawn OR ${reservedAt.toISOString()}::timestamptz <= l.withdrawn_at)
-            AND c.city_handle = ${checkout.city_handle} AND c.status IN ('active','expired')
-          FOR UPDATE OF l, c
-        ), new_purchase AS (
-          INSERT INTO purchases (
-            listing_id, merchant_id, amount_usdc, tx_hash, verified_via,
-            world_checkout_id, world_receipt
-          )
-          SELECT id, merchant_id, ${listing.price_usdc}, ${evidence.txHash}, 'world',
-            checkout_id, ${JSON.stringify(receipt)}::jsonb
-          FROM locked_sale
-          RETURNING id, listing_id, merchant_id, amount_usdc, tx_hash,
-            world_checkout_id, world_receipt, created_at
-        ), sold_listing AS (
-          UPDATE listings SET world_state = 'sold', sales = sales + 1
-          WHERE id IN (SELECT listing_id FROM new_purchase)
-        ), sold_draft AS (
-          UPDATE world_drafts SET state = 'sold'
-          WHERE id IN (SELECT world_draft_id FROM locked_sale)
-            AND EXISTS (SELECT 1 FROM new_purchase)
-        ), completed_checkout AS (
-          UPDATE world_checkouts SET status = 'completed', completed_at = now()
-          WHERE id IN (SELECT world_checkout_id FROM new_purchase)
-        ), new_event AS (
-          INSERT INTO events (kind, actor, detail)
-          SELECT 'world_sale', ${listing.market_seller}, jsonb_build_object(
-            'listing_id', p.listing_id, 'amount_usdc', p.amount_usdc,
-            'via', 'world', 'city_offer_id', ${listing.world_offer_id},
-            'world_checkout_id', p.world_checkout_id
-          ) FROM new_purchase p
-        )
-        SELECT id AS purchase_id, listing_id, world_checkout_id,
-          amount_usdc::float8 AS amount_usdc, tx_hash, world_receipt, created_at
-        FROM new_purchase`) as WorldPurchaseRow[]
-      if (!rows.length) {
-        const raced = await priorWorldPurchase(listing.id)
-        if (raced) return c.json({ receipt: receiptEnvelope(raced) })
-        return err(c, 409, 'world listing or checkout changed before the receipt could be recorded')
-      }
-      return c.json({ receipt: receiptEnvelope(rows[0]!) })
-    } catch (error) {
-      const details = postgresErrorDetails(error)
-      if (details.code !== '23505') throw error
-      switch (details.constraint) {
-        case 'purchases_listing_id_merchant_id_key':
-        case 'purchases_world_checkout_unique': {
-          const raced = await priorWorldPurchase(listing.id)
-          if (raced) return c.json({ receipt: receiptEnvelope(raced) })
-          return err(c, 409, 'that world purchase or checkout was already recorded; retry sync to read its receipt')
-        }
-        case 'purchases_tx_hash_key':
-        case 'purchases_tx_hash_lower_unique':
-        case 'payment_uses_pkey':
-          return err(c, 409, 'city payment transaction was already used by the market')
-        default:
-          throw error
-      }
-    }
-  })
+  registerWorldCheckoutRoutes(app, { marketOrigin: config.marketOrigin })
 }

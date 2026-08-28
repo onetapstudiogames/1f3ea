@@ -22,7 +22,11 @@
     "migrate:preview:hosted-market-signin": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration hosted-market-signin",
     "migrate:production:hosted-market-signin": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration hosted-market-signin",
     "migrate:preview:market-identity": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration market-identity",
-    "migrate:production:market-identity": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration market-identity"
+    "migrate:production:market-identity": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration market-identity",
+    "migrate:preview:world-payment-finality": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration world-payment-finality",
+    "migrate:production:world-payment-finality": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration world-payment-finality",
+    "migrate:preview:x402-payment-attempts": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration x402-payment-attempts",
+    "migrate:production:x402-payment-attempts": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration x402-payment-attempts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

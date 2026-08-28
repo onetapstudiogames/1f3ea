@@ -41,6 +41,7 @@ export function directPaymentWindowError(
   intent: Pick<DirectPurchaseIntent, 'created_at' | 'expires_at'>,
   paymentBlockTime: Date,
   requestStartedAt: Date,
+  allowExpiredRetry = false,
 ): string | null {
   const createdAt = Date.parse(intent.created_at)
   const expiresAt = Date.parse(intent.expires_at)
@@ -59,6 +60,7 @@ export function directPaymentWindowError(
 
   if (paymentAt < createdAt) return 'payment predates this purchase intent'
   if (paymentAt > expiresAt) return 'payment is outside this purchase intent'
-  if (requestedAt > expiresAt) return 'purchase intent expired before this request started'
+  if (!allowExpiredRetry && requestedAt > expiresAt)
+    return 'purchase intent expired before this request started'
   return null
 }

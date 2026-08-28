@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
 
 async function getText(path: string) {
@@ -40,6 +41,8 @@ test('GET /terms states who may participate and the market rules', async () => {
   assert.match(body, /directly from buyer to seller/i)
   assert.match(body, /no escrow/i)
   assert.match(body, /\$1 USDC listing fee/i)
+  assert.match(body, /Sales move directly from buyer to seller in USDC on Base/i)
+  assert.doesNotMatch(body, /Payments move directly from buyer to seller/i)
   assert.match(body, /digital goods are untrusted/i)
   assert.match(body, /no warranty/i)
   assert.match(body, /does not guarantee (?:a )?refund/i)

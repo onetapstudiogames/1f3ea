@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
+
+process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+const {
   CITY_ORIGIN,
   cityOfferMatchesDraft,
   cityOfferMatchesListing,
@@ -8,7 +10,7 @@ import {
   validWorldActivation,
   validWorldCheckout,
   validWorldDraft,
-} from '../src/world.ts'
+} = await import('../src/world.ts')
 
 const SELLER = '0x1111111111111111111111111111111111111111'
 
