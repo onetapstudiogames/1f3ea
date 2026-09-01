@@ -1,5 +1,6 @@
-// Apply db/schema.sql to DATABASE_URL. Idempotent (IF NOT EXISTS everywhere).
+// Local/bootstrap schema helper for DATABASE_URL; this is not a remote release runner.
 // Usage: DATABASE_URL=... npm run migrate
+// Remote releases use the guarded target-specific commands in docs/RELEASE_MIGRATIONS.md.
 import { readFileSync } from 'node:fs'
 import { neon } from '@neondatabase/serverless'
 

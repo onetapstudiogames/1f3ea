@@ -666,7 +666,7 @@ test('new connector arguments reject invalid filters and limits instead of silen
   assert.equal(backingCalls, 0)
 })
 
-test('MCP route builders leave structured invalid ids to backing validation', async () => {
+test('MCP route builders preserve legacy backing validation while bounded sync rejects before dispatch', async () => {
   const paths: string[] = []
   const backing = new Hono()
   backing.all('*', c => {
@@ -686,7 +686,8 @@ test('MCP route builders leave structured invalid ids to backing validation', as
     },
     {
       name: 'sync_world', arguments: { listing_id: invalidId },
-      error: 'listing id must be a positive integer',
+      error: 'listing_id must be an integer from 1 to 2147483647.',
+      preflight: true,
     },
     { name: 'edit_item', arguments: { id: invalidId }, error: 'bad id' },
     { name: 'withdraw_item', arguments: { id: invalidId }, error: 'bad id' },
@@ -710,13 +711,12 @@ test('MCP route builders leave structured invalid ids to backing validation', as
     const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
     assert.equal(parsed.error, call.error, call.name)
     assert.equal(parsed.error_class, 'bad_input', call.name)
-    assert.equal(parsed.http_status, 400, call.name)
+    assert.equal(parsed.http_status, 'preflight' in call ? undefined : 400, call.name)
   }
 
   assert.deepEqual(paths, [
     '/api/listing/NaN',
     '/api/world/checkout/NaN',
-    '/api/world/sync/NaN',
     '/api/listing/NaN',
     '/api/listing/NaN/withdraw',
     '/api/buy/NaN',

@@ -286,13 +286,25 @@ export const MCP_TOOLS: ToolDef[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        title: { type: 'string' },
-        description: { type: 'string' },
-        preview: { type: 'string' },
-        price_usdc: { type: 'number', description: 'greater than 0' },
-        seller_wallet: { type: 'string', description: 'your Base wallet where the city sends the buyer payment' },
-        tags: { type: 'array', items: { type: 'string' } },
-        thing_id: { type: 'number', description: 'the thing you own in the city' },
+        title: { type: 'string', description: 'trimmed, then must contain 3-120 characters' },
+        description: { type: 'string', description: 'trimmed, then must contain 1-4000 characters' },
+        preview: { type: 'string', description: 'trimmed, then must contain at most 4000 characters; empty is allowed' },
+        price_usdc: {
+          type: 'number', exclusiveMinimum: 0, maximum: 10000,
+          description: 'greater than 0 and at most 10000; rounded to 6 decimal places',
+        },
+        seller_wallet: {
+          type: 'string', pattern: '^0x[0-9a-fA-F]{40}$',
+          description: 'your Base wallet where the city sends the buyer payment',
+        },
+        tags: {
+          type: 'array', items: { type: 'string' },
+          description: 'values are lowercased and trimmed; empty and duplicate values are removed; each is truncated to 40 characters; the first 8 remain',
+        },
+        thing_id: {
+          type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX,
+          description: 'the positive integer ID of the thing you own in the city',
+        },
       },
       required: ['title', 'description', 'preview', 'price_usdc', 'seller_wallet', 'tags', 'thing_id'],
     },
@@ -303,16 +315,20 @@ export const MCP_TOOLS: ToolDef[] = [
     name: 'list_world',
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
-      'Costs the normal $1 USDC listing fee. A direct fee uses the same fixed one-hour block-time window and exact-body ' +
+      'Costs the normal $1 USDC listing fee; a direct fee transfer may be larger but must be at least $1. ' +
+      'A direct fee uses the same fixed one-hour block-time window and exact-body ' +
       'retry rules as list_item. Never put a city bearer secret in arguments. ' +
       PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        draft_id: { type: 'number' },
-        city_offer_id: { type: 'number' },
-        fee_tx_hash: { type: 'string', description: 'optional proof of a direct $1 treasury fee' },
+        draft_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        city_offer_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        fee_tx_hash: {
+          type: 'string', pattern: '^0x[0-9a-fA-F]{64}$',
+          description: 'optional proof of a direct fee of at least $1 USDC sent to the official treasury',
+        },
       },
       required: ['draft_id', 'city_offer_id'],
     },
@@ -324,13 +340,17 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Create a ten-minute public checkout intent for your existing city resident. ' +
       'It does not reserve the one-of-one thing; the first city reservation wins. ' +
+      'One active checkout is allowed per market buyer and listing; wait for its ten-minute expiry before creating another. ' +
       'If you are not yet a resident, register in the city and choose your own name before checkout or payment.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        listing_id: { type: 'number' },
-        city_handle: { type: 'string' },
+        listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        city_handle: {
+          type: 'string',
+          description: 'lowercased and trimmed, then must match ^[a-z0-9][a-z0-9-]{2,31}$',
+        },
       },
       required: ['listing_id', 'city_handle'],
     },
@@ -357,11 +377,15 @@ export const MCP_TOOLS: ToolDef[] = [
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { listing_id: { type: 'number' } },
+      properties: { listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX } },
       required: ['listing_id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    route: a => ({ method: 'POST', path: `/api/world/sync/${routeId(a.listing_id)}`, body: {} }),
+    route: a => ({
+      method: 'POST',
+      path: `/api/world/sync/${requiredRouteId('listing_id', a.listing_id)}`,
+      body: {},
+    }),
   },
   {
     name: 'edit_item',

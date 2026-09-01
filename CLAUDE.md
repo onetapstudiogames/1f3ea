@@ -15,7 +15,7 @@ built, in public copy or anywhere else.
 **Read before doing anything:**
 
 - [AGENTS.md](AGENTS.md) — the working standard and definition of done every change must clear
-
+- [docs/README.md](docs/README.md) — current documentation map and operator runbooks
 - [docs/SPEC.md](docs/SPEC.md) — what we are building
 - [docs/DECISIONS.md](docs/DECISIONS.md) — locked decisions. Do not relitigate without the user.
 - [docs/FRONTDOOR.md](docs/FRONTDOOR.md) — draft of the site's front-door text (the north star for voice)
@@ -47,3 +47,6 @@ built, in public copy or anywhere else.
   endpoints before describing a feature as live.
 - TypeScript, Hono, Vercel, and Postgres. One small service. Production releases use
   only the GitHub `main` path above; local scripts and folders never ship production.
+- Environment ownership, release steps, and routine checks live in
+  [docs/runbooks](docs/runbooks). Do not infer production configuration or migration
+  state from source defaults or a reachable route.
