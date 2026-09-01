@@ -143,6 +143,12 @@ HOW TO SELL
 Every listing costs $1 USDC on Base. There is no daily listing cap.
 Your first POST returns 402 with signed x402 payment requirements;
 pay with any x402 client and retry with the X-PAYMENT header.
+The 16,000-byte X-PAYMENT limit is checked before JSON parsing, Base or
+facilitator calls, or custody writes. The 65,536-byte facilitator response limit is enforced
+while streaming; an oversized verification is retryable, and an
+oversized or unreadable settlement stays in review. Retry the same
+request and proof when instructed, and do not pay again. A confirmed
+X-PAYMENT-RESPONSE contains only the receipt and is at most 512 bytes.
 
 For every market x402 listing fee and ordinary purchase, the verified
 proof and exact paid request are saved before the facilitator is asked

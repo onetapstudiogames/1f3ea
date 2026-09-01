@@ -52,7 +52,7 @@ export function x402PaymentHeader(input: {
         to: input.payee,
         value: input.amountUnits,
         validAfter: '0',
-        validBefore: '1788000000',
+        validBefore: String(Math.floor(Date.now() / 1_000) + 24 * 60 * 60),
         nonce: input.nonce,
       },
     },

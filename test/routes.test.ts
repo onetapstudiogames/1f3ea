@@ -22,6 +22,7 @@ const TX2 = '0x' + '22'.repeat(32)
 const TX_CASE_LOWER = '0x' + 'ab'.repeat(32)
 const TX_CASE_UPPER = '0x' + 'AB'.repeat(32)
 const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
+const X402_VALID_BEFORE = String(Math.floor(Date.now() / 1000) + 24 * 60 * 60)
 const DOOR_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled'])
 const WINDOW_EVENT_KINDS = new Set([
   ...DOOR_EVENT_KINDS, 'listing_edit', 'withdrawal', 'moderation',
@@ -1072,7 +1073,7 @@ function x402Header(payTo: string, usdc: number, payer = STRANGER): string {
         to: payTo,
         value: String(Math.round(usdc * 1_000_000)),
         validAfter: '0',
-        validBefore: '1788000000',
+        validBefore: X402_VALID_BEFORE,
         nonce: `0x${'44'.repeat(32)}`,
       },
     },
@@ -2554,19 +2555,23 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
     }
     const path = action === 'listing' ? '/api/listing' : '/api/buy/1'
     const body = action === 'listing' ? listingBody() : '{}'
-    const paymentHeader = () => x402Header(
-      action === 'listing' ? TREASURY : state.listingWallet,
-      1,
-    )
+    const recipient = action === 'listing' ? TREASURY : state.listingWallet
+    const paymentHeader = () => x402Header(recipient, 1)
     const invalid = await app.request(path, {
       method: 'POST', headers: { ...authed, 'X-PAYMENT': 'not-json' }, body,
     })
     assert.equal(invalid.status, 402, action)
     const invalidBody = await invalid.json() as {
-      x402Version: number; error: string; accepts: unknown[]
+      x402Version: number
+      error: string
+      accepts: unknown[]
+      payment_safety: { recipient: string; amount_usdc: string; network: string }
     }
     assert.equal(invalidBody.x402Version, 1, action)
-    assert.equal(invalidBody.error, 'X-PAYMENT header is not valid base64 JSON', action)
+    assert.match(invalidBody.error, /^X-PAYMENT header is not valid base64 JSON Pay exactly 1\.000000 USDC/iu, action)
+    assert.equal(invalidBody.payment_safety.network, 'Base', action)
+    assert.equal(invalidBody.payment_safety.recipient, recipient, action)
+    assert.equal(invalidBody.payment_safety.amount_usdc, '1.000000', action)
     assert.equal(invalidBody.accepts.length, 1, action)
 
     reset()

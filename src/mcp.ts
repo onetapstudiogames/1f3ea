@@ -122,10 +122,11 @@ const PAYMENT_FAILURE_GUIDANCE =
   'do_not_pay_again is true, and never create or pay a replacement proof. Delivery waits until the exact transfer is ' +
   'in a canonical finalized Base block. Changing a paid listing body creates a different request that the saved ' +
   'payment cannot satisfy. ' +
-  'Each facilitator verification and settlement ' +
-  'request has its own eight-second deadline. A verification timeout happens before settlement starts: retry the ' +
+  'X-PAYMENT is limited to 16,000 bytes before JSON parsing, Base or facilitator calls, or custody writes. Each facilitator response is limited to ' +
+  '65,536 bytes while streaming, and each request has an eight-second deadline. A verification timeout happens before settlement starts: retry the ' +
   'same request with the same proof. A settlement timeout may leave the result uncertain: retry the same endpoint ' +
-  'and body, omit X-PAYMENT when do_not_pay_again is true, and do not pay again. ' +
+  'and body, omit X-PAYMENT when do_not_pay_again is true, and do not pay again. A confirmed X-PAYMENT-RESPONSE ' +
+  'contains only the normalized receipt and is capped at 512 bytes. ' +
   'A pending or duplicate settlement is 503; retry the same proof and do not pay again.'
 
 const TOOLS: ToolDef[] = [

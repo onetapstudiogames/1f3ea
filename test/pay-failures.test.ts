@@ -15,6 +15,14 @@ const OPERATION = {
   operationKind: 'listing_fee' as const,
   operationStartedAt: new Date('2026-08-28T11:59:59.000Z'),
 }
+const AUTHORIZATION_VALID_BEFORE = String(
+  Math.floor(OPERATION.operationStartedAt.getTime() / 1_000) + 60 * 60,
+)
+
+let baseReadCalls = 0
+let transferReadCalls = 0
+let beginSettlementCalls = 0
+let facilitatorCalls = 0
 
 type Attempt = {
   operation_key: string
@@ -50,23 +58,29 @@ mock.module(new URL('../src/chain.ts', import.meta.url).href, {
   namedExports: {
     NETWORK: 'base',
     USDC,
-    currentBaseBlockNumber: async () => 100n,
+    currentBaseBlockNumber: async () => {
+      baseReadCalls += 1
+      return 100n
+    },
     toUnits: (usdc: number) => BigInt(Math.round(usdc * 1_000_000)),
     classifyUsdcTransfer: async (
       _txHash: string,
       payee: string,
       amount: bigint,
       options: { expectedFrom?: string; expectedAuthorizationNonce?: string },
-    ) => ({
-      state: 'matched',
-      from: options.expectedFrom,
-      to: payee,
-      amount,
-      blockTime: new Date('2026-08-28T12:00:00.000Z'),
-      blockNumber: 101n,
-      blockHash: `0x${'77'.repeat(32)}`,
-      finalizedAt: new Date('2026-08-28T12:01:00.000Z'),
-    }),
+    ) => {
+      transferReadCalls += 1
+      return {
+        state: 'matched',
+        from: options.expectedFrom,
+        to: payee,
+        amount,
+        blockTime: new Date('2026-08-28T12:00:00.000Z'),
+        blockNumber: 101n,
+        blockHash: `0x${'77'.repeat(32)}`,
+        finalizedAt: new Date('2026-08-28T12:01:00.000Z'),
+      }
+    },
   },
 })
 
@@ -78,6 +92,7 @@ mock.module(new URL('../src/x402-payment-attempts.ts', import.meta.url).href, {
       operationStartedAt: Date
       requirements: { asset: string; payTo: string; maxAmountRequired: string; resource: string }
     }) => {
+      beginSettlementCalls += 1
       const now = '2026-08-28T12:00:00.000Z'
       assert.deepEqual(input.operationStartedAt, OPERATION.operationStartedAt)
       activeAttempt = {
@@ -156,6 +171,7 @@ mock.module(new URL('../src/x402-payment-attempts.ts', import.meta.url).href, {
 })
 
 globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+  facilitatorCalls += 1
   const step = steps.shift()
   assert.ok(step, 'unexpected facilitator call')
   return step(init)
@@ -163,6 +179,7 @@ globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
 
 const {
   canonicalTxHash,
+  paymentResponseHeader,
   requirements,
   settleX402: settleX402WithCustody,
 } = await import('../src/pay.ts')
@@ -182,7 +199,7 @@ const payload = (value: unknown = {
     signature: `0x${'99'.repeat(65)}`,
     authorization: {
       from: PAYER, to: PAYEE, value: '1000000', validAfter: '0',
-      validBefore: '1788000000', nonce: NONCE,
+      validBefore: AUTHORIZATION_VALID_BEFORE, nonce: NONCE,
     },
   },
 }) =>
@@ -191,6 +208,32 @@ const json = (value: unknown, status = 200) => () => new Response(JSON.stringify
   status, headers: { 'content-type': 'application/json' },
 })
 const invalidJson = (status = 200) => () => new Response('not json', { status })
+const exactSizeJson = (value: Record<string, unknown>, byteSize: number) => {
+  const empty = JSON.stringify({ ...value, padding: '' })
+  const paddingSize = byteSize - Buffer.byteLength(empty, 'utf8')
+  assert.ok(paddingSize >= 0)
+  const body = JSON.stringify({ ...value, padding: 'x'.repeat(paddingSize) })
+  assert.equal(Buffer.byteLength(body, 'utf8'), byteSize)
+  return () => new Response(body, { headers: { 'content-type': 'application/json' } })
+}
+const oversizedJson = (onCancel: () => void) => () => {
+  const encoder = new TextEncoder()
+  let canceled = false
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('{"padding":"'))
+      controller.enqueue(encoder.encode('x'.repeat(65_536)))
+      controller.enqueue(encoder.encode('"}'))
+      setTimeout(() => {
+        if (!canceled) controller.close()
+      }, 0)
+    },
+    cancel() {
+      canceled = true
+      onCancel()
+    },
+  }), { headers: { 'content-type': 'application/json' } })
+}
 
 function queue(...next: FetchStep[]) {
   assert.equal(steps.length, 0)
@@ -349,6 +392,150 @@ test('x402 separates malformed caller proofs from unavailable verification upstr
   }
 })
 
+test('x402 accepts the proof ceiling and rejects the next base64 size before external or custody work', async () => {
+  const proof = {
+    x402Version: 1,
+    scheme: 'exact',
+    network: 'base',
+    padding: '',
+    payload: {
+      signature: `0x${'99'.repeat(65)}`,
+      authorization: {
+        from: PAYER, to: PAYEE, value: '1000000', validAfter: '0',
+        validBefore: AUTHORIZATION_VALID_BEFORE, nonce: NONCE,
+      },
+    },
+  }
+  const emptyBytes = Buffer.byteLength(JSON.stringify(proof), 'utf8')
+  const exactProof = payload({ ...proof, padding: 'x'.repeat(12_000 - emptyBytes) })
+  const oversizedProof = payload({ ...proof, padding: 'x'.repeat(12_001 - emptyBytes) })
+  assert.equal(exactProof.length, 16_000)
+  assert.equal(oversizedProof.length, 16_004)
+
+  queue(json({ isValid: true }), json({ success: true, transaction: TX, payer: PAYER }))
+  assert.equal((await settleX402(exactProof, reqs)).status, 'verified')
+  assert.equal(steps.length, 0)
+
+  const before = { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls }
+
+  const result = await settleX402(oversizedProof, reqs)
+  assert.equal(result.status, 'invalid')
+  if (result.status === 'invalid') assert.match(result.reason, /bounded|too large/i)
+  assert.deepEqual(
+    { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls },
+    before,
+  )
+  assert.equal(steps.length, 0)
+})
+
+test('x402 checks the proof byte ceiling before scanning malformed base64', async () => {
+  const before = { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls }
+  const result = await settleX402('!'.repeat(16_001), reqs)
+  assert.deepEqual(result, {
+    status: 'invalid',
+    reason: 'X-PAYMENT proof is too large; the limit is 16,000 bytes',
+  })
+  assert.deepEqual(
+    { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls },
+    before,
+  )
+  assert.equal(steps.length, 0)
+})
+
+test('x402 rejects deeply nested proof JSON with a stable typed reason before side effects', async () => {
+  const depth = 5_000
+  const body = '{"x402Version":1,"scheme":"exact","network":"base","padding":' +
+    '['.repeat(depth) + '0' + ']'.repeat(depth) +
+    ',"payload":{"signature":"0x' + '99'.repeat(65) + '","authorization":{' +
+    `"from":"${PAYER}","to":"${PAYEE}","value":"1000000","validAfter":"0",` +
+    `"validBefore":"${AUTHORIZATION_VALID_BEFORE}","nonce":"${NONCE}"}}}`
+  const deeplyNestedProof = Buffer.from(body).toString('base64')
+  assert.ok(deeplyNestedProof.length < 16_000)
+  const before = { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls }
+
+  const result = await settleX402(deeplyNestedProof, reqs)
+  assert.equal(result.status, 'invalid')
+  if (result.status === 'invalid') assert.match(result.reason, /too deeply nested|too complex/i)
+  assert.deepEqual(
+    { baseReadCalls, transferReadCalls, beginSettlementCalls, facilitatorCalls },
+    before,
+  )
+  assert.equal(steps.length, 0)
+})
+
+test('x402 accepts an exact 65,536-byte facilitator response', async () => {
+  queue(
+    exactSizeJson({ isValid: true }, 65_536),
+    json({ success: true, transaction: TX, payer: PAYER }),
+  )
+  assert.equal((await settleX402(payload(), reqs)).status, 'verified')
+  assert.equal(steps.length, 0)
+})
+
+test('x402 emits only a small normalized receipt from a maximum-size settlement reply', async () => {
+  queue(
+    json({ isValid: true }),
+    exactSizeJson({ success: true, transaction: TX, payer: PAYER }, 65_536),
+  )
+  const settled = await settleX402(payload(), reqs)
+  assert.equal(settled.status, 'verified')
+  if (settled.status !== 'verified' || !settled.raw) return
+
+  const header = paymentResponseHeader({ ...settled, raw: settled.raw })
+  assert.ok(header.length <= 512)
+  assert.deepEqual(JSON.parse(Buffer.from(header, 'base64').toString('utf8')), {
+    success: true,
+    transaction: TX,
+    network: 'base',
+    payer: PAYER,
+  })
+  assert.equal(steps.length, 0)
+})
+
+test('x402 does not reflect deeply nested facilitator fields after settlement', async () => {
+  const depth = 5_000
+  const body = `{"success":true,"transaction":"${TX}","payer":"${PAYER}","padding":` +
+    '['.repeat(depth) + '0' + ']'.repeat(depth) + '}'
+  assert.ok(Buffer.byteLength(body, 'utf8') < 65_536)
+  queue(
+    json({ isValid: true }),
+    () => new Response(body, { headers: { 'content-type': 'application/json' } }),
+  )
+  const settled = await settleX402(payload(), reqs)
+  assert.equal(settled.status, 'verified')
+  if (settled.status !== 'verified' || !settled.raw) return
+
+  const header = paymentResponseHeader({ ...settled, raw: settled.raw })
+  assert.ok(header.length <= 512)
+  assert.deepEqual(JSON.parse(Buffer.from(header, 'base64').toString('utf8')), {
+    success: true,
+    transaction: TX,
+    network: 'base',
+    payer: PAYER,
+  })
+  assert.equal(steps.length, 0)
+})
+
+test('x402 caps and cancels oversized verification and settlement replies', async () => {
+  let verificationCanceled = false
+  queue(oversizedJson(() => { verificationCanceled = true }))
+  assertVerificationRetry(
+    await settleX402(payload(), reqs),
+    /verification response was too large.*same X-PAYMENT proof/i,
+  )
+  assert.equal(verificationCanceled, true)
+  assert.equal(steps.length, 0, 'settlement must not run after an oversized verification response')
+
+  let settlementCanceled = false
+  queue(
+    json({ isValid: true }),
+    oversizedJson(() => { settlementCanceled = true }),
+  )
+  assertSettlementReview(await settleX402(payload(), reqs))
+  assert.equal(settlementCanceled, true)
+  assert.equal(steps.length, 0)
+})
+
 test('every non-confirmed settlement is durably held for review without another payment', async () => {
   const settlementReplies: Array<{ label: string; step: FetchStep; privateDetail?: string }> = [
     { label: 'unreadable JSON', step: invalidJson() },
@@ -451,6 +638,12 @@ test('x402 reports the payer bound in durable custody, with or without a facilit
     assert.equal(fallback.transaction, TX)
     assert.equal(fallback.payer, PAYER)
   }
+
+  queue(
+    json({ isValid: true }),
+    json({ success: true, transaction: TX, payer: '0x2222222222222222222222222222222222222222' }),
+  )
+  assertSettlementReview(await settleX402(payload(), reqs))
 
 })
 

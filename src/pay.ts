@@ -19,7 +19,16 @@ import {
   type X402PaymentOperationKind,
 } from './x402-payment-attempts.ts'
 import { canonicalTxHash, type PaymentRequirements } from './x402-contract.ts'
-import { validateX402ProofForOperation } from './x402-proof.ts'
+import { requireWallet, validateX402ProofForOperation } from './x402-proof.ts'
+import {
+  prepareX402Payment,
+  settlePreparedX402,
+  verifyPreparedX402,
+  type Settled,
+  type UnclassifiedFacilitatorFailure,
+  type X402SettlementOutcome,
+  type X402SettlementReceipt,
+} from './x402-facilitator.ts'
 
 export {
   canonicalTxHash,
@@ -35,15 +44,8 @@ export {
   paymentReadinessResponse,
 } from './payment-config.ts'
 
-const FACILITATOR = process.env.FACILITATOR_URL ?? 'https://facilitator.payai.network'
-const FACILITATOR_TIMEOUT_MS = 8_000
-
-export interface Settled {
-  status: 'verified'
-  transaction: string
-  payer: string
-  raw: Record<string, unknown>
-}
+export type { Settled } from './x402-facilitator.ts'
+export type X402Settlement = X402SettlementOutcome
 
 export interface X402PaymentOperation {
   operationKey: string
@@ -60,7 +62,7 @@ export interface FinalizedX402Payment {
   blockHash: string
   finalizedAt: Date
   /** Present only when this request received the facilitator response itself. */
-  raw?: Record<string, unknown>
+  raw?: X402SettlementReceipt
 }
 
 export interface X402NoPayResult {
@@ -70,293 +72,11 @@ export interface X402NoPayResult {
   do_not_pay_again: true
 }
 
-interface UnclassifiedFacilitatorFailure {
-  status: 'unclassified'
-  reason: string
-}
-
-export type X402Settlement = Settled | VerificationFailure | UnclassifiedFacilitatorFailure
-
 export type X402CustodySettlement =
   | FinalizedX402Payment
   | { status: 'invalid'; reason: string }
   | UnclassifiedFacilitatorFailure
   | X402NoPayResult
-
-type FacilitatorResponse =
-  | { status: 'ok'; value: Record<string, unknown>; httpStatus: number }
-  | VerificationFailure
-  | UnclassifiedFacilitatorFailure
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function invalid(reason: string): VerificationFailure {
-  return { status: 'invalid', reason }
-}
-
-const X402_CALLER_FAILURE_REASONS: Readonly<Record<string, string>> = Object.freeze({
-  insufficient_funds: 'payer wallet does not have enough USDC for this payment',
-  invalid_exact_evm_payload_authorization_valid_after: 'X-PAYMENT authorization is not valid yet',
-  invalid_exact_evm_payload_authorization_valid_before: 'X-PAYMENT authorization expired',
-  invalid_exact_evm_payload_authorization_value: 'X-PAYMENT amount is below the required payment',
-  invalid_exact_evm_payload_signature: 'X-PAYMENT signature is invalid',
-  invalid_exact_evm_payload_recipient_mismatch: 'X-PAYMENT recipient does not match this payment',
-  invalid_network: 'X-PAYMENT uses the wrong or unsupported network',
-  invalid_payload: 'X-PAYMENT payload is malformed or missing required fields',
-  invalid_scheme: 'X-PAYMENT uses the wrong payment scheme',
-  unsupported_scheme: 'X-PAYMENT uses a payment scheme the facilitator does not support',
-  invalid_x402_version: 'X-PAYMENT uses an unsupported x402 version',
-  invalid_transaction_state: 'X-PAYMENT transaction failed or was rejected',
-})
-
-const X402_UPSTREAM_FAILURE_REASONS = new Set([
-  'duplicate_settlement',
-  'invalid_payment_requirements',
-  'settlement_pending',
-  'transaction_failed',
-  'unexpected_verify_error',
-  'unexpected_settle_error',
-])
-
-function facilitatorUnavailable(stage: 'verification' | 'settlement'): VerificationFailure {
-  return {
-    status: 'unavailable',
-    reason: `payment facilitator ${stage} is unavailable; retry this request with the same X-PAYMENT proof later` +
-      (stage === 'settlement' ? '; do not pay again' : ''),
-  }
-}
-
-function facilitatorUnreadable(stage: 'verification' | 'settlement'): VerificationFailure {
-  return {
-    status: 'unavailable',
-    reason: `payment facilitator returned an unreadable ${stage} response; retry this request with the same X-PAYMENT proof later` +
-      (stage === 'settlement' ? '; do not pay again' : ''),
-  }
-}
-
-function terminalFacilitatorRejection(
-  stage: 'verification' | 'settlement',
-  detail = '',
-): UnclassifiedFacilitatorFailure {
-  const cause = detail
-    ? `: ${detail}`
-    : ' but did not publish a recognized caller-correctable cause'
-  return {
-    status: 'unclassified',
-    reason: `payment facilitator rejected this X-PAYMENT as terminal${cause}; ` +
-      'do not retry or replay this proof blindly' + (stage === 'settlement' ? '; do not pay again' : ''),
-  }
-}
-
-function settlementInFlight(detail: 'pending' | 'already in flight'): VerificationFailure {
-  return {
-    status: 'unavailable',
-    reason: `payment facilitator reports this X-PAYMENT settlement is ${detail}; ` +
-      'retry the same X-PAYMENT proof later; do not pay again',
-  }
-}
-
-function settlementTransactionFailed(): UnclassifiedFacilitatorFailure {
-  return {
-    status: 'unclassified',
-    reason: 'payment facilitator reports the X-PAYMENT settlement transaction failed; this proof did not ' +
-      'settle payment; do not retry or replay this proof blindly; do not pay again',
-  }
-}
-
-function facilitatorHttpUnavailable(
-  stage: 'verification' | 'settlement',
-  status: 408 | 425 | 429,
-): VerificationFailure {
-  const cause = status === 408
-    ? `${stage} timed out`
-    : status === 429
-      ? `rate-limited the ${stage} request`
-      : `temporarily rejected the ${stage} request`
-  return {
-    status: 'unavailable',
-    reason: `payment facilitator ${cause}; retry this request with the same X-PAYMENT proof later` +
-      (stage === 'settlement' ? '; do not pay again' : ''),
-  }
-}
-
-function facilitatorReasonCode(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const code = value.trim().toLowerCase()
-  return code.length <= 100 && /^[a-z][a-z0-9_]*$/.test(code) ? code : null
-}
-
-function isCallerFailureCode(code: string): boolean {
-  return Object.prototype.hasOwnProperty.call(X402_CALLER_FAILURE_REASONS, code)
-}
-
-function callerFailureReason(value: unknown): string | null {
-  const code = facilitatorReasonCode(value)
-  return code && isCallerFailureCode(code) ? X402_CALLER_FAILURE_REASONS[code] ?? null : null
-}
-
-function publishedFacilitatorDetail(value: unknown, fallback: string): string {
-  const code = facilitatorReasonCode(value)
-  if (!code || (!isCallerFailureCode(code) && !X402_UPSTREAM_FAILURE_REASONS.has(code))) return fallback
-  return code.replaceAll('_', ' ')
-}
-
-function rejectedFacilitatorRequest(
-  stage: 'verification' | 'settlement',
-  response: Readonly<Record<string, unknown>>,
-): UnclassifiedFacilitatorFailure {
-  const fields = stage === 'verification'
-    ? ['invalidReason', 'errorReason', 'error', 'message']
-    : ['errorReason', 'invalidReason', 'error', 'message']
-  const detail = fields
-    .map(field => publishedFacilitatorDetail(response[field], ''))
-    .find(candidate => candidate.length > 0)
-  return {
-    status: 'unclassified',
-    reason: `payment facilitator rejected the ${stage} request${detail ? `: ${detail}` : ''}; ` +
-      "it did not identify whether the X-PAYMENT proof, the market's payment requirements, " +
-      'or facilitator request handling was at fault' +
-      (stage === 'settlement' ? '; do not pay again' : ''),
-  }
-}
-
-async function facilitatorResponse(
-  path: '/verify' | '/settle',
-  opts: RequestInit,
-): Promise<FacilitatorResponse> {
-  const stage = path === '/verify' ? 'verification' : 'settlement'
-  let response: Response
-  try {
-    response = await fetch(`${FACILITATOR}${path}`, {
-      ...opts,
-      redirect: 'error',
-      signal: AbortSignal.timeout(FACILITATOR_TIMEOUT_MS),
-    })
-  } catch {
-    return facilitatorUnavailable(stage)
-  }
-  let decoded: unknown
-  try {
-    decoded = await response.json()
-  } catch {
-    return response.ok ? facilitatorUnreadable(stage) : facilitatorUnavailable(stage)
-  }
-  if (!isRecord(decoded)) {
-    return response.ok ? facilitatorUnreadable(stage) : facilitatorUnavailable(stage)
-  }
-  if (!response.ok) {
-    if (response.status === 408 || response.status === 425 || response.status === 429) {
-      return facilitatorHttpUnavailable(stage, response.status)
-    }
-    if (
-      path === '/settle' && response.status === 409 && decoded.success === false &&
-      facilitatorReasonCode(decoded.errorReason) === 'duplicate_settlement'
-    ) {
-      return settlementInFlight('already in flight')
-    }
-    const requestRejected = response.status >= 400 && response.status < 500
-    const explicitProtocolFailure = (response.status === 400 || response.status === 402) && (
-      (path === '/verify' && decoded.isValid === false) ||
-      (path === '/settle' && decoded.success === false)
-    )
-    if (explicitProtocolFailure) return { status: 'ok', value: decoded, httpStatus: response.status }
-    return requestRejected ? rejectedFacilitatorRequest(stage, decoded) : facilitatorUnavailable(stage)
-  }
-  return { status: 'ok', value: decoded, httpStatus: response.status }
-}
-
-interface PreparedX402Payment {
-  paymentPayload: Record<string, unknown>
-  opts: RequestInit
-}
-
-function prepareX402Payment(
-  paymentHeader: string,
-  reqs: PaymentRequirements,
-): PreparedX402Payment | VerificationFailure {
-  let paymentPayload: unknown
-  try {
-    paymentPayload = JSON.parse(Buffer.from(paymentHeader, 'base64').toString('utf8'))
-  } catch {
-    return invalid('X-PAYMENT header is not valid base64 JSON')
-  }
-  if (!isRecord(paymentPayload)) return invalid('X-PAYMENT header must contain one payment proof object')
-  const body = JSON.stringify({ x402Version: 1, paymentPayload, paymentRequirements: reqs })
-  return {
-    paymentPayload,
-    opts: { method: 'POST', headers: { 'content-type': 'application/json' }, body },
-  }
-}
-
-async function verifyPreparedX402(
-  prepared: PreparedX402Payment,
-): Promise<{ status: 'approved' } | VerificationFailure | UnclassifiedFacilitatorFailure> {
-  const verification = await facilitatorResponse('/verify', prepared.opts)
-  if (verification.status !== 'ok') return verification
-  if (typeof verification.value.isValid !== 'boolean') return facilitatorUnreadable('verification')
-  if (!verification.value.isValid) {
-    const callerReason = callerFailureReason(verification.value.invalidReason)
-    if (callerReason) return invalid(callerReason)
-    const code = facilitatorReasonCode(verification.value.invalidReason)
-    if (verification.httpStatus === 402) {
-      return terminalFacilitatorRejection(
-        'verification',
-        code && X402_UPSTREAM_FAILURE_REASONS.has(code) ? code.replaceAll('_', ' ') : '',
-      )
-    }
-    if (code && X402_UPSTREAM_FAILURE_REASONS.has(code)) {
-      return {
-        status: 'unavailable',
-        reason: `payment facilitator could not verify X-PAYMENT: ${code.replaceAll('_', ' ')}; ` +
-          'retry this request with the same X-PAYMENT proof later',
-      }
-    }
-    return terminalFacilitatorRejection('verification')
-  }
-  return { status: 'approved' }
-}
-
-async function settlePreparedX402(prepared: PreparedX402Payment): Promise<X402Settlement> {
-  const settlementResult = await facilitatorResponse('/settle', prepared.opts)
-  if (settlementResult.status !== 'ok') return settlementResult
-  const settlement = settlementResult.value
-  if (typeof settlement.success !== 'boolean') return facilitatorUnreadable('settlement')
-  if (!settlement.success) {
-    const callerReason = callerFailureReason(settlement.errorReason)
-    if (callerReason) return invalid(callerReason)
-    const code = facilitatorReasonCode(settlement.errorReason)
-    if (settlementResult.httpStatus === 402) {
-      return terminalFacilitatorRejection(
-        'settlement',
-        code && X402_UPSTREAM_FAILURE_REASONS.has(code) ? code.replaceAll('_', ' ') : '',
-      )
-    }
-    if (code === 'settlement_pending') return settlementInFlight('pending')
-    if (code === 'duplicate_settlement') return settlementInFlight('already in flight')
-    if (code === 'transaction_failed') return settlementTransactionFailed()
-    if (!code || !X402_UPSTREAM_FAILURE_REASONS.has(code)) {
-      return terminalFacilitatorRejection('settlement')
-    }
-    const detail = code.replaceAll('_', ' ')
-    return {
-      status: 'unavailable',
-      reason: `payment facilitator did not confirm settlement: ${detail}; ` +
-        'retry this request with the same X-PAYMENT proof later; do not pay again',
-    }
-  }
-  const transaction = canonicalTxHash(settlement.transaction)
-  if (!transaction || (settlement.payer !== undefined && typeof settlement.payer !== 'string')) {
-    return facilitatorUnreadable('settlement')
-  }
-
-  const payer = settlement.payer
-    ?? String((prepared.paymentPayload as {
-      payload?: { authorization?: { from?: string } }
-    })?.payload?.authorization?.from ?? '')
-  return { status: 'verified', transaction, payer, raw: settlement }
-}
 
 function retryWithoutPaying(
   status: X402NoPayResult['status'],
@@ -374,7 +94,7 @@ function retryWithoutPaying(
 
 async function classifyStoredX402Payment(
   attempt: X402PaymentAttempt,
-  raw?: Record<string, unknown>,
+  raw?: X402SettlementReceipt,
 ): Promise<X402CustodySettlement> {
   if (!attempt.tx_hash) {
     return retryWithoutPaying(
@@ -584,15 +304,13 @@ async function settleX402WithCustody(
   reqs: PaymentRequirements,
   operation: X402PaymentOperation,
 ): Promise<X402CustodySettlement> {
-  const prepared = prepareX402Payment(paymentHeader, reqs)
-  if (!('opts' in prepared)) return { status: 'invalid', reason: prepared.reason }
-
   let localProof: ReturnType<typeof validateX402ProofForOperation>
   try {
     localProof = validateX402ProofForOperation(paymentHeader, reqs, operation.operationStartedAt)
   } catch (error) {
     return { status: 'invalid', reason: error instanceof Error ? error.message : 'X-PAYMENT proof is invalid' }
   }
+  const prepared = prepareX402Payment(localProof.paymentPayload, reqs, localProof.proof.payerWallet)
 
   let existing: X402PaymentAttempt | null
   try { existing = await readX402PaymentAttempt(operation.operationKey) } catch {
@@ -726,7 +444,20 @@ export async function settleX402(
 }
 
 export function paymentResponseHeader(settled: Settled): string {
-  return Buffer.from(JSON.stringify(settled.raw)).toString('base64')
+  const transaction = canonicalTxHash(settled.transaction)
+  if (!transaction) throw new TypeError('settled transaction must be a 0x-prefixed 32-byte hash')
+  const payer = requireWallet(settled.payer, 'settled payer')
+  const receipt: X402SettlementReceipt = {
+    success: true,
+    transaction,
+    network: NETWORK,
+    payer,
+  }
+  const encoded = Buffer.from(JSON.stringify(receipt)).toString('base64')
+  if (Buffer.byteLength(encoded, 'ascii') > 512) {
+    throw new TypeError('X-PAYMENT-RESPONSE exceeds its 512-byte limit')
+  }
+  return encoded
 }
 
 /**

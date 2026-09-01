@@ -210,6 +210,13 @@ Every facilitator verification request and every settlement request has its own
 eight-second deadline. A verification timeout happens before settlement begins, so the
 caller retries the same request with the same proof. A settlement timeout may leave the
 result uncertain, so the caller retries the same proof and must not pay again.
+The 16,000-byte X-PAYMENT limit is enforced before JSON parsing, Base reads, facilitator
+calls, or custody writes. Each 65,536-byte facilitator response limit is enforced while
+streaming. An oversized verification response is retryable before settlement; an oversized,
+truncated, or unreadable settlement response is ambiguous and enters durable review, so
+the caller retries the same request and must not pay again. A confirmed settlement returns
+only `success`, the canonical transaction, `network: base`, and the locally validated payer
+in an X-PAYMENT-RESPONSE of at most 512 bytes; facilitator extras are never reflected.
 
 For every market x402 fee or ordinary purchase, a verified proof is stored with the
 exact paid request before the facilitator is asked to settle. Once stored, the caller

@@ -5,8 +5,10 @@ export const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 const WALLET_RE = /^0x[0-9a-f]{40}$/u
 const TX_HASH_RE = /^0x[0-9a-f]{64}$/u
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/u
-const MAX_PAYMENT_HEADER_BYTES = 65_536
+export const X402_PAYMENT_HEADER_MAX_BYTES = 16_000
 const MAX_RESOURCE_BYTES = 2_048
+const MAX_PROOF_JSON_DEPTH = 64
+const MAX_PROOF_JSON_NODES = 2_048
 const MAX_MARKET_PAYMENT_UNITS = 10_000_000_000n
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER)
 
@@ -119,13 +121,39 @@ function normalizeJson(value: unknown, seen: Set<object>): CanonicalJson {
   }
 }
 
-export function proofIdentity(paymentHeader: string): X402ProofIdentity {
-  if (
-    typeof paymentHeader !== 'string'
-    || byteLength(paymentHeader) < 1
-    || byteLength(paymentHeader) > MAX_PAYMENT_HEADER_BYTES
-    || !BASE64_RE.test(paymentHeader)
-  ) throw new TypeError('X-PAYMENT proof must be bounded base64')
+function assertBoundedProofComplexity(root: unknown): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }]
+  let nodes = 0
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    nodes += 1
+    if (nodes > MAX_PROOF_JSON_NODES) {
+      throw new TypeError('X-PAYMENT proof is too complex')
+    }
+    if (current.value === null || typeof current.value !== 'object') continue
+    if (current.depth >= MAX_PROOF_JSON_DEPTH) {
+      throw new TypeError('X-PAYMENT proof is too deeply nested')
+    }
+    const children = Array.isArray(current.value)
+      ? current.value
+      : Object.values(current.value as Record<string, unknown>)
+    for (const value of children) pending.push({ value, depth: current.depth + 1 })
+  }
+}
+
+function parsedPaymentProof(paymentHeader: string): Readonly<{
+  paymentPayload: Record<string, unknown>
+  identity: X402ProofIdentity
+}> {
+  if (typeof paymentHeader !== 'string') {
+    throw new TypeError('X-PAYMENT header is not valid base64 JSON')
+  }
+  const paymentHeaderBytes = byteLength(paymentHeader)
+  if (paymentHeaderBytes < 1) throw new TypeError('X-PAYMENT header is not valid base64 JSON')
+  if (paymentHeaderBytes > X402_PAYMENT_HEADER_MAX_BYTES) {
+    throw new TypeError('X-PAYMENT proof is too large; the limit is 16,000 bytes')
+  }
+  if (!BASE64_RE.test(paymentHeader)) throw new TypeError('X-PAYMENT header is not valid base64 JSON')
   const decoded = Buffer.from(paymentHeader, 'base64')
   if (decoded.byteLength < 1 || decoded.toString('base64') !== paymentHeader) {
     throw new TypeError('X-PAYMENT proof must be canonical base64')
@@ -139,11 +167,16 @@ export function proofIdentity(paymentHeader: string): X402ProofIdentity {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('X-PAYMENT proof must contain one JSON object')
   }
-  const proof = value as Record<string, unknown>
-  if (proof.x402Version !== 1 || proof.scheme !== 'exact' || proof.network !== 'base') {
+  assertBoundedProofComplexity(value)
+  const paymentPayload = value as Record<string, unknown>
+  if (
+    paymentPayload.x402Version !== 1
+    || paymentPayload.scheme !== 'exact'
+    || paymentPayload.network !== 'base'
+  ) {
     throw new TypeError('X-PAYMENT proof must use x402 exact payment on Base')
   }
-  const payload = proof.payload
+  const payload = paymentPayload.payload
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new TypeError('X-PAYMENT proof is missing its authorization')
   }
@@ -165,14 +198,21 @@ export function proofIdentity(paymentHeader: string): X402ProofIdentity {
   }
   const canonical = JSON.stringify(normalizeJson(value, new Set()))
   return {
-    digest: createHash('sha256').update(canonical, 'utf8').digest('hex'),
-    payerWallet: requireWallet(String(fields.from ?? ''), 'X-PAYMENT payer'),
-    payeeWallet: requireWallet(String(fields.to ?? ''), 'X-PAYMENT recipient'),
-    amountUnits: requireAmountUnits(String(fields.value ?? '')),
-    authorizationNonce: requireTransaction(String(fields.nonce ?? ''), 'X-PAYMENT authorization nonce'),
-    authorizationValidAfter,
-    authorizationValidBefore,
+    paymentPayload,
+    identity: {
+      digest: createHash('sha256').update(canonical, 'utf8').digest('hex'),
+      payerWallet: requireWallet(String(fields.from ?? ''), 'X-PAYMENT payer'),
+      payeeWallet: requireWallet(String(fields.to ?? ''), 'X-PAYMENT recipient'),
+      amountUnits: requireAmountUnits(String(fields.value ?? '')),
+      authorizationNonce: requireTransaction(String(fields.nonce ?? ''), 'X-PAYMENT authorization nonce'),
+      authorizationValidAfter,
+      authorizationValidBefore,
+    },
   }
+}
+
+export function proofIdentity(paymentHeader: string): X402ProofIdentity {
+  return parsedPaymentProof(paymentHeader).identity
 }
 
 export function x402ProofDigest(paymentHeader: string): string {
@@ -200,7 +240,7 @@ export function validateX402ProofForOperation(
   requirementsInput: X402PaymentRequirements,
   operationStartedAtInput: Date,
 ) {
-  const proof = proofIdentity(paymentHeader)
+  const { paymentPayload, identity: proof } = parsedPaymentProof(paymentHeader)
   const requirements = normalizeRequirements(requirementsInput)
   if (proof.payeeWallet !== requirements.payeeWallet || proof.amountUnits !== requirements.amountUnits) {
     throw new TypeError('X-PAYMENT authorization does not match these payment requirements')
@@ -212,5 +252,5 @@ export function validateX402ProofForOperation(
   if (BigInt(Math.floor(operationStartedAt.getTime() / 1000)) >= BigInt(proof.authorizationValidBefore)) {
     throw new TypeError('X-PAYMENT authorization window does not overlap this payment operation')
   }
-  return { proof, requirements, operationStartedAt }
+  return { proof, requirements, operationStartedAt, paymentPayload }
 }

@@ -40,6 +40,11 @@ aisle. Humans can read everything and buy nothing.
 - Every facilitator verification and settlement request has an eight-second deadline.
   A verification timeout happens before settlement starts, so retry the same request and
   proof. A settlement timeout can be uncertain: retry the same proof and do not pay again.
+- The 16,000-byte X-PAYMENT limit is enforced before JSON parsing, Base or facilitator
+  calls, or custody writes. Every
+  facilitator response is streamed through a 65,536-byte limit; an unreadable settlement
+  remains in durable review and never asks for another payment. A confirmed settlement
+  returns only a normalized receipt in an X-PAYMENT-RESPONSE of at most 512 bytes.
 - For every market x402 fee or ordinary purchase, the verified proof and exact paid request
   are saved before the facilitator is asked to settle. Once saved, retry the same
   endpoint with the same body and do not pay again; `do_not_pay_again` means the retry may

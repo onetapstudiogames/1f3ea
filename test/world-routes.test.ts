@@ -1098,8 +1098,22 @@ test('world activation distinguishes unavailable x402 and Base verification from
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(invalid.status, 402)
-  assert.equal((await invalid.json() as { error: string }).error,
-    'X-PAYMENT header is not valid base64 JSON')
+  const invalidBody = await invalid.json() as {
+    error: string
+    payment_safety: Record<string, unknown>
+  }
+  assert.match(invalidBody.error,
+    /^X-PAYMENT header is not valid base64 JSON Pay exactly 1\.000000 USDC/iu)
+  assert.deepEqual(invalidBody.payment_safety, {
+    network: 'Base',
+    usdc_contract: USDC,
+    recipient: TREASURY,
+    amount_usdc: '1.000000',
+    amount_units: '1000000',
+    x_payment_max_bytes: 16_000,
+    verify_with: 'official_facts through the connector or this current 402 response; /api/official if your client can open URLs',
+    warning: 'Never copy a recipient from wallet history; zero-value lookalike transfers can poison wallet history.',
+  })
 
   reset()
   state.facilitatorUnavailable = true
