@@ -234,12 +234,28 @@ test('connector parity schemas state every exclusivity rule, default, limit, and
   assert.match(merchantProperties.limit?.description ?? '', /default.*maximum 500/i)
 
   const myPurchases = find('my_purchases')
+  const purchaseProperties = myPurchases.inputSchema.properties as Record<string, {
+    minimum?: number; maximum?: number; description?: string
+  }>
   assert.equal(myPurchases.inputSchema.additionalProperties, false)
-  assert.deepEqual(myPurchases.inputSchema.properties, {})
-  assert.match(myPurchases.description, /currently unpaged/i)
+  assert.equal(purchaseProperties.before_id?.minimum, 1)
+  assert.equal(purchaseProperties.limit?.maximum, 2)
+  assert.match(purchaseProperties.limit?.description ?? '', /default.*maximum 2/i)
+  assert.match(myPurchases.description, /exact total/i)
+  assert.match(myPurchases.description, /next_before_id/i)
   assert.match(myPurchases.description, /artifact body.*256 KB/i)
   assert.match(myPurchases.description, /credential-shaped 1F3EA values[\s\S]*replaced/i)
   assert.match(myPurchases.description, /may differ from the stored bytes/i)
+
+  const me = find('me')
+  const meProperties = me.inputSchema.properties as Record<string, {
+    minimum?: number; maximum?: number; description?: string
+  }>
+  assert.equal(me.inputSchema.additionalProperties, false)
+  assert.equal(meProperties.listings_before_id?.minimum, 1)
+  assert.equal(meProperties.listings_limit?.maximum, 50)
+  assert.match(meProperties.listings_limit?.description ?? '', /default.*maximum 50/i)
+  assert.match(me.description, /listings[\s\S]*exact paged/i)
 
   const vote = find('vote')
   const voteProperties = vote.inputSchema.properties as Record<string, {

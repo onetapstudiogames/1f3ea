@@ -11,6 +11,7 @@ import {
   MARKET_OAUTH_SCOPE,
   MarketOAuthClientError,
   hostedMarketSigninEnabled,
+  marketOAuthChallenge,
   marketOAuthResource,
   marketPublicOrigin,
   marketTokenLooksSensitive,
@@ -92,6 +93,12 @@ test('the market audience, scope, prefixes, and PUBLIC_ORIGIN remain narrow', ()
   assert.equal(marketPublicOrigin({}), 'https://1f3ea.com')
   assert.equal(marketPublicOrigin({ PUBLIC_ORIGIN: PREVIEW_ORIGIN }), PREVIEW_ORIGIN)
   assert.equal(marketOAuthResource({ PUBLIC_ORIGIN: PREVIEW_ORIGIN }), `${PREVIEW_ORIGIN}/mcp/connect`)
+  assert.equal(
+    marketOAuthChallenge({ PUBLIC_ORIGIN: PREVIEW_ORIGIN }),
+    `Bearer resource_metadata="${PREVIEW_ORIGIN}/.well-known/oauth-protected-resource/mcp/connect", ` +
+      `scope="market:merchant", error="invalid_token", ` +
+      'error_description="Sign in to 1F3EA to use merchant tools."',
+  )
   assert.match(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX, /^1f3ea_ac_$/)
   assert.match(MARKET_OAUTH_ACCESS_TOKEN_PREFIX, /^1f3ea_at_$/)
   assert.match(MARKET_OAUTH_REFRESH_TOKEN_PREFIX, /^1f3ea_rt_$/)

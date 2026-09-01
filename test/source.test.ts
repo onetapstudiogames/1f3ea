@@ -160,6 +160,9 @@ test('every discovery surface states the exact collection pagination contract', 
   assert.match(collectionRoutes, /\/\* public:listing-comments \*\/[\s\S]*comments_next_after_id/)
   assert.match(collectionRoutes, /\/\* public:merchants \*\/[\s\S]*next_after_id/)
   assert.match(collectionRoutes, /\/\* public:events \*\/[\s\S]*next_before_id/)
+  assert.match(collectionRoutes, /\/\* private:me-listings \*\/[\s\S]*listings_next_before_id/)
+  assert.match(read('src/purchase-history-routes.ts'),
+    /\/\* private:purchases \*\/[\s\S]*count\(\*\)::int AS __total[\s\S]*next_before_id/)
 })
 
 test('every human-window surface states the canonical sharing contract', () => {
@@ -227,6 +230,7 @@ test('served and mirrored payment text contains no unimplemented payment rail', 
     read('src/door.ts'),
     read('src/llms.txt'),
     read('src/mcp.ts'),
+    read('src/mcp-tool-catalog.ts'),
     read('src/legal.ts'),
   ]
   for (const surface of surfaces) {
@@ -235,7 +239,8 @@ test('served and mirrored payment text contains no unimplemented payment rail', 
 })
 
 test('caller payment contracts state finality windows and safe retries before use', () => {
-  for (const surface of [FRONTDOOR, LLMS, read('src/mcp.ts')]) {
+  const mcpContract = [read('src/mcp.ts'), read('src/mcp-tool-catalog.ts')].join('\n')
+  for (const surface of [FRONTDOOR, LLMS, mcpContract]) {
     assert.match(surface, /one-hour|inclusive (?:one-)?hour/iu)
     assert.match(surface, /finalized head|Base finality/iu)
     assert.match(surface, /eight-second/iu)
@@ -253,7 +258,8 @@ test('caller payment contracts state finality windows and safe retries before us
 })
 
 test('caller x402 contracts explain saved-payment retries before payment use', () => {
-  for (const surface of [FRONTDOOR, LLMS, read('src/mcp.ts')]) {
+  const mcpContract = [read('src/mcp.ts'), read('src/mcp-tool-catalog.ts')].join('\n')
+  for (const surface of [FRONTDOOR, LLMS, mcpContract]) {
     assert.match(surface, /verified[\s\S]{0,100}(?:saved|stored)[\s\S]{0,100}before[\s\S]{0,100}settle/iu)
     assert.match(surface, /same\s+(?:endpoint|request)[\s\S]{0,100}(?:body|operation)/iu)
     assert.match(surface, /without X-PAYMENT|omit X-PAYMENT/iu)
@@ -434,7 +440,7 @@ test('listing edits and public edit receipts share one changed-field allowlist',
   const market = read('src/market.ts')
   const listingRoutes = read('src/artifact-listing-routes.ts')
   const windowRoute = read('src/window.ts')
-  const windowClient = read('src/window-client.ts')
+  const windowClient = read('src/window-client-catalog.ts')
 
   assert.match(market, /export const EDITABLE_LISTING_FIELDS\s*=\s*\[/)
   assert.match(listingRoutes, /import \{[\s\S]*EDITABLE_LISTING_FIELDS[\s\S]*\} from '\.\/market\.ts'/)
@@ -446,7 +452,8 @@ test('listing edits and public edit receipts share one changed-field allowlist',
 
 test('listing quota runtime machinery is gone and the old column has a post-deploy cleanup', () => {
   const runtime = [
-    'src/core.ts', 'src/index.ts', 'src/mcp.ts', 'src/frontdoor.txt', 'src/llms.txt',
+    'src/core.ts', 'src/index.ts', 'src/mcp.ts', 'src/mcp-tool-catalog.ts',
+    'src/frontdoor.txt', 'src/llms.txt',
   ].map(read).join('\n')
   assert.doesNotMatch(runtime, /listings_today|QUOTAS\.listings|releaseListingQuota|one new listing per UTC day/i)
   assert.doesNotMatch(read('db/schema.sql'), /listings_today/)

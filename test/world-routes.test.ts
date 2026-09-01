@@ -563,6 +563,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.priorReceipt ? [state.priorReceipt] : []
   if (query.includes("CASE WHEN l.delivery_kind = 'city_ownership' THEN p.world_receipt")) {
     return state.priorReceipt ? [{
+      id: 91,
       listing_id: 70,
       title: 'Pocket observatory',
       amount_usdc: 2,
@@ -572,6 +573,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       artifact: null,
       world_receipt: state.priorReceipt.world_receipt,
       city_receipt_url: 'https://1f3d9.com/api/world/offer/33',
+      __total: 1,
+      __cursor_valid: true,
     }] : []
   }
   if (query.includes('INSERT INTO purchases') && query.includes("'world'")) {
@@ -2102,7 +2105,12 @@ test('corrupt stored world receipts report an internal failure through every rea
       result: { content: Array<{ text: string }>; isError: boolean }
     }
     assert.equal(mcpBody.result.isError, true)
-    assert.deepEqual(JSON.parse(mcpBody.result.content[0]!.text), expected)
+    const mcpError = JSON.parse(mcpBody.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(mcpError.error, expected.error)
+    assert.equal(mcpError.error_class, 'market_fault')
+    assert.equal(mcpError.http_status, 500)
+    assert.equal(mcpError.front_door_tool, 'front_door')
+    assert.equal(mcpError.front_door, 'https://1f3ea.com/')
 
     const purchases = await app.request('/api/purchases', { headers: auth })
     assert.equal(purchases.status, 500)

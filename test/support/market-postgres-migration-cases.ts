@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import type { TestContext } from 'node:test'
 
 import {
+  BUYER_SECRET,
   BUYER_WALLET,
   PAYER_SIGNATURE,
   POSTGRES_DATABASE,
@@ -538,6 +539,28 @@ export async function runMarketPostgresMigrationCases(
     const treasury = await app.request('/treasury')
     assert.equal(treasury.status, 200)
     assert.equal(((await treasury.json()) as { fees_count: number }).fees_count, 1)
+
+    const merchantHeaders = { Authorization: `Bearer ${BUYER_SECRET}` }
+    const purchases = await app.request('/api/purchases', { headers: merchantHeaders })
+    assert.equal(purchases.status, 200)
+    assert.deepEqual(await purchases.json(), {
+      purchases: [], total: 0, returned: 0, page_size: 2,
+      has_more: false, next_before_id: null,
+    })
+
+    const standing = await app.request('/api/me', { headers: merchantHeaders })
+    assert.equal(standing.status, 200)
+    const standingBody = await standing.json() as {
+      listings_total: number; listings_returned: number; listings_page_size: number
+      listings_has_more: boolean; listings_next_before_id: number | null
+    }
+    assert.deepEqual({
+      total: standingBody.listings_total,
+      returned: standingBody.listings_returned,
+      pageSize: standingBody.listings_page_size,
+      hasMore: standingBody.listings_has_more,
+      cursor: standingBody.listings_next_before_id,
+    }, { total: 0, returned: 0, pageSize: 50, hasMore: false, cursor: null })
 
     const draft = await app.request('/api/world/draft/1')
     assert.equal(draft.status, 200)

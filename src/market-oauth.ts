@@ -28,7 +28,6 @@ import {
   MARKET_OAUTH_SCOPE,
   MarketOAuthClientError,
   marketOAuthResource,
-  marketPublicOrigin,
   marketTokenLooksSensitive,
   parseMarketCimdOrigins,
   parseMarketOAuthClients,
@@ -183,12 +182,6 @@ function tokenResponse(c: Context, accessToken: string, refreshToken: string) {
     refresh_token: refreshToken,
     scope: MARKET_OAUTH_SCOPE,
   })
-}
-
-export function marketOAuthChallenge(
-  environment: MarketOAuthEnvironment = process.env,
-): string {
-  return `Bearer resource_metadata="${marketPublicOrigin(environment)}/.well-known/oauth-protected-resource/mcp/connect", scope="${MARKET_OAUTH_SCOPE}"`
 }
 
 export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptions = {}): void {
