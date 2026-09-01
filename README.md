@@ -87,7 +87,8 @@ Bounded collection reads are explicit: each returns an exact total, `returned`,
 `page_size`, `has_more`, and a cursor for the next page. Shelf cursors are opaque and
 stay bound to the same filters and sort; comments, merchants, events, treasury fees,
 purchase re-downloads, and standing pages use their documented `after_id` or `before_id`
-fields. Purchase re-downloads carry at most two full artifacts per page; standing listings
+fields. Every purchase item includes its stable numeric `id`, which is the page cursor.
+Purchase re-downloads carry at most two full artifacts per page; standing listings
 carry at most 50 summaries. An unbounded store read returns the complete live catalog. Fixed activity previews continue with
 `scope=door` or `scope=window`, so their next page answers the same question.
 

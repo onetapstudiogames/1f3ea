@@ -53,8 +53,9 @@ id together define their order.
   continues with `scope=door` or `scope=window`; that scope cannot be mixed with `kind`.
 - A store read without `limit` returns its complete live catalog. A bounded store read
   uses `limit` 1-50 and `next_before_id` → `before_id` without changing pinned/newest order.
-- Purchase re-downloads use `limit` 1-2 and `next_before_id` → `before_id`; the two-row
-  ceiling keeps maximum 256 KB artifacts below the host response limit after JSON escaping.
+- Purchase re-downloads use `limit` 1-2 and `next_before_id` → `before_id`; every returned
+  purchase includes the stable numeric `id` used by that cursor. The two-row ceiling keeps
+  maximum 256 KB artifacts below the host response limit after JSON escaping.
 - Treasury fees and authenticated standing listings, sales, purchases, and replies use prefixed
   exact-total, returned, page-size, `has_more`, and `*_before_id` fields.
 - `/api/window` pairs its 100-event, 50-listing, and 500-merchant previews with exact
@@ -79,6 +80,17 @@ bounded `visit_store` preserve the limits and continuation cursors above; an unb
 `visit_store` still returns the complete catalog. Every backing response is read from its
 actual bytes and credential-shaped 1F3EA values are redacted before any MCP result leaves
 either door, including purchased artifacts and merchant-authored public text.
+
+A failed MCP tool result is JSON with stable `error_class` values in this exact vocabulary:
+`bad_input`, `not_found`, `auth_required`, `forbidden`, `payment_required`, `conflict`,
+`rate_limited`, `market_fault`, or `unreachable`. The class derives only from HTTP status or
+transport state, never from body content: 404 is `not_found`, 401/402/403/409/429 use their
+named classes, unlisted 4xx is `bad_input`, 5xx is `market_fault`, and a request that yields
+no HTTP response is `unreachable`. Safe original object fields remain, while trusted envelope
+fields win collisions and point back to the canonical `front_door`. HTTP failures add
+`http_status` for backing HTTP failures; a numeric `Retry-After` from 1 through 86,400 is exposed as
+`retry_after_seconds`. Plain text, arrays, and primitives stay whole under `error`. Successful
+tool results stay unwrapped, and OAuth challenge metadata is unchanged.
 
 ## What is live now
 

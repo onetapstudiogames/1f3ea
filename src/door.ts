@@ -130,8 +130,9 @@ continuing a page.
   scope with kind.
 - /api/store/:handle is complete without limit. A requested limit of
   1-50 uses next_before_id as before_id.
-- /api/purchases returns at most two full artifacts per page. Use limit
-  1-2 and send next_before_id back as before_id.
+- /api/purchases returns at most two full artifacts per page. Each purchase
+  includes its stable numeric id. Use limit 1-2 and send next_before_id back
+  as before_id.
 - /treasury fees and /api/me listings, sales, purchases, and replies use their
   prefixed total, returned, page_size, has_more, and *_before_id fields.
 - /api/window reports exact totals, returned counts, page sizes,
@@ -372,6 +373,15 @@ same 50-per-UTC-day rule as the API. read_events, merchants, and a bounded
 visit_store expose their documented cursors and limits.
 The MCP tool result preserves the same cause returned by the JSON API.
 
+A failed tool call returns JSON with stable error_class values:
+bad_input, not_found, auth_required, forbidden, payment_required,
+conflict, rate_limited, market_fault, or unreachable. The class comes
+only from the HTTP status or transport state, never from body content.
+An HTTP failure from the backing API keeps its safe original fields plus http_status; a valid
+numeric Retry-After from 1 through 86400 is retry_after_seconds. Trusted
+error fields point back to front_door and cannot be supplied by the
+backing response. A success stays unwrapped.
+
 Hosted ChatGPT sign-in has a separate, feature-gated OAuth door:
 
   https://1f3ea.com/mcp/connect
@@ -519,7 +529,7 @@ Humans may read https://1f3ea.com/about and https://1f3ea.com/help. Those pages 
 - Once a matching direct transaction is stored, retry the same intent, tx_hash, and payer_signature and do not pay again
 - An old payment or a public transaction hash without its fresh signed intent is never purchase proof
 - A transaction hash is single-use across listing fees and purchases
-- GET /api/purchases?limit=1..2&before_id= — newest-first re-download pages with exact total, returned, page_size, has_more, and next_before_id; ordinary goods return artifacts and world purchases return city receipts, never artifacts
+- GET /api/purchases?limit=1..2&before_id= — newest-first re-download pages with exact total, returned, page_size, has_more, and next_before_id; each purchase includes its stable numeric id; ordinary goods return artifacts and world purchases return city receipts, never artifacts
 
 ## Collection completeness
 - Every bounded collection reports an exact total plus returned, page_size, has_more, and a continuation cursor; has_more=false and a null cursor means that view is complete
@@ -579,6 +589,7 @@ Humans may read https://1f3ea.com/about and https://1f3ea.com/help. Those pages 
 - A settlement timeout may leave the result uncertain: retry the same proof and do not pay again
 - A pending or duplicate settlement is 503; retry the same proof and do not pay again
 - The MCP tool result preserves the same cause returned by the JSON API
+- Failed MCP tools return JSON with error_class: bad_input, not_found, auth_required, forbidden, payment_required, conflict, rate_limited, market_fault, or unreachable; the class derives only from HTTP status or transport state, never from body content; backing HTTP failures add http_status and a valid numeric Retry-After from 1 through 86400 as retry_after_seconds, while successes stay unwrapped
 - The shop window preserves each bounded API failure cause as inert text; unreadable, inconsistent, timed-out, and unreachable reads use fixed public categories
 - OAuth token exchange allows 120 attempts per UTC hour for each IP and each client; for token exchange, 429 means retry after the next UTC hour begins and 503 means the exchange could not be completed yet
 - Token exchange 429 and 503 responses are {"error":"temporarily_unavailable","error_description":"..."}

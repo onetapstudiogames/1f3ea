@@ -24,6 +24,26 @@ function jsonRequest(body: unknown, authorization?: string) {
   }
 }
 
+async function callTool(
+  app: Hono,
+  name: string,
+  args: unknown = {},
+  authorization?: string,
+) {
+  const response = await app.request('/mcp', jsonRequest({
+    jsonrpc: '2.0', id: `${name}-result`, method: 'tools/call',
+    params: { name, arguments: args },
+  }, authorization))
+  const body = await response.json() as {
+    result: {
+      isError: boolean
+      content: Array<{ text: string }>
+      _meta?: { 'mcp/www_authenticate'?: string[] }
+    }
+  }
+  return { response, body, text: body.result.content[0]?.text ?? '' }
+}
+
 test('MCP rejects malformed envelopes, batches, missing methods, and unknown methods', async () => {
   const app = gateway(new Hono())
 
@@ -178,6 +198,195 @@ test('public action contracts explain how failure causes cross each door', () =>
   }
 })
 
+test('failed tools expose the current machine error vocabulary on both MCP doors', async () => {
+  const statuses = [
+    [400, 'bad_input'],
+    [401, 'auth_required'],
+    [402, 'payment_required'],
+    [403, 'forbidden'],
+    [404, 'not_found'],
+    [409, 'conflict'],
+    [429, 'rate_limited'],
+    [500, 'market_fault'],
+  ] as const
+
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    for (const [status, errorClass] of statuses) {
+      const backing = new Hono()
+      backing.get('/api/shelves', () => new Response(JSON.stringify({
+        error: 'downstream detail',
+        original_field: 'kept',
+        accepts: [{ network: 'base' }],
+        do_not_pay_again: true,
+        payment_preserved: true,
+        error_class: 'spoofed',
+        http_status: 299,
+        retry_after_seconds: 99_999,
+        front_door_tool: 'spoofed',
+        front_door: 'https://attacker.invalid/',
+      }), {
+        status,
+        headers: { 'content-type': 'application/json', 'retry-after': '60' },
+      }))
+
+      const { body, text } = await callTool(gateway(backing, options), 'browse')
+      assert.equal(body.result.isError, true, `${String(options.hostedChat)} ${status}`)
+      const parsed = JSON.parse(text) as Record<string, unknown>
+      assert.equal(parsed.error_class, errorClass, `${String(options.hostedChat)} ${status}`)
+      assert.equal(parsed.http_status, status, `${String(options.hostedChat)} ${status}`)
+      assert.equal(parsed.retry_after_seconds, 60, `${String(options.hostedChat)} ${status}`)
+      assert.equal(parsed.front_door_tool, 'front_door')
+      assert.equal(parsed.front_door, 'https://1f3ea.com/')
+      assert.equal(parsed.error, 'downstream detail')
+      assert.equal(parsed.original_field, 'kept')
+      assert.deepEqual(parsed.accepts, [{ network: 'base' }])
+      assert.equal(parsed.do_not_pay_again, true)
+      assert.equal(parsed.payment_preserved, true)
+    }
+  }
+})
+
+test('MCP error envelopes preserve plain failures, bound retry hints, and leave success exact', async () => {
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    const plainBacking = new Hono()
+    plainBacking.get('/api/shelves', () => new Response('short and stout', {
+      status: 418,
+      headers: { 'retry-after': '86401' },
+    }))
+    const plain = JSON.parse((await callTool(gateway(plainBacking, options), 'browse')).text) as Record<string, unknown>
+    assert.equal(plain.error_class, 'bad_input')
+    assert.equal(plain.http_status, 418)
+    assert.equal(plain.error, 'short and stout')
+    assert.equal(plain.retry_after_seconds, undefined)
+
+    const successText = '{"ok":true,"error_class":"seller-authored text"}'
+    const successBacking = new Hono()
+    successBacking.get('/api/shelves', () => new Response(successText, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+    const success = await callTool(gateway(successBacking, options), 'browse')
+    assert.equal(success.body.result.isError, false)
+    assert.equal(success.text, successText)
+
+    const unreachableBacking = {
+      request: () => Promise.reject(new Error('transport down')),
+    } as unknown as Hono
+    const unreachable = JSON.parse(
+      (await callTool(gateway(unreachableBacking, options), 'browse')).text,
+    ) as Record<string, unknown>
+    assert.equal(unreachable.error_class, 'unreachable')
+    assert.equal(unreachable.http_status, undefined)
+    assert.equal(unreachable.front_door, 'https://1f3ea.com/')
+  }
+})
+
+test('both MCP doors redact Unicode-escaped credentials in JSON keys and nested values', async () => {
+  const secret = `1f3ea_sk_${'a'.repeat(48)}`
+  const escapedSecret = `1f3ea_sk_\\u0061${'a'.repeat(47)}`
+  const rawJson = `{"${escapedSecret}":{"nested":"${escapedSecret}","direct":"${secret}"}}`
+
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    for (const status of [200, 400]) {
+      const backing = new Hono()
+      backing.get('/api/shelves', () => new Response(rawJson, {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }))
+      const result = await callTool(gateway(backing, options), 'browse')
+      const parsed = JSON.parse(result.text) as Record<string, unknown>
+      assert.doesNotMatch(JSON.stringify(parsed), new RegExp(secret, 'iu'))
+      assert.doesNotMatch(result.text, /1f3ea_sk_/iu)
+      assert.deepEqual(parsed, {
+        '[redacted 1F3EA credential]': {
+          nested: '[redacted 1F3EA credential]',
+          direct: '[redacted 1F3EA credential]',
+        },
+        ...(status === 400 ? {
+          error_class: 'bad_input',
+          front_door_tool: 'front_door',
+          front_door: 'https://1f3ea.com/',
+          http_status: 400,
+        } : {}),
+      })
+    }
+  }
+})
+
+test('classified MCP failures keep the public door usable when hosted sign-in config is dormant', async (t) => {
+  const originalPublicOrigin = process.env.PUBLIC_ORIGIN
+  process.env.PUBLIC_ORIGIN = 'http://invalid.example'
+  t.after(() => {
+    if (originalPublicOrigin === undefined) delete process.env.PUBLIC_ORIGIN
+    else process.env.PUBLIC_ORIGIN = originalPublicOrigin
+  })
+
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    const backing = new Hono()
+    backing.get('/api/shelves', () => new Response('{"error":"missing"}', {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const result = await callTool(gateway(backing, options), 'browse')
+    const parsed = JSON.parse(result.text) as Record<string, unknown>
+    assert.equal(result.response.status, 200)
+    assert.equal(result.body.result.isError, true)
+    assert.equal(parsed.error_class, 'not_found')
+    assert.equal(parsed.front_door, 'https://1f3ea.com/')
+  }
+})
+
+test('MCP preflight failures are classified without leaking credentials or losing OAuth metadata', async () => {
+  const merchantSecret = `1f3ea_sk_${'ab'.repeat(24)}`
+  for (const options of [{}, { hostedChat: true }] as McpOptions[]) {
+    const app = gateway(new Hono(), options)
+    const credential = await callTool(app, 'comment', { body: `keep ${ACCESS_TOKEN}` })
+    const credentialError = JSON.parse(credential.text) as Record<string, unknown>
+    assert.equal(credentialError.error_class, 'bad_input')
+    assert.doesNotMatch(credential.text, new RegExp(ACCESS_TOKEN, 'iu'))
+    assert.equal(credentialError.http_status, undefined)
+
+    const invalidArguments = await callTool(app, 'browse', [])
+    assert.equal((JSON.parse(invalidArguments.text) as Record<string, unknown>).error_class, 'bad_input')
+  }
+
+  const hosted = gateway(new Hono(), { hostedChat: true, forwardUnauthorizedStatus: true })
+  const missing = await callTool(hosted, 'me')
+  const missingError = JSON.parse(missing.text) as Record<string, unknown>
+  assert.equal(missing.response.status, 401)
+  assert.equal(missingError.error_class, 'auth_required')
+  assert.equal(missingError.http_status, undefined)
+  assert.equal(missing.body.result._meta?.['mcp/www_authenticate']?.length, 1)
+
+  const wrongHostedCredential = await callTool(hosted, 'me', {}, `Bearer ${merchantSecret}`)
+  assert.equal(
+    (JSON.parse(wrongHostedCredential.text) as Record<string, unknown>).error_class,
+    'auth_required',
+  )
+
+  const ordinary = gateway(new Hono())
+  const wrongOrdinaryCredential = await callTool(ordinary, 'browse', {}, `Bearer ${ACCESS_TOKEN}`)
+  assert.equal(
+    (JSON.parse(wrongOrdinaryCredential.text) as Record<string, unknown>).error_class,
+    'auth_required',
+  )
+})
+
+test('machine error classes are stated on every contract mirror before MCP use', () => {
+  for (const path of ['src/frontdoor.txt', 'src/llms.txt', 'docs/SPEC.md', 'docs/DECISIONS.md']) {
+    const text = readFileSync(path, 'utf8')
+    assert.match(
+      text,
+      /error_class[\s\S]*bad_input[\s\S]*not_found[\s\S]*auth_required[\s\S]*forbidden[\s\S]*payment_required[\s\S]*conflict[\s\S]*rate_limited[\s\S]*market_fault[\s\S]*unreachable/iu,
+      path,
+    )
+    assert.match(text, /http_status/iu, path)
+    assert.match(text, /retry_after_seconds/iu, path)
+    assert.match(text, /status or\s+transport state[^.]*never[^.]*body/iu, path)
+  }
+})
+
 test('MCP tool routing handles empty arguments, filters, validated stores, and each buy shape', async () => {
   const seen: Array<{ method: string; path: string; body: unknown }> = []
   const backing = new Hono()
@@ -231,9 +440,10 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(invalidStoreBody.result.isError, true)
-    assert.deepEqual(JSON.parse(invalidStoreBody.result.content[0]!.text), {
-      error: 'no such store',
-    })
+    const parsed = JSON.parse(invalidStoreBody.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, 'no such store')
+    assert.equal(parsed.error_class, 'not_found')
+    assert.equal(parsed.http_status, 404)
   }
 
   const unknownTool = await app.request('/mcp', jsonRequest({
@@ -262,9 +472,10 @@ test('known tools reject non-object arguments before any backing request', async
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(body.result.isError, true)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), {
-      error: 'Tool arguments must be an object.',
-    })
+    const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, 'Tool arguments must be an object.')
+    assert.equal(parsed.error_class, 'bad_input')
+    assert.equal(parsed.http_status, undefined)
   }
   assert.equal(backingCalls, 0)
 })
@@ -333,9 +544,10 @@ test('world_status rejects both and neither id without dispatching a backing req
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(body.result.isError, true)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), {
-      error: 'Send exactly one of draft_id or checkout_id.',
-    })
+    const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, 'Send exactly one of draft_id or checkout_id.')
+    assert.equal(parsed.error_class, 'bad_input')
+    assert.equal(parsed.http_status, undefined)
   }
   for (const [arguments_, error] of [
     [{ draft_id: 0 }, 'draft_id must be an integer from 1 to 2147483647.'],
@@ -350,7 +562,10 @@ test('world_status rejects both and neither id without dispatching a backing req
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(body.result.isError, true)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error })
+    const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, error)
+    assert.equal(parsed.error_class, 'bad_input')
+    assert.equal(parsed.http_status, undefined)
   }
   assert.equal(backingCalls, 0)
 })
@@ -443,7 +658,10 @@ test('new connector arguments reject invalid filters and limits instead of silen
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(body.result.isError, true, item.name)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error: item.error }, item.name)
+    const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, item.error, item.name)
+    assert.equal(parsed.error_class, 'bad_input', item.name)
+    assert.equal(parsed.http_status, undefined, item.name)
   }
   assert.equal(backingCalls, 0)
 })
@@ -489,7 +707,10 @@ test('MCP route builders leave structured invalid ids to backing validation', as
       result: { isError: boolean; content: Array<{ text: string }> }
     }
     assert.equal(body.result.isError, true, call.name)
-    assert.deepEqual(JSON.parse(body.result.content[0]!.text), { error: call.error }, call.name)
+    const parsed = JSON.parse(body.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(parsed.error, call.error, call.name)
+    assert.equal(parsed.error_class, 'bad_input', call.name)
+    assert.equal(parsed.http_status, 400, call.name)
   }
 
   assert.deepEqual(paths, [

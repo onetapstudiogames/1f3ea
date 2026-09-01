@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { allowOAuthForHostedConnectorRequest, SECRET_PREFIX } from './core.ts'
-import { MARKET_OAUTH_SCOPE, marketOAuthChallenge } from './market-oauth-config.ts'
+import { MARKET_OAUTH_SCOPE, marketOAuthChallenge, marketPublicOrigin } from './market-oauth-config.ts'
 import {
   MCP_TOOLS,
   PUBLIC_MCP_TOOL_NAMES,
@@ -32,6 +32,7 @@ const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})
 const CREDENTIAL_REDACTION = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})/gi
 const CREDENTIAL_FIELD = /^(?:secret|merchant_key|replacement_key|recovery_code|access_token|refresh_token|authorization_code|code)$/i
 const SAFE_ARGUMENT_NAME = /^[a-z][a-z0-9_]{0,63}$/
+const FALLBACK_FRONT_DOOR = 'https://1f3ea.com/'
 
 function containsCredential(value: unknown): boolean {
   if (typeof value === 'string') return CREDENTIAL_VALUE.test(value)
@@ -43,6 +44,44 @@ function containsCredential(value: unknown): boolean {
 
 function redactCredentials(value: string): string {
   return value.replace(CREDENTIAL_REDACTION, '[redacted 1F3EA credential]')
+}
+
+function safeguardToolResponseText(value: string): { text: string; withheld: boolean } {
+  const directlyRedacted = redactCredentials(value)
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(directlyRedacted)
+  } catch {
+    return { text: directlyRedacted, withheld: false }
+  }
+
+  try {
+    const normalized = JSON.stringify(parsed)
+    if (normalized === undefined) {
+      return {
+        text: JSON.stringify({ error: 'The market response was withheld because it could not be handled safely.' }),
+        withheld: true,
+      }
+    }
+    const normalizedRedacted = redactCredentials(normalized)
+    return normalizedRedacted === normalized
+      ? { text: directlyRedacted, withheld: false }
+      : { text: normalizedRedacted, withheld: false }
+  } catch {
+    return {
+      text: JSON.stringify({ error: 'The market response was withheld because it could not be handled safely.' }),
+      withheld: true,
+    }
+  }
+}
+
+function configuredFrontDoor(): string {
+  try {
+    return `${marketPublicOrigin()}/`
+  } catch {
+    return FALLBACK_FRONT_DOOR
+  }
 }
 
 function appendResponseHeader(c: Context, name: string, value: string): void {
@@ -61,6 +100,58 @@ function hostedAuthenticationHeaders(c: Context, challenge: string): void {
 
 const rpcError = (c: Context, id: unknown, code: number, message: string) =>
   c.json({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
+
+type McpErrorClass =
+  | 'bad_input'
+  | 'not_found'
+  | 'auth_required'
+  | 'forbidden'
+  | 'payment_required'
+  | 'conflict'
+  | 'rate_limited'
+  | 'market_fault'
+  | 'unreachable'
+
+function errorClassForStatus(status: number): McpErrorClass {
+  if (status === 401) return 'auth_required'
+  if (status === 402) return 'payment_required'
+  if (status === 403) return 'forbidden'
+  if (status === 404) return 'not_found'
+  if (status === 409) return 'conflict'
+  if (status === 429) return 'rate_limited'
+  if (status >= 500) return 'market_fault'
+  return 'bad_input'
+}
+
+function boundedRetryAfterSeconds(value: string | null): number | undefined {
+  if (value === null || !/^[1-9][0-9]{0,4}$/u.test(value)) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) && seconds <= 86_400 ? seconds : undefined
+}
+
+function classifiedErrorText(
+  text: string,
+  errorClass: McpErrorClass,
+  httpStatus?: number,
+  retryAfterSeconds?: number,
+): string {
+  const envelope: Record<string, unknown> = {
+    error_class: errorClass,
+    front_door_tool: 'front_door',
+    front_door: configuredFrontDoor(),
+    http_status: httpStatus,
+    retry_after_seconds: retryAfterSeconds,
+  }
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return redactCredentials(JSON.stringify({ ...(parsed as Record<string, unknown>), ...envelope }))
+    }
+  } catch {
+    // Plain text, arrays, and primitives are kept whole under error.
+  }
+  return redactCredentials(JSON.stringify({ ...envelope, error: text }))
+}
 
 export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
   const hostedChat = options.hostedChat === true
@@ -130,9 +221,12 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         result: {
           content: [{
             type: 'text',
-            text: hostedChat
-              ? 'Do not put secrets or credentials in tool arguments. Use the private 1F3EA sign-in page.'
-              : 'Do not put secrets or credentials in tool arguments. Configure the Authorization header.',
+            text: classifiedErrorText(
+              hostedChat
+                ? 'Do not put secrets or credentials in tool arguments. Use the private 1F3EA sign-in page.'
+                : 'Do not put secrets or credentials in tool arguments. Configure the Authorization header.',
+              'bad_input',
+            ),
           }],
           isError: true,
         },
@@ -147,7 +241,10 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         result: {
           content: [{
             type: 'text',
-            text: 'A permanent merchant key is not accepted by the hosted connector. Enter it only on the private 1F3EA sign-in page opened by ChatGPT.',
+            text: classifiedErrorText(
+              'A permanent merchant key is not accepted by the hosted connector. Enter it only on the private 1F3EA sign-in page opened by ChatGPT.',
+              'auth_required',
+            ),
           }],
           isError: true,
         },
@@ -159,7 +256,10 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         result: {
           content: [{
             type: 'text',
-            text: 'Wrong 1F3EA connector address. Remove or delete this connection, then add or create it again with https://1f3ea.com/mcp/connect.',
+            text: classifiedErrorText(
+              'Wrong 1F3EA connector address. Remove or delete this connection, then add or create it again with https://1f3ea.com/mcp/connect.',
+              'auth_required',
+            ),
           }],
           isError: true,
         },
@@ -171,7 +271,10 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       const response = {
         jsonrpc: '2.0', id: id ?? null,
         result: {
-          content: [{ type: 'text', text: 'Sign in to 1F3EA to use merchant tools.' }],
+          content: [{
+            type: 'text',
+            text: classifiedErrorText('Sign in to 1F3EA to use merchant tools.', 'auth_required'),
+          }],
           isError: true,
           _meta: { 'mcp/www_authenticate': [challenge] },
         },
@@ -179,6 +282,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
     }
 
+    let backingRequest: Request
     try {
       if (argumentsProvided && !argumentsAreObject)
         throw new ToolInputError('Tool arguments must be an object.')
@@ -201,7 +305,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       const { method: m, path, body } = tool.route(args)
       const headers: Record<string, string> = { 'content-type': 'application/json' }
       if (headerAuth) headers.authorization = headerAuth
-      const backingRequest = new Request(new URL(path, c.req.url), {
+      backingRequest = new Request(new URL(path, c.req.url), {
         method: m,
         headers,
         body: m === 'GET' ? undefined : JSON.stringify(body ?? {}),
@@ -209,31 +313,18 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       if (hostedChat && bearer?.startsWith('1f3ea_at_')) {
         allowOAuthForHostedConnectorRequest(backingRequest)
       }
-      const res = await app.request(backingRequest)
-      const text = redactCredentials(await res.text())
-      if (hostedChat && res.status === 401) {
-        const challenge = marketOAuthChallenge()
-        hostedAuthenticationHeaders(c, challenge)
-        const response = {
-          jsonrpc: '2.0', id: id ?? null,
-          result: {
-            content: [{ type: 'text', text }],
-            isError: true,
-            _meta: { 'mcp/www_authenticate': [challenge] },
-          },
-        }
-        return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
-      }
-      return c.json({
-        jsonrpc: '2.0', id: id ?? null,
-        result: { content: [{ type: 'text', text }], isError: res.status >= 400 },
-      })
     } catch (error) {
       if (error instanceof ToolInputError) {
         return c.json({
           jsonrpc: '2.0', id: id ?? null,
           result: {
-            content: [{ type: 'text', text: redactCredentials(JSON.stringify({ error: error.message })) }],
+            content: [{
+              type: 'text',
+              text: classifiedErrorText(
+                redactCredentials(JSON.stringify({ error: error.message })),
+                'bad_input',
+              ),
+            }],
             isError: true,
           },
         })
@@ -244,7 +335,74 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
         result: {
           content: [{
             type: 'text',
-            text: JSON.stringify({ error: 'internal connector failure; retry later' }),
+            text: classifiedErrorText('internal connector failure; retry later', 'market_fault'),
+          }],
+          isError: true,
+        },
+      })
+    }
+
+    try {
+      const res = await app.request(backingRequest)
+      const safeguarded = safeguardToolResponseText(await res.text())
+      const text = safeguarded.text
+      const retryAfterSeconds = boundedRetryAfterSeconds(res.headers.get('retry-after'))
+      if (hostedChat && res.status === 401) {
+        const challenge = marketOAuthChallenge()
+        hostedAuthenticationHeaders(c, challenge)
+        const response = {
+          jsonrpc: '2.0', id: id ?? null,
+          result: {
+            content: [{
+              type: 'text',
+              text: classifiedErrorText(text, 'auth_required', 401, retryAfterSeconds),
+            }],
+            isError: true,
+            _meta: { 'mcp/www_authenticate': [challenge] },
+          },
+        }
+        return options.forwardUnauthorizedStatus ? c.json(response, 401) : c.json(response)
+      }
+      if (res.status >= 400) {
+        return c.json({
+          jsonrpc: '2.0', id: id ?? null,
+          result: {
+            content: [{
+              type: 'text',
+              text: classifiedErrorText(
+                text,
+                errorClassForStatus(res.status),
+                res.status,
+                retryAfterSeconds,
+              ),
+            }],
+            isError: true,
+          },
+        })
+      }
+      if (safeguarded.withheld) {
+        return c.json({
+          jsonrpc: '2.0', id: id ?? null,
+          result: {
+            content: [{
+              type: 'text',
+              text: classifiedErrorText(text, 'market_fault'),
+            }],
+            isError: true,
+          },
+        })
+      }
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: { content: [{ type: 'text', text }], isError: false },
+      })
+    } catch {
+      return c.json({
+        jsonrpc: '2.0', id: id ?? null,
+        result: {
+          content: [{
+            type: 'text',
+            text: classifiedErrorText('The market API could not answer this tool call.', 'unreachable'),
           }],
           isError: true,
         },

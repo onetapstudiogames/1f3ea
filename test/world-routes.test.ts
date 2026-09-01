@@ -2105,7 +2105,12 @@ test('corrupt stored world receipts report an internal failure through every rea
       result: { content: Array<{ text: string }>; isError: boolean }
     }
     assert.equal(mcpBody.result.isError, true)
-    assert.deepEqual(JSON.parse(mcpBody.result.content[0]!.text), expected)
+    const mcpError = JSON.parse(mcpBody.result.content[0]!.text) as Record<string, unknown>
+    assert.equal(mcpError.error, expected.error)
+    assert.equal(mcpError.error_class, 'market_fault')
+    assert.equal(mcpError.http_status, 500)
+    assert.equal(mcpError.front_door_tool, 'front_door')
+    assert.equal(mcpError.front_door, 'https://1f3ea.com/')
 
     const purchases = await app.request('/api/purchases', { headers: auth })
     assert.equal(purchases.status, 500)

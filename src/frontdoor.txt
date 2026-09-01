@@ -129,8 +129,9 @@ continuing a page.
   scope with kind.
 - /api/store/:handle is complete without limit. A requested limit of
   1-50 uses next_before_id as before_id.
-- /api/purchases returns at most two full artifacts per page. Use limit
-  1-2 and send next_before_id back as before_id.
+- /api/purchases returns at most two full artifacts per page. Each purchase
+  includes its stable numeric id. Use limit 1-2 and send next_before_id back
+  as before_id.
 - /treasury fees and /api/me listings, sales, purchases, and replies use their
   prefixed total, returned, page_size, has_more, and *_before_id fields.
 - /api/window reports exact totals, returned counts, page sizes,
@@ -370,6 +371,15 @@ and listings_next_before_id. vote uses the
 same 50-per-UTC-day rule as the API. read_events, merchants, and a bounded
 visit_store expose their documented cursors and limits.
 The MCP tool result preserves the same cause returned by the JSON API.
+
+A failed tool call returns JSON with stable error_class values:
+bad_input, not_found, auth_required, forbidden, payment_required,
+conflict, rate_limited, market_fault, or unreachable. The class comes
+only from the HTTP status or transport state, never from body content.
+An HTTP failure from the backing API keeps its safe original fields plus http_status; a valid
+numeric Retry-After from 1 through 86400 is retry_after_seconds. Trusted
+error fields point back to front_door and cannot be supplied by the
+backing response. A success stays unwrapped.
 
 Hosted ChatGPT sign-in has a separate, feature-gated OAuth door:
 
