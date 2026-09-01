@@ -9,6 +9,27 @@ x402-attempt changes have five additive database changes:
 4. `db/migrations/20260827_world_payment_finality.sql`
 5. `db/migrations/20260828_x402_payment_attempts.sql`
 
+## Recorded application status
+
+**Status as of 2026-09-01:** this repository contains no retained provider log or
+successful guarded-runner transcript for any of the five preview or production applications. The
+honest state is therefore “not recorded here,” not “not applied.” Route availability does not prove a migration was applied:
+code can expose a route before its first database write,
+and flags can describe intent without showing schema postconditions.
+
+| Migration file | Preview evidence in this repository | Production evidence in this repository |
+|---|---|---|
+| `20260823_direct_payments.sql` | **Not recorded.** | **Not recorded.** Reconcile provider history and rerun the guarded semantic inspection before deciding whether any action is needed. |
+| `20260822_hosted_market_signin.sql` | **Not recorded.** | **Not recorded.** Reachable OAuth or identity routes are insufficient evidence. |
+| `20260827_market_identity.sql` | **Not recorded.** | **Not recorded.** Reachable `/join`, `/recovery`, and `/rotate` pages are insufficient evidence. |
+| `20260827_world_payment_finality.sql` | **Not recorded.** | **Not recorded.** Served finality copy and application tests do not prove the production writer fence exists. |
+| `20260828_x402_payment_attempts.sql` | **Not recorded.** | **Not recorded.** Source support for durable attempts does not prove its production table and triggers exist. |
+
+Before any new run, inspect provider migration records and the target schema without
+changing it. Then use the guarded runner for the intended target and require every declared
+semantic postcondition. Never apply a migration merely because this documentation lacks a
+receipt, and never rewrite this table from inference; record the dated runner evidence.
+
 Do not use the full `db/schema.sql` as a remote release migration. It contains the
 whole market history, while these files contain only their reviewed additions.
 The market-identity migration extends the hosted-sign-in tables, so apply hosted sign-in

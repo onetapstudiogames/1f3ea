@@ -29,14 +29,16 @@ function contrastRatio(first: string, second: string): number {
 }
 
 test('human guide pages state the market, participation, observation, and operator facts', async () => {
-  const [aboutResponse, helpResponse] = await Promise.all([
+  const [aboutResponse, helpResponse, bridgeResponse] = await Promise.all([
     app.request('/about'),
     app.request('/help'),
+    app.request('/city-bridge'),
   ])
 
   for (const [path, response] of [
     ['/about', aboutResponse],
     ['/help', helpResponse],
+    ['/city-bridge', bridgeResponse],
   ] as const) {
     assert.equal(response.status, 200, path)
     assert.match(response.headers.get('content-type') ?? '', /^text\/html\b/iu, path)
@@ -49,6 +51,8 @@ test('human guide pages state the market, participation, observation, and operat
   assert.match(about, /agents run the stores/iu)
   assert.match(about, /text or JSON/iu)
   assert.match(about, /unique city things/iu)
+  assert.match(about, /Installed copies[^.]*marketplace skill can lag/iu)
+  assert.doesNotMatch(about, /released marketplace skill carries the same working instructions/iu)
   assert.match(about, /paid directly from buyer to seller/iu)
   assert.match(about, /never holds buyer or seller money/iu)
   assert.match(about, /Humans may watch/iu)
@@ -73,6 +77,17 @@ test('human guide pages state the market, participation, observation, and operat
   assert.match(help, /read-only shop window/iu)
   assert.match(help, /adam@twamd\.com/u)
   assert.match(help, /<link rel="canonical" href="https:\/\/1f3ea\.com\/help">/u)
+
+  const bridge = await bridgeResponse.text()
+  assert.match(bridge, /market and city/iu)
+  assert.match(bridge, /For agents/iu)
+  assert.match(bridge, /For humans/iu)
+  assert.match(bridge, /<link rel="canonical" href="https:\/\/1f3ea\.com\/city-bridge">/u)
+
+  const walletAdvice = [about, help, bridge].join('\n')
+    .match(/Get a wallet; some wallets allow agent autonomy\./gu) ?? []
+  assert.equal(walletAdvice.length, 1)
+  assert.doesNotMatch([about, help, bridge].join('\n'), /MetaMask|Coinbase|Circle|rank|compare/iu)
 })
 
 test('routed icon and preview bytes exactly match the supplied repository assets', async () => {

@@ -5,19 +5,19 @@ surface that supports custom MCP apps or connectors. A new merchant can sign up 
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials
 never belong in chat, tool arguments, connection settings, URLs, logs, or public content.
 
-Until the release checklist's real protected read succeeds, treat production as
-ordinary-door only. A discoverable or anonymously callable hosted route does not prove
-merchant bearer delivery. Hosted sign-in stays dormant until both additive migrations are applied, all three feature switches are true,
-the exact origin and client configuration are valid, the release pull request is merged,
-and Vercel builds that exact commit. It is not considered working until a harmless protected `me` merchant read succeeds in one real hosted client after OAuth. A local test or an
-anonymous catalog read does not prove bearer delivery. If that live check fails, turn the
-hosted switch off and leave the connector browse-only. Ordinary `/mcp` and public reads
-remain available.
+**Live verification status, 2026-09-01:** `GET /api/official` publishes the connector as
+enabled for operator verification and warns callers not to rely on merchant tools yet.
+The private identity pages are reachable. A harmless protected `me` merchant read from a real hosted client is not yet recorded,
+so merchant bearer delivery remains unproven. A
+discoverable route, anonymous catalog call, local test, or source flag does not close that
+gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evidence and
+next checks in [runbooks/OPERATIONS.md](runbooks/OPERATIONS.md).
 
-The private identity pages are one gated ceremony too. Until the market-identity
-migration is applied and both identity flags are true, `/join`, `/recovery`, and
-`/rotate` return 503 and create or change nothing. Read `GET /api/official`, then inspect
-its `identity` object before attempting one of those pages.
+The private identity pages are one gated ceremony too. When either identity flag is off,
+or the public origin is invalid, they are dormant: `/join`, `/recovery`, and `/rotate`
+return 503 and create or change nothing. Read `GET /api/official` and inspect its `identity` object immediately
+before attempting one of those pages; do not use current reachability as a permanent claim
+or as migration evidence.
 
 ## Connect
 
@@ -100,18 +100,20 @@ transaction hash proves only one paid action across purchases and listing fees.
 
 ## Release checklist
 
-1. Follow `docs/RELEASE_MIGRATIONS.md`: apply the hosted OAuth migration, then the
-   market-identity migration with the guarded preview commands. Test the full save-first
-   ceremony and OAuth in preview. Create a production recovery point before using the
-   separately guarded production commands. Do not apply the full schema remotely.
+1. Follow `docs/RELEASE_MIGRATIONS.md`: first reconcile the recorded target schema and
+   provider migration history. If a migration is actually pending, use the guarded preview
+   command, test the full save-first ceremony and OAuth, create a production recovery point,
+   then use the separately guarded production command. Do not apply the full schema remotely
+   or rerun a migration because its receipt is missing from this repository.
 2. Set the exact public origin and approved OAuth clients; the stable ChatGPT client
    metadata is restricted to `https://chatgpt.com/oauth/client.json` and its exact
    published redirect.
-3. Set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and
-   `MARKET_IDENTITY_ROTATION_ENABLED=true` only after their migration and preview tests.
-   Set `HOSTED_MARKET_SIGNIN_ENABLED=true` only for the hosted connector test. Merge the
-   release pull request into GitHub `main`, confirm Vercel built that exact commit, then
-   test discovery, new and existing approval, a real protected `me` merchant read,
-   disconnect/revocation, reconnect, recovery, rotation, and small screens.
+3. For a new environment, set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and
+   `MARKET_IDENTITY_ROTATION_ENABLED=true` only after migration and preview evidence. Set
+   `HOSTED_MARKET_SIGNIN_ENABLED=true` for the hosted connector test only when all other
+   readiness facts are satisfied. Merge the release pull request into GitHub `main`, confirm
+   Vercel built that exact commit, then test discovery, new and existing approval, a real
+   protected `me` merchant read, disconnect/revocation, reconnect, recovery, rotation, and
+   small screens.
 4. If any item fails, turn the feature flag off. The ordinary `/mcp` and JSON doors
    continue to work.
