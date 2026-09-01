@@ -27,6 +27,7 @@ import {
   isCityOfferAvailable,
   validWorldCheckout,
   type CityOffer,
+  type CityOfferPhase,
   type ListingBinding,
 } from './world.ts'
 
@@ -59,6 +60,42 @@ interface WorldCheckoutRow {
   city_handle: string
   expires_at: string
   created_at: string
+}
+
+type CityNoSalePhase = Extract<
+  CityOfferPhase,
+  'payment_invalid' | 'payment_expired' | 'founder_review'
+>
+
+interface CityNoSaleOutcome {
+  phase: CityNoSalePhase
+  withdrawnReason: string
+  error: string
+}
+
+function cityNoSaleOutcome(phase: CityOfferPhase): CityNoSaleOutcome | null {
+  switch (phase) {
+    case 'payment_invalid':
+      return {
+        phase,
+        withdrawnReason: 'city payment invalid',
+        error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
+      }
+    case 'payment_expired':
+      return {
+        phase,
+        withdrawnReason: 'city payment expired',
+        error: "the city's automatic payment recovery window ended without an ownership transfer; no market sale was recorded; do not pay again",
+      }
+    case 'founder_review':
+      return {
+        phase,
+        withdrawnReason: 'city founder review',
+        error: "the city retained this checkout's payment evidence for founder review; ownership did not transfer and no market sale was recorded; do not pay again",
+      }
+    default:
+      return null
+  }
 }
 
 function checkoutEnvelope(row: WorldCheckoutRow) {
@@ -373,7 +410,14 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
         city_offer_url: cityOfferUrl(listing.world_offer_id),
       })
     }
-    const checkoutBoundPhases = ['reserved', 'payment_pending', 'payment_invalid', 'claimed']
+    const checkoutBoundPhases: CityOfferPhase[] = [
+      'reserved',
+      'payment_pending',
+      'payment_invalid',
+      'payment_expired',
+      'founder_review',
+      'claimed',
+    ]
     let checkout: WorldCheckoutRow | null = null
     if (checkoutBoundPhases.includes(cityRecord.value.phase)) {
       if (cityRecord.value.market_listing_id !== listing.id)
@@ -399,39 +443,44 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
         return syncRefusal('city market buyer does not match the market checkout')
     }
 
-    if (cityRecord.value.phase === 'payment_invalid') {
+    const noSaleOutcome = cityNoSaleOutcome(cityRecord.value.phase)
+    if (noSaleOutcome) {
       const rows = await sql`
-        WITH invalid_payment_listing AS (
+        WITH terminal_payment_listing AS (
           UPDATE listings SET world_state = 'stale', withdrawn = TRUE,
-            withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = 'city payment invalid'
+            withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = ${noSaleOutcome.withdrawnReason}
           WHERE id = ${listing.id} AND delivery_kind = 'city_ownership'
             AND world_state = 'active' AND NOT removed
           RETURNING id, world_draft_id
-        ), invalid_payment_draft AS (
-          UPDATE world_drafts SET state = 'canceled', canceled_at = now(),
-            canceled_reason = 'city payment invalid'
-          WHERE id = ${listing.world_draft_id} AND state <> 'sold'
+        ), terminal_payment_draft AS (
+          UPDATE world_drafts draft SET state = 'canceled',
+            canceled_at = coalesce(draft.canceled_at, now()),
+            canceled_reason = coalesce(draft.canceled_reason, ${noSaleOutcome.withdrawnReason})
+          FROM terminal_payment_listing listing
+          WHERE draft.id = listing.world_draft_id AND draft.state <> 'sold'
+            AND (draft.state <> 'canceled' OR draft.canceled_at IS NULL OR draft.canceled_reason IS NULL)
         ), expired_checkouts AS (
-          UPDATE world_checkouts SET status = 'expired'
-          WHERE listing_id = ${listing.id} AND status = 'active'
+          UPDATE world_checkouts checkout SET status = 'expired'
+          WHERE checkout.listing_id IN (SELECT id FROM terminal_payment_listing)
+            AND checkout.status = 'active'
         ), new_event AS (
           INSERT INTO events (kind, actor, detail)
           SELECT 'world_canceled', ${listing.market_seller}, jsonb_build_object(
-            'listing_id', id, 'city_offer_id', ${listing.world_offer_id},
-            'reason', 'city payment invalid'
-          ) FROM invalid_payment_listing
+            'listing_id', id, 'city_offer_id', ${listing.world_offer_id}::integer,
+            'reason', ${noSaleOutcome.withdrawnReason}::text
+          ) FROM terminal_payment_listing
         )
-        SELECT id FROM invalid_payment_listing`
+        SELECT id FROM terminal_payment_listing`
       const status = rows.length ? 'stale' : (await readWorldListing(listing.id))?.world_state ?? 'stale'
       return c.json({
         listing_id: listing.id,
         status,
-        city_phase: 'payment_invalid' as const,
+        city_phase: noSaleOutcome.phase,
         city_unlock_required: true,
         city_cancel_url: cityCancelUrl(listing.world_offer_id),
         do_not_pay_again: true,
-        error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
-        retry: 'unlock or cancel the city offer at city_cancel_url; do not make another payment',
+        error: noSaleOutcome.error,
+        retry: 'city seller: authenticate to the city and POST {} to city_cancel_url to cancel the offer and unlock the thing; do not make another payment',
       })
     }
     if (cityRecord.value.phase !== 'claimed') return c.json({

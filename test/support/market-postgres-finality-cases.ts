@@ -213,6 +213,165 @@ export async function runMarketPostgresFinalityCases(
     },
   )
 
+  await t.test('terminal city payment outcomes atomically close the real PostgreSQL lane without a sale', async () => {
+    const outcomes = [
+      { phase: 'payment_invalid', reason: 'city payment invalid' },
+      { phase: 'payment_expired', reason: 'city payment expired' },
+      { phase: 'founder_review', reason: 'city founder review' },
+    ] as const
+    const headers = { Authorization: `Bearer ${BUYER_SECRET}`, 'Content-Type': 'application/json' }
+    const terminalCityOffer = (
+      phase: typeof outcomes[number]['phase'],
+      reservedAt: Date,
+      reservedUntil: Date,
+    ) => ({
+      id: 501,
+      channel: 'world',
+      phase,
+      asset_type: 'thing',
+      asset_id: 77,
+      asset_name: 'City compass',
+      locked: true,
+      seller: 'city-seller',
+      buyer: 'city-buyer',
+      market_buyer: 'buyer-two',
+      price_usdc: 2,
+      seller_wallet: SELLER_WALLET,
+      market_origin: 'https://1f3ea.com',
+      market_draft_id: 1,
+      market_listing_id: 2,
+      market_checkout_id: 1,
+      pending_x402_tx_hash: TX_HASH,
+      pending_x402_at: new Date(reservedAt.getTime() + 60_000).toISOString(),
+      reserved_at: reservedAt.toISOString(),
+      reserved_until: reservedUntil.toISOString(),
+      created_at: new Date(reservedAt.getTime() - 1_000).toISOString(),
+      claimed_at: null,
+      canceled_at: null,
+    })
+
+    for (const outcome of outcomes) {
+      await resetAndSeed()
+      harnessState.rpcMethods = []
+      const reservedAt = new Date(Date.now() - 3 * 60 * 60 * 1000)
+      const reservedUntil = new Date(reservedAt.getTime() + 5 * 60 * 1000)
+      const checkoutCreatedAt = new Date(reservedAt.getTime() - 60_000)
+      await connectedDatabase().query(`
+        UPDATE world_checkouts
+        SET created_at = $1, expires_at = $2, status = 'active', completed_at = NULL
+        WHERE id = 1
+      `, [checkoutCreatedAt, new Date(checkoutCreatedAt.getTime() + 10 * 60 * 1000)])
+      harnessState.cityOffer = terminalCityOffer(outcome.phase, reservedAt, reservedUntil)
+
+      const syncTerminalOutcome = async () => {
+        const response = await app.request('/api/world/sync/2', {
+          method: 'POST', headers, body: '{}',
+        })
+        assert.equal(response.status, 200, await response.clone().text())
+        const body = await response.json() as {
+          status: string
+          city_phase: string
+          do_not_pay_again: boolean
+        }
+        assert.equal(body.status, 'stale')
+        assert.equal(body.city_phase, outcome.phase)
+        assert.equal(body.do_not_pay_again, true)
+      }
+      await syncTerminalOutcome()
+      const firstWrite = await connectedDatabase().query<{ canceled_at: Date }>(`
+        SELECT canceled_at FROM world_drafts WHERE id = 1
+      `)
+      assert.ok(firstWrite.rows[0]?.canceled_at instanceof Date)
+      await syncTerminalOutcome()
+
+      const durable = await connectedDatabase().query<{
+        world_state: string
+        withdrawn: boolean
+        withdrawn_reason: string
+        draft_state: string
+        canceled_at: Date
+        canceled_reason: string
+        checkout_status: string
+        purchases: number
+        payment_attempts: number
+        cancellation_events: number
+      }>(`
+        SELECT listing.world_state, listing.withdrawn, listing.withdrawn_reason,
+          draft.state AS draft_state, draft.canceled_at, draft.canceled_reason,
+          checkout.status AS checkout_status,
+          (SELECT count(*)::int FROM purchases WHERE world_checkout_id = checkout.id) AS purchases,
+          (SELECT count(*)::int FROM world_payment_attempts
+            WHERE world_checkout_id = checkout.id) AS payment_attempts,
+          (SELECT count(*)::int FROM events
+            WHERE kind = 'world_canceled' AND detail->>'listing_id' = listing.id::text
+          ) AS cancellation_events
+        FROM listings listing
+        JOIN world_drafts draft ON draft.id = listing.world_draft_id
+        JOIN world_checkouts checkout ON checkout.listing_id = listing.id
+        WHERE listing.id = 2 AND checkout.id = 1
+      `)
+      const terminalState = durable.rows[0]
+      assert.equal(terminalState?.world_state, 'stale')
+      assert.equal(terminalState?.withdrawn, true)
+      assert.equal(terminalState?.withdrawn_reason, outcome.reason)
+      assert.equal(terminalState?.draft_state, 'canceled')
+      assert.equal(terminalState?.canceled_at.getTime(), firstWrite.rows[0]?.canceled_at.getTime())
+      assert.equal(terminalState?.canceled_reason, outcome.reason)
+      assert.equal(terminalState?.checkout_status, 'expired')
+      assert.equal(terminalState?.purchases, 0)
+      assert.equal(terminalState?.payment_attempts, 0)
+      assert.equal(terminalState?.cancellation_events, 1)
+      assert.deepEqual(harnessState.rpcMethods, [])
+    }
+
+    await resetAndSeed()
+    harnessState.rpcMethods = []
+    const reservedAt = new Date(Date.now() - 3 * 60 * 60 * 1000)
+    const reservedUntil = new Date(reservedAt.getTime() + 5 * 60 * 1000)
+    const checkoutCreatedAt = new Date(reservedAt.getTime() - 60_000)
+    await connectedDatabase().query(`
+      UPDATE listings SET world_state = 'canceled', withdrawn = TRUE,
+        withdrawn_at = $1, withdrawn_reason = 'withdrawn by merchant' WHERE id = 2
+    `, [new Date(reservedUntil.getTime() + 60_000)])
+    await connectedDatabase().query(`
+      UPDATE world_drafts SET state = 'withdrawn', canceled_at = $1,
+        canceled_reason = 'withdrawn by merchant' WHERE id = 1
+    `, [new Date(reservedUntil.getTime() + 60_000)])
+    await connectedDatabase().query(`
+      UPDATE world_checkouts SET created_at = $1, expires_at = $2, status = 'expired'
+        WHERE id = 1
+    `, [checkoutCreatedAt,
+      new Date(checkoutCreatedAt.getTime() + 10 * 60 * 1000)])
+    harnessState.cityOffer = terminalCityOffer('payment_expired', reservedAt, reservedUntil)
+
+    const afterWithdrawal = await app.request('/api/world/sync/2', {
+      method: 'POST', headers, body: '{}',
+    })
+    assert.equal(afterWithdrawal.status, 200, await afterWithdrawal.clone().text())
+    assert.equal((await afterWithdrawal.json() as { status: string }).status, 'canceled')
+    const preserved = await connectedDatabase().query<{
+      world_state: string
+      withdrawn_reason: string
+      draft_state: string
+      canceled_reason: string
+      cancellation_events: number
+    }>(`
+      SELECT listing.world_state, listing.withdrawn_reason, draft.state AS draft_state,
+        draft.canceled_reason, (SELECT count(*)::int FROM events WHERE kind = 'world_canceled')
+          AS cancellation_events
+      FROM listings listing JOIN world_drafts draft ON draft.id = listing.world_draft_id
+      WHERE listing.id = 2
+    `)
+    assert.deepEqual(preserved.rows[0], {
+      world_state: 'canceled',
+      withdrawn_reason: 'withdrawn by merchant',
+      draft_state: 'withdrawn',
+      canceled_reason: 'withdrawn by merchant',
+      cancellation_events: 0,
+    })
+    assert.deepEqual(harnessState.rpcMethods, [])
+  })
+
   await t.test('listing fee finality may arrive after its first fixed PostgreSQL window', async () => {
     await resetAndSeed()
     harnessState.rpcMethods = []

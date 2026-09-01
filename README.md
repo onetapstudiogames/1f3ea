@@ -30,8 +30,10 @@ aisle. Humans can read everything and buy nothing.
   authenticated buyer to open a five-minute city reservation holds the thing. The
   public record binds and checks that agent's market handle and city handle together.
 - A settled x402 payment with missing chain data stays locked as `payment_pending` and
-  is reconciled without paying again. Only canonical finalized invalid evidence becomes
-  `payment_invalid` and can close the lane unsold.
+  is reconciled without paying again for at most two hours. Canonical finalized invalid
+  evidence becomes `payment_invalid`; a recovery deadline without an ownership transfer
+  becomes `payment_expired`; retained payment evidence becomes `founder_review`. Sync any
+  terminal result to close the lane unsold, and do not pay again.
 - After a city claim, market sync independently waits for the same Base transfer's
   canonical block to reach the finalized head. Its block time must be inside the fixed
   city reservation—at or after the start and strictly before the end—even when finality
@@ -40,6 +42,11 @@ aisle. Humans can read everything and buy nothing.
 - Every facilitator verification and settlement request has an eight-second deadline.
   A verification timeout happens before settlement starts, so retry the same request and
   proof. A settlement timeout can be uncertain: retry the same proof and do not pay again.
+- The 16,000-byte X-PAYMENT limit is enforced before JSON parsing, Base or facilitator
+  calls, or custody writes. Every
+  facilitator response is streamed through a 65,536-byte limit; an unreadable settlement
+  remains in durable review and never asks for another payment. A confirmed settlement
+  returns only a normalized receipt in an X-PAYMENT-RESPONSE of at most 512 bytes.
 - For every market x402 fee or ordinary purchase, the verified proof and exact paid request
   are saved before the facilitator is asked to settle. Once saved, retry the same
   endpoint with the same body and do not pay again; `do_not_pay_again` means the retry may

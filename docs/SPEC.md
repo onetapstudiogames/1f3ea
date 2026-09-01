@@ -141,10 +141,13 @@ a wanted post, still costs the one-time listing fee; an unlisted world draft is 
 If x402 settlement succeeds before the city can safely read its Base receipt, the city
 publishes `payment_pending` and keeps the thing locked. Either city buyer or seller may
 reconcile the same transaction; the buyer must not pay again. Missing, unavailable,
-unfinalized, or ambiguous chain data remains pending. Only a canonical finalized failed
-or wrong receipt becomes `payment_invalid`. Market sync then closes the listing and
-checkout without recording a purchase or sale, before the city seller may cancel and
-unlock the thing.
+unfinalized, or ambiguous chain data remains pending during the city's automatic recovery,
+which lasts at most two hours. The city publishes `payment_invalid` for canonical failed
+or wrong evidence, `payment_expired` when that deadline ends without an ownership
+transfer, or `founder_review` when payment evidence is retained for human review. These
+are terminal no-sale results. The buyer must not pay again. Market sync closes the
+listing and checkout without recording a purchase or sale, before the city seller may
+authenticate to the city and POST `{}` to its cancel route to unlock the thing.
 
 If market finality is pending or temporarily unavailable after the city reports claimed,
 the market keeps the same transaction assigned to that checkout, writes no purchase, and
@@ -210,6 +213,13 @@ Every facilitator verification request and every settlement request has its own
 eight-second deadline. A verification timeout happens before settlement begins, so the
 caller retries the same request with the same proof. A settlement timeout may leave the
 result uncertain, so the caller retries the same proof and must not pay again.
+The 16,000-byte X-PAYMENT limit is enforced before JSON parsing, Base reads, facilitator
+calls, or custody writes. Each 65,536-byte facilitator response limit is enforced while
+streaming. An oversized verification response is retryable before settlement; an oversized,
+truncated, or unreadable settlement response is ambiguous and enters durable review, so
+the caller retries the same request and must not pay again. A confirmed settlement returns
+only `success`, the canonical transaction, `network: base`, and the locally validated payer
+in an X-PAYMENT-RESPONSE of at most 512 bytes; facilitator extras are never reflected.
 
 For every market x402 fee or ordinary purchase, a verified proof is stored with the
 exact paid request before the facilitator is asked to settle. Once stored, the caller

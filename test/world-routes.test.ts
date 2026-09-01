@@ -130,7 +130,7 @@ const state = {
   listingFeeAttempt: null as ListingFeeAttemptFixture | null,
   x402Attempt: null as X402PaymentAttemptFixture | null,
   attemptReserveError: null as PostgresErrorFixture | null,
-  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'unknown-phase' | 'canceled' | 'claimed',
+  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'payment-expired' | 'founder-review' | 'unknown-phase' | 'canceled' | 'claimed',
   cityStreamPulls: 0,
   cityStreamCanceled: false,
   cityReservedAt: '2026-08-12T00:04:00.000Z',
@@ -265,6 +265,17 @@ function purchaseRow(worldReceipt: Record<string, unknown> | string = storedWorl
 }
 
 function cityOffer() {
+  const checkoutBoundModes = [
+    'claimed',
+    'reserved',
+    'reserved-expired',
+    'payment-pending',
+    'payment-invalid',
+    'payment-expired',
+    'founder-review',
+  ]
+  const currentCheckoutModes = checkoutBoundModes.filter(mode => mode !== 'reserved-expired')
+  const paymentEvidenceModes = ['payment-pending', 'payment-invalid', 'payment-expired', 'founder-review']
   const base = {
     id: 33,
     channel: 'world',
@@ -273,26 +284,28 @@ function cityOffer() {
         : ['reserved', 'reserved-expired'].includes(state.cityMode) ? 'reserved'
           : state.cityMode === 'payment-pending' ? 'payment_pending'
             : state.cityMode === 'payment-invalid' ? 'payment_invalid'
-            : state.cityMode === 'unknown-phase' ? 'surprise' : 'listed',
+              : state.cityMode === 'payment-expired' ? 'payment_expired'
+                : state.cityMode === 'founder-review' ? 'founder_review'
+                  : state.cityMode === 'unknown-phase' ? 'surprise' : 'listed',
     asset_type: 'thing',
     asset_id: state.cityMode === 'mismatch' ? 999 : 41,
     asset_name: 'Pocket observatory',
     locked: !['claimed', 'canceled'].includes(state.cityMode),
     seller: 'city-smith',
-    buyer: ['claimed', 'reserved', 'reserved-expired', 'payment-pending', 'payment-invalid'].includes(state.cityMode)
+    buyer: checkoutBoundModes.includes(state.cityMode)
       ? state.checkoutCityHandle : null,
-    market_buyer: ['claimed', 'reserved', 'reserved-expired', 'payment-pending', 'payment-invalid'].includes(state.cityMode)
+    market_buyer: checkoutBoundModes.includes(state.cityMode)
       ? state.cityMarketBuyer : null,
     price_usdc: 2,
     seller_wallet: SELLER,
     market_origin: 'https://1f3ea.com',
     market_draft_id: 12,
     market_listing_id: state.draftListingId,
-    market_checkout_id: ['claimed', 'reserved', 'payment-pending', 'payment-invalid'].includes(state.cityMode) ? 60
+    market_checkout_id: currentCheckoutModes.includes(state.cityMode) ? 60
       : state.cityMode === 'reserved-expired' ? 59 : null,
-    reserved_at: ['claimed', 'reserved', 'payment-pending', 'payment-invalid'].includes(state.cityMode) ? state.cityReservedAt
+    reserved_at: currentCheckoutModes.includes(state.cityMode) ? state.cityReservedAt
       : state.cityMode === 'reserved-expired' ? '2020-01-01T00:00:00.000Z' : null,
-    reserved_until: ['claimed', 'reserved', 'payment-pending', 'payment-invalid'].includes(state.cityMode) ? state.cityReservedUntil
+    reserved_until: currentCheckoutModes.includes(state.cityMode) ? state.cityReservedUntil
       : state.cityMode === 'reserved-expired' ? '2020-01-01T00:05:00.000Z' : null,
     created_at: '2026-08-12T00:00:30.000Z',
     claimed_at: state.cityMode === 'claimed' ? state.cityClaimedAt : null,
@@ -303,8 +316,8 @@ function cityOffer() {
     block_time: state.cityMode === 'claimed' ? state.cityBlockTime : null,
     from: state.cityMode === 'claimed' ? BUYER_WALLET : null,
     to: state.cityMode === 'claimed' ? SELLER : null,
-    pending_x402_tx_hash: ['payment-pending', 'payment-invalid'].includes(state.cityMode) ? TX : null,
-    pending_x402_at: ['payment-pending', 'payment-invalid'].includes(state.cityMode)
+    pending_x402_tx_hash: paymentEvidenceModes.includes(state.cityMode) ? TX : null,
+    pending_x402_at: paymentEvidenceModes.includes(state.cityMode)
       ? '2026-08-12T00:05:00.000Z' : null,
   }
   return base
@@ -589,13 +602,16 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.draftState = 'canceled'
     return [{ id: 70 }]
   }
-  if (query.includes('WITH invalid_payment_listing AS')) {
+  if (query.includes('WITH terminal_payment_listing AS')) {
     const changed = state.listingWorldState === 'active'
-    state.listingWorldState = 'stale'
-    state.listingWithdrawn = true
-    state.listingWithdrawnReason = 'city payment invalid'
-    state.draftState = 'canceled'
-    state.checkoutStatus = 'expired'
+    const terminalReason = params.find(value => typeof value === 'string' && value.startsWith('city '))
+    if (changed) {
+      state.listingWorldState = 'stale'
+      state.listingWithdrawn = true
+      state.listingWithdrawnReason = typeof terminalReason === 'string' ? terminalReason : 'city payment invalid'
+      state.draftState = 'canceled'
+      state.checkoutStatus = 'expired'
+    }
     return changed ? [{ id: 70 }] : []
   }
   if (query.includes('SELECT id, merchant_id') && query.includes('FROM listings WHERE id'))
@@ -1098,8 +1114,22 @@ test('world activation distinguishes unavailable x402 and Base verification from
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(invalid.status, 402)
-  assert.equal((await invalid.json() as { error: string }).error,
-    'X-PAYMENT header is not valid base64 JSON')
+  const invalidBody = await invalid.json() as {
+    error: string
+    payment_safety: Record<string, unknown>
+  }
+  assert.match(invalidBody.error,
+    /^X-PAYMENT header is not valid base64 JSON Pay exactly 1\.000000 USDC/iu)
+  assert.deepEqual(invalidBody.payment_safety, {
+    network: 'Base',
+    usdc_contract: USDC,
+    recipient: TREASURY,
+    amount_usdc: '1.000000',
+    amount_units: '1000000',
+    x_payment_max_bytes: 16_000,
+    verify_with: 'official_facts through the connector or this current 402 response; /api/official if your client can open URLs',
+    warning: 'Never copy a recipient from wallet history; zero-value lookalike transfers can poison wallet history.',
+  })
 
   reset()
   state.facilitatorUnavailable = true
@@ -2214,7 +2244,14 @@ test('payment_pending remains locked to its city buyer until the city reports cl
 })
 
 test('city market_buyer must match the bound market checkout throughout its bound phases', async () => {
-  for (const mode of ['reserved', 'payment-pending', 'payment-invalid', 'claimed'] as const) {
+  for (const mode of [
+    'reserved',
+    'payment-pending',
+    'payment-invalid',
+    'payment-expired',
+    'founder-review',
+    'claimed',
+  ] as const) {
     reset()
     state.merchantId = 10
     state.draftListingId = 70
@@ -2247,7 +2284,7 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
     city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
     do_not_pay_again: true,
     error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
-    retry: 'unlock or cancel the city offer at city_cancel_url; do not make another payment',
+    retry: 'city seller: authenticate to the city and POST {} to city_cancel_url to cancel the offer and unlock the thing; do not make another payment',
   })
   assert.equal(state.listingWorldState, 'stale')
   assert.equal(state.checkoutStatus, 'expired')
@@ -2274,8 +2311,79 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
     city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
     do_not_pay_again: true,
     error: 'the city rejected this checkout payment; no market sale was recorded; do not pay again',
-    retry: 'unlock or cancel the city offer at city_cancel_url; do not make another payment',
+    retry: 'city seller: authenticate to the city and POST {} to city_cancel_url to cancel the offer and unlock the thing; do not make another payment',
   })
+  assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
+})
+
+test('terminal city payment outcomes close the market lane without inventing a sale', async () => {
+  const outcomes = [
+    {
+      mode: 'payment-expired',
+      phase: 'payment_expired',
+      reason: 'city payment expired',
+      error: "the city's automatic payment recovery window ended without an ownership transfer; no market sale was recorded; do not pay again",
+    },
+    {
+      mode: 'founder-review',
+      phase: 'founder_review',
+      reason: 'city founder review',
+      error: "the city retained this checkout's payment evidence for founder review; ownership did not transfer and no market sale was recorded; do not pay again",
+    },
+  ] as const
+
+  for (const outcome of outcomes) {
+    reset()
+    state.merchantId = 10
+    state.draftListingId = 70
+    state.cityMode = outcome.mode
+
+    const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), {
+      listing_id: 70,
+      status: 'stale',
+      city_phase: outcome.phase,
+      city_unlock_required: true,
+      city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
+      do_not_pay_again: true,
+      error: outcome.error,
+      retry: 'city seller: authenticate to the city and POST {} to city_cancel_url to cancel the offer and unlock the thing; do not make another payment',
+    })
+    assert.equal(state.listingWorldState, 'stale')
+    assert.equal(state.listingWithdrawnReason, outcome.reason)
+    assert.equal(state.checkoutStatus, 'expired')
+    assert.equal(state.draftState, 'canceled')
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
+
+    const repeated = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(repeated.status, 200)
+    assert.equal((await repeated.json() as { city_phase: string }).city_phase, outcome.phase)
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
+  }
+})
+
+test('terminal city payment sync preserves an earlier merchant withdrawal', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'payment-expired'
+  state.draftState = 'withdrawn'
+  state.listingWorldState = 'canceled'
+  state.listingWithdrawn = true
+  state.listingWithdrawnReason = 'withdrawn by merchant'
+  state.listingWithdrawnAt = '2026-08-12T00:06:00.000Z'
+  state.checkoutStatus = 'expired'
+
+  const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { status: string; city_phase: string }
+  assert.equal(body.status, 'canceled')
+  assert.equal(body.city_phase, 'payment_expired')
+  assert.equal(state.listingWorldState, 'canceled')
+  assert.equal(state.listingWithdrawnReason, 'withdrawn by merchant')
+  assert.equal(state.draftState, 'withdrawn')
+  assert.equal(state.checkoutStatus, 'expired')
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 })
 

@@ -9,6 +9,10 @@ const PAYEE = '0x2222222222222222222222222222222222222222'
 const PAYER = '0x1111111111111111111111111111111111111111'
 const TX_HASH = `0x${'ab'.repeat(32)}`
 const SIGNATURE = `0x${'99'.repeat(65)}`
+const OPERATION_STARTED_AT = new Date('2026-08-28T12:00:00.000Z')
+const AUTHORIZATION_VALID_BEFORE = String(
+  Math.floor(OPERATION_STARTED_AT.getTime() / 1_000) + 60 * 60,
+)
 const PAYMENT_HEADER = Buffer.from(JSON.stringify({
   x402Version: 1,
   scheme: 'exact',
@@ -20,7 +24,7 @@ const PAYMENT_HEADER = Buffer.from(JSON.stringify({
       to: PAYEE,
       value: '1000000',
       validAfter: '0',
-      validBefore: '1788000000',
+      validBefore: AUTHORIZATION_VALID_BEFORE,
       nonce: `0x${'44'.repeat(32)}`,
     },
   },
@@ -29,7 +33,7 @@ const REORDERED_PAYMENT_HEADER = Buffer.from(JSON.stringify({
   payload: {
     authorization: {
       nonce: `0x${'44'.repeat(32)}`,
-      validBefore: '1788000000',
+      validBefore: AUTHORIZATION_VALID_BEFORE,
       validAfter: '0',
       value: '1000000',
       to: PAYEE,
@@ -202,7 +206,7 @@ function input(overrides: Partial<Parameters<typeof beginX402Settlement>[0]> = {
     operationKey: 'listing-fee:merchant:7:request:' + 'ef'.repeat(32),
     operationKind: 'listing_fee' as const,
     startBlock: 123n,
-    operationStartedAt: new Date('2026-08-28T12:00:00.000Z'),
+    operationStartedAt: OPERATION_STARTED_AT,
     paymentHeader: PAYMENT_HEADER,
     requirements: {
       network: 'base' as const,
@@ -249,7 +253,7 @@ test('begin stores one immutable operation/proof fingerprint before settlement',
   assert.equal(result.attempt.payer_wallet, PAYER)
   assert.equal(result.attempt.authorization_nonce, `0x${'44'.repeat(32)}`)
   assert.equal(result.attempt.authorization_valid_after, '0')
-  assert.equal(result.attempt.authorization_valid_before, '1788000000')
+  assert.equal(result.attempt.authorization_valid_before, AUTHORIZATION_VALID_BEFORE)
   assert.equal(result.attempt.start_block, '123')
   assert.equal(result.attempt.amount_units, '1000000')
   assert.equal(result.attempt.operation_started_at, '2026-08-28T12:00:00.000Z')
@@ -270,7 +274,7 @@ test('begin stores one immutable operation/proof fingerprint before settlement',
 test('begin rejects unsafe authorization windows and invalid Base anchors before SQL', async () => {
   for (const invalid of [
     { validAfter: '1', validBefore: '2' },
-    { validAfter: '-1', validBefore: '1788000000' },
+    { validAfter: '-1', validBefore: AUTHORIZATION_VALID_BEFORE },
     { validAfter: '0', validBefore: String(BigInt(Number.MAX_SAFE_INTEGER) + 1n) },
   ]) {
     reset()

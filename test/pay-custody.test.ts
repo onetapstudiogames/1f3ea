@@ -12,6 +12,10 @@ const PAYER = '0x1111111111111111111111111111111111111111'
 const TX_HASH = `0x${'ab'.repeat(32)}`
 const OPERATION_KEY = 'listing-fee:merchant:7:request:' + 'cd'.repeat(32)
 const AUTHORIZATION_NONCE = `0x${'44'.repeat(32)}`
+const OPERATION_STARTED_AT = new Date('2026-08-28T11:59:59.000Z')
+const AUTHORIZATION_VALID_BEFORE = String(
+  Math.floor(OPERATION_STARTED_AT.getTime() / 1_000) + 60 * 60,
+)
 const PAYMENT_HEADER = Buffer.from(JSON.stringify({
   x402Version: 1,
   scheme: 'exact',
@@ -23,7 +27,7 @@ const PAYMENT_HEADER = Buffer.from(JSON.stringify({
       to: PAYEE,
       value: '1000000',
       validAfter: '0',
-      validBefore: '1788000000',
+      validBefore: AUTHORIZATION_VALID_BEFORE,
       nonce: AUTHORIZATION_NONCE,
     },
   },
@@ -141,7 +145,7 @@ mock.module(new URL('../src/x402-payment-attempts.ts', import.meta.url).href, {
     beginX402Settlement: async (input: { operationStartedAt: Date; startBlock: bigint }) => {
       events.push('begin')
       if (beginError) throw beginError
-      assert.deepEqual(input.operationStartedAt, new Date('2026-08-28T11:59:59.000Z'))
+      assert.deepEqual(input.operationStartedAt, OPERATION_STARTED_AT)
       assert.equal(input.startBlock, 100n)
       storedAttempt ??= attempt('settling')
       return { disposition: beginDisposition, attempt: { ...storedAttempt } }
@@ -224,7 +228,7 @@ const reqs = requirements(PAYEE, 1, 'https://1f3ea.com/api/listing', 'listing fe
 const operation = {
   operationKey: OPERATION_KEY,
   operationKind: 'listing_fee' as const,
-  operationStartedAt: new Date('2026-08-28T11:59:59.000Z'),
+  operationStartedAt: OPERATION_STARTED_AT,
 }
 const json = (body: unknown) => () => new Response(JSON.stringify(body), {
   headers: { 'content-type': 'application/json' },

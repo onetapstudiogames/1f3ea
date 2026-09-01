@@ -258,8 +258,12 @@ app.get('/api/official', c =>
       payment_window:
         'transfer block time must be at or after reserved_at and strictly before reserved_until; finality may be observed later',
       payment_recovery:
-        'payment_pending stays locked; pending or unavailable market finality retries the same sync without paying ' +
-        'again; needs_review records no market sale and repeating sync only rereads the preserved review state',
+        'payment_pending stays locked during at most two hours of automatic city recovery; payment_invalid means ' +
+        'canonical invalid evidence, payment_expired means the deadline ended without an ownership transfer, and ' +
+        'founder_review means the city retained payment evidence for human review; sync these terminal no-sale ' +
+        'outcomes, do not pay again, then the city seller authenticates there and POSTs {} to the cancel URL; ' +
+        'pending or unavailable market finality retries the same sync without paying again; needs_review records no ' +
+        'market sale and repeating sync only rereads the preserved review state',
       records: 'public only; neither site receives the other site bearer secret',
     },
     public_pagination: {

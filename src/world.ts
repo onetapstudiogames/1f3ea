@@ -40,6 +40,8 @@ export type CityOfferPhase =
   | 'reserved'
   | 'payment_pending'
   | 'payment_invalid'
+  | 'payment_expired'
+  | 'founder_review'
   | 'claimed'
   | 'canceled'
 
@@ -188,9 +190,23 @@ function validOfferCore(value: unknown): value is CityOffer {
   const validDate = (candidate: unknown) =>
     typeof candidate === 'string' && !Number.isNaN(new Date(candidate).getTime())
   const validNullableDate = (candidate: unknown) => candidate === null || validDate(candidate)
-  const pendingPhase = ['payment_pending', 'payment_invalid'].includes(String(offer.phase))
+  const paymentEvidencePhase = [
+    'payment_pending',
+    'payment_invalid',
+    'payment_expired',
+    'founder_review',
+  ].includes(String(offer.phase))
   return Boolean(positiveId(offer.id)) && typeof offer.channel === 'string' &&
-    ['listed', 'reserved', 'payment_pending', 'payment_invalid', 'claimed', 'canceled']
+    [
+      'listed',
+      'reserved',
+      'payment_pending',
+      'payment_invalid',
+      'payment_expired',
+      'founder_review',
+      'claimed',
+      'canceled',
+    ]
       .includes(String(offer.phase)) &&
     typeof offer.asset_type === 'string' &&
     Boolean(positiveId(offer.asset_id)) && typeof offer.asset_name === 'string' &&
@@ -208,7 +224,9 @@ function validOfferCore(value: unknown): value is CityOffer {
     validNullableDate(offer.reserved_until) && validNullableDate(offer.claimed_at) &&
     validNullableDate(offer.canceled_at) && validNullableDate(offer.pending_x402_at) &&
     ((offer.pending_x402_tx_hash == null) === (offer.pending_x402_at == null)) &&
-    (!pendingPhase || (pendingHash != null && offer.pending_x402_at != null))
+    (!paymentEvidencePhase || (
+      offer.locked === true && pendingHash != null && offer.pending_x402_at != null
+    ))
 }
 
 export function cityOfferMatchesDraft(
