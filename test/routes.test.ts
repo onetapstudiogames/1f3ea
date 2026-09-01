@@ -188,6 +188,8 @@ const state = {
   commentRows: null as Record<string, unknown>[] | null,
   merchantRows: null as Record<string, unknown>[] | null,
   feeRows: null as Record<string, unknown>[] | null,
+  apiPurchases: null as Record<string, unknown>[] | null,
+  meListings: null as Record<string, unknown>[] | null,
   meSales: null as Record<string, unknown>[] | null,
   mePurchases: null as Record<string, unknown>[] | null,
   meReplies: null as Record<string, unknown>[] | null,
@@ -384,6 +386,26 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     const collected = (state.feeRows ?? []).reduce((sum, row) => sum + Number(row.amount_usdc), 0)
     return rows.map(row => ({ ...row, __collected: collected }))
   }
+  if (query.includes('/* private:purchases */'))
+    return anchoredPage(state.apiPurchases ?? (state.priorPurchase ? [{
+      id: 91,
+      listing_id: 1,
+      title: 'private operator identifier in title',
+      amount_usdc: 1,
+      verified_via: 'claim',
+      delivery_kind: 'artifact',
+      artifact: 'previously purchased private artifact',
+      world_receipt: null,
+      city_receipt_url: null,
+      created_at: '2026-08-07T00:00:00Z',
+    }] : []), params.at(-2), params.at(-1), byCreatedDescending)
+  if (query.includes('/* private:me-listings */'))
+    return anchoredPage(state.meListings ?? [{
+      id: 10, title: 'A useful thing', aisle: 'tools', delivery_kind: 'artifact', world_state: null,
+      price_usdc: 1, votes: 2, sales: 1, pinned: false, removed: false, removed_at: null,
+      withdrawn: false, withdrawn_at: null, withdrawn_reason: null,
+      created_at: '2026-08-08T00:12:58.879Z', state: 'live',
+    }], params.at(-2), params.at(-1), byCreatedDescending)
   if (query.includes('/* private:me-sales */'))
     return anchoredPage(state.meSales ?? [], params.at(-2), params.at(-1), byCreatedDescending)
   if (query.includes('/* private:me-purchases */'))
@@ -828,17 +850,6 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     id: 10, title: 'A useful thing', aisle: 'tools', price_usdc: 1, votes: 2,
     sales: 1, pinned: false, removed: false, created_at: '2026-08-08T00:12:58.879Z',
   }]
-  if (query.includes('FROM purchases p JOIN listings l') && query.includes('l.artifact')) {
-    return state.priorPurchase ? [{
-      listing_id: 1,
-      title: 'private operator identifier in title',
-      amount_usdc: 1,
-      verified_via: 'claim',
-      created_at: '2026-08-07T00:00:00Z',
-      artifact: 'previously purchased private artifact',
-    }] : []
-  }
-  if (query.includes('FROM purchases p JOIN listings l')) return []
   if (query.includes('FROM comments c JOIN listings l')) return []
   if (query.includes('FROM comments c JOIN merchants m')) return []
   if (query.includes('INSERT INTO purchases')) {
@@ -1145,6 +1156,8 @@ function reset() {
   state.commentRows = null
   state.merchantRows = null
   state.feeRows = null
+  state.apiPurchases = null
+  state.meListings = null
   state.meSales = null
   state.mePurchases = null
   state.meReplies = null
@@ -3134,11 +3147,104 @@ test('treasury fees and bounded storefronts expose exact continuation metadata',
   }
 })
 
+test('purchase re-downloads are exact, stable, cursor-bounded, and capped at two full artifacts', async () => {
+  reset()
+  state.apiPurchases = [
+    { id: 4, listing_id: 4, title: 'Old', amount_usdc: 1, verified_via: 'free',
+      delivery_kind: 'artifact', artifact: 'old', created_at: '2026-08-01T12:00:00Z' },
+    { id: 99, listing_id: 99, title: 'New', amount_usdc: 1, verified_via: 'free',
+      delivery_kind: 'artifact', artifact: 'new', created_at: '2026-08-20T12:00:00Z' },
+    { id: 2, listing_id: 2, title: 'Middle', amount_usdc: 1, verified_via: 'free',
+      delivery_kind: 'artifact', artifact: 'middle', created_at: '2026-08-10T12:00:00Z' },
+  ]
+
+  const first = await app.request('/api/purchases', { headers: authed })
+  assert.equal(first.status, 200)
+  const page = await first.json() as {
+    purchases: Array<{ id: number }>; total: number; returned: number; page_size: number
+    has_more: boolean; next_before_id: number | null
+  }
+  assert.deepEqual(page.purchases.map(row => row.id), [99, 2])
+  assert.deepEqual({
+    total: page.total, returned: page.returned, pageSize: page.page_size,
+    hasMore: page.has_more, cursor: page.next_before_id,
+  }, { total: 3, returned: 2, pageSize: 2, hasMore: true, cursor: 2 })
+
+  const later = await app.request(`/api/purchases?before_id=${page.next_before_id}`, { headers: authed })
+  assert.equal(later.status, 200)
+  const laterPage = await later.json() as typeof page
+  assert.deepEqual(laterPage.purchases.map(row => row.id), [4])
+  assert.deepEqual({
+    total: laterPage.total, returned: laterPage.returned, pageSize: laterPage.page_size,
+    hasMore: laterPage.has_more, cursor: laterPage.next_before_id,
+  }, { total: 3, returned: 1, pageSize: 2, hasMore: false, cursor: null })
+
+  assert.equal((await app.request('/api/purchases?before_id=999', { headers: authed })).status, 400)
+  assert.equal((await app.request('/api/purchases?limit=3', { headers: authed })).status, 400)
+  assert.equal((await app.request('/api/purchases?limit=1&limit=2', { headers: authed })).status, 400)
+})
+
+test('the maximum purchase page stays below the host response limit for worst-case artifacts', async () => {
+  reset()
+  const artifact = '\u0000'.repeat(262_144)
+  state.apiPurchases = [1, 2].map(id => ({
+    id, listing_id: id, title: `Artifact ${id}`, amount_usdc: 1, verified_via: 'free',
+    delivery_kind: 'artifact', artifact, created_at: '2026-08-20T12:00:00Z',
+  }))
+  const response = await app.request('/api/purchases?limit=2', { headers: authed })
+  assert.equal(response.status, 200)
+  const bytes = Buffer.byteLength(await response.text(), 'utf8')
+  assert.ok(bytes > 3_000_000, `fixture did not exercise JSON escaping: ${bytes} bytes`)
+  assert.ok(bytes < 4_500_000, `purchase page exceeded the 4.5 MB response limit: ${bytes} bytes`)
+})
+
+test('standing listings are exact, stable, and independently cursor-bounded', async () => {
+  reset()
+  state.meListings = [
+    { id: 4, title: 'Old', aisle: 'tools', delivery_kind: 'artifact', state: 'live',
+      created_at: '2026-08-01T12:00:00Z' },
+    { id: 99, title: 'New', aisle: 'tools', delivery_kind: 'artifact', state: 'live',
+      created_at: '2026-08-20T12:00:00Z' },
+    { id: 2, title: 'Middle', aisle: 'tools', delivery_kind: 'artifact', state: 'live',
+      created_at: '2026-08-10T12:00:00Z' },
+  ]
+
+  const first = await app.request('/api/me?listings_limit=2', { headers: authed })
+  assert.equal(first.status, 200)
+  const page = await first.json() as {
+    listings: Array<{ id: number }>; listings_total: number; listings_returned: number
+    listings_page_size: number; listings_has_more: boolean; listings_next_before_id: number | null
+  }
+  assert.deepEqual(page.listings.map(row => row.id), [99, 2])
+  assert.deepEqual({
+    total: page.listings_total, returned: page.listings_returned, pageSize: page.listings_page_size,
+    hasMore: page.listings_has_more, cursor: page.listings_next_before_id,
+  }, { total: 3, returned: 2, pageSize: 2, hasMore: true, cursor: 2 })
+
+  const later = await app.request(
+    `/api/me?listings_limit=2&listings_before_id=${page.listings_next_before_id}`,
+    { headers: authed },
+  )
+  assert.equal(later.status, 200)
+  const laterPage = await later.json() as typeof page
+  assert.deepEqual(laterPage.listings.map(row => row.id), [4])
+  assert.equal(laterPage.listings_total, 3)
+  assert.equal(laterPage.listings_has_more, false)
+  assert.equal(laterPage.listings_next_before_id, null)
+
+  assert.equal((await app.request('/api/me?listings_before_id=999', { headers: authed })).status, 400)
+  assert.equal((await app.request('/api/me?listings_limit=51', { headers: authed })).status, 400)
+})
+
 test('authenticated standing pages are exact at each bound and continue every past-bound collection', async () => {
   for (const pastBound of [false, true]) {
     reset()
     const saleTotal = pastBound ? 51 : 50
     const replyTotal = pastBound ? 21 : 20
+    state.meListings = Array.from({ length: saleTotal }, (_, index) => ({
+      id: saleTotal - index, title: 'Owned item', aisle: 'tools', delivery_kind: 'artifact',
+      state: 'live', created_at: '2026-08-25T12:00:00.000Z',
+    }))
     state.meSales = Array.from({ length: saleTotal }, (_, index) => ({
       id: saleTotal - index, listing_id: 1, title: 'Sold item', buyer: 'agent-8', amount_usdc: 1,
       verified_via: 'free', created_at: '2026-08-25T12:00:00.000Z',
@@ -3155,6 +3261,10 @@ test('authenticated standing pages are exact at each bound and continue every pa
     assert.equal(response.status, 200)
     const body = await response.json() as Record<string, unknown>
     assert.deepEqual({
+      total: body.listings_total, returned: body.listings_returned, pageSize: body.listings_page_size,
+      hasMore: body.listings_has_more, cursor: body.listings_next_before_id,
+    }, { total: saleTotal, returned: 50, pageSize: 50, hasMore: pastBound, cursor: pastBound ? 2 : null })
+    assert.deepEqual({
       total: body.sales_total, returned: body.sales_returned, pageSize: body.sales_page_size,
       hasMore: body.sales_has_more, cursor: body.sales_next_before_id,
     }, { total: saleTotal, returned: 50, pageSize: 50, hasMore: pastBound, cursor: pastBound ? 2 : null })
@@ -3169,19 +3279,24 @@ test('authenticated standing pages are exact at each bound and continue every pa
 
     if (pastBound) {
       const later = await app.request(
-        '/api/me?sales_before_id=2&purchases_before_id=2&replies_before_id=2', { headers: authed },
+        '/api/me?listings_before_id=2&sales_before_id=2&purchases_before_id=2&replies_before_id=2',
+        { headers: authed },
       )
       assert.equal(later.status, 200)
       const laterBody = await later.json() as {
-        sales: Array<{ id: number }>; purchases: Array<{ id: number }>; replies: Array<{ id: number }>
-        sales_has_more: boolean; purchases_has_more: boolean; replies_has_more: boolean
+        listings: Array<{ id: number }>; sales: Array<{ id: number }>
+        purchases: Array<{ id: number }>; replies: Array<{ id: number }>
+        listings_has_more: boolean; sales_has_more: boolean
+        purchases_has_more: boolean; replies_has_more: boolean
       }
+      assert.deepEqual(laterBody.listings.map(row => row.id), [1])
       assert.deepEqual(laterBody.sales.map(row => row.id), [1])
       assert.deepEqual(laterBody.purchases.map(row => row.id), [1])
       assert.deepEqual(laterBody.replies.map(row => row.id), [1])
       assert.deepEqual([
-        laterBody.sales_has_more, laterBody.purchases_has_more, laterBody.replies_has_more,
-      ], [false, false, false])
+        laterBody.listings_has_more, laterBody.sales_has_more,
+        laterBody.purchases_has_more, laterBody.replies_has_more,
+      ], [false, false, false, false])
     }
   }
 })

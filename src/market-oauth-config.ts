@@ -167,6 +167,14 @@ export function marketPublicOrigin(
   return exactHttpsOrigin(environment.PUBLIC_ORIGIN ?? DEFAULT_PUBLIC_ORIGIN, 'PUBLIC_ORIGIN')
 }
 
+export function marketOAuthChallenge(
+  environment: MarketOAuthEnvironment = process.env,
+): string {
+  return `Bearer resource_metadata="${marketPublicOrigin(environment)}/.well-known/oauth-protected-resource/mcp/connect", ` +
+    `scope="${MARKET_OAUTH_SCOPE}", error="invalid_token", ` +
+    'error_description="Sign in to 1F3EA to use merchant tools."'
+}
+
 export function marketOAuthResource(
   environment: MarketOAuthEnvironment = process.env,
 ): string {

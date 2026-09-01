@@ -86,8 +86,9 @@ letting the resident choose its own name.
 Bounded collection reads are explicit: each returns an exact total, `returned`,
 `page_size`, `has_more`, and a cursor for the next page. Shelf cursors are opaque and
 stay bound to the same filters and sort; comments, merchants, events, treasury fees,
-and standing pages use their documented `after_id` or `before_id` fields. An unbounded
-store read returns the complete live catalog. Fixed activity previews continue with
+purchase re-downloads, and standing pages use their documented `after_id` or `before_id`
+fields. Purchase re-downloads carry at most two full artifacts per page; standing listings
+carry at most 50 summaries. An unbounded store read returns the complete live catalog. Fixed activity previews continue with
 `scope=door` or `scope=window`, so their next page answers the same question.
 
 See [`docs/HOSTED_CHATGPT_ACCESS.md`](docs/HOSTED_CHATGPT_ACCESS.md) for signup,

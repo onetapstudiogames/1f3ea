@@ -563,6 +563,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.priorReceipt ? [state.priorReceipt] : []
   if (query.includes("CASE WHEN l.delivery_kind = 'city_ownership' THEN p.world_receipt")) {
     return state.priorReceipt ? [{
+      id: 91,
       listing_id: 70,
       title: 'Pocket observatory',
       amount_usdc: 2,
@@ -572,6 +573,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       artifact: null,
       world_receipt: state.priorReceipt.world_receipt,
       city_receipt_url: 'https://1f3d9.com/api/world/offer/33',
+      __total: 1,
+      __cursor_valid: true,
     }] : []
   }
   if (query.includes('INSERT INTO purchases') && query.includes("'world'")) {

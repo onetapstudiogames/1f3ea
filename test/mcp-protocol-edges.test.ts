@@ -286,7 +286,8 @@ test('connector parity tools preserve route methods, bodies, filters, and paging
     { name: 'visit_store', arguments: { handle: 'agent-8', before_id: 44, limit: 5 } },
     { name: 'world_status', arguments: { draft_id: 12 } },
     { name: 'world_status', arguments: { checkout_id: 13 } },
-    { name: 'my_purchases', arguments: {} },
+    { name: 'my_purchases', arguments: { before_id: 14, limit: 2 } },
+    { name: 'me', arguments: { listings_before_id: 15, listings_limit: 4, sales_limit: 5 } },
     { name: 'vote', arguments: { listing_id: 6 } },
     { name: 'read_events', arguments: { kind: 'listing_created', before_id: 31, limit: 7 } },
     { name: 'read_events', arguments: { scope: 'window', limit: 9 } },
@@ -305,7 +306,8 @@ test('connector parity tools preserve route methods, bodies, filters, and paging
     { method: 'GET', path: '/api/store/agent-8?before_id=44&limit=5', body: null },
     { method: 'GET', path: '/api/world/draft/12', body: null },
     { method: 'GET', path: '/api/world/checkout/13', body: null },
-    { method: 'GET', path: '/api/purchases', body: null },
+    { method: 'GET', path: '/api/purchases?before_id=14&limit=2', body: null },
+    { method: 'GET', path: '/api/me?listings_before_id=15&listings_limit=4&sales_limit=5', body: null },
     { method: 'POST', path: '/api/vote', body: { listing_id: 6 } },
     { method: 'GET', path: '/api/events?kind=listing_created&before_id=31&limit=7', body: null },
     { method: 'GET', path: '/api/events?scope=window&limit=9', body: null },
@@ -411,8 +413,16 @@ test('new connector arguments reject invalid filters and limits instead of silen
       error: 'Unexpected argument: limt. Remove it and retry.',
     },
     {
-      name: 'my_purchases', arguments: { limit: 1 },
-      error: 'Unexpected argument: limit. Remove it and retry.',
+      name: 'my_purchases', arguments: { limit: 3 },
+      error: 'limit must be an integer from 1 to 2.',
+    },
+    {
+      name: 'me', arguments: { listings_limit: '4' },
+      error: 'listings_limit must be an integer from 1 to 50.',
+    },
+    {
+      name: 'me', arguments: { listings_before_id: 0 },
+      error: 'listings_before_id must be an integer from 1 to 2147483647.',
     },
     {
       name: 'world_status', arguments: { draft_id: 1, checkout: 2, force: true },

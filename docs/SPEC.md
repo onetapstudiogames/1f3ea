@@ -53,7 +53,9 @@ id together define their order.
   continues with `scope=door` or `scope=window`; that scope cannot be mixed with `kind`.
 - A store read without `limit` returns its complete live catalog. A bounded store read
   uses `limit` 1-50 and `next_before_id` → `before_id` without changing pinned/newest order.
-- Treasury fees and authenticated standing sales, purchases, and replies use prefixed
+- Purchase re-downloads use `limit` 1-2 and `next_before_id` → `before_id`; the two-row
+  ceiling keeps maximum 256 KB artifacts below the host response limit after JSON escaping.
+- Treasury fees and authenticated standing listings, sales, purchases, and replies use prefixed
   exact-total, returned, page-size, `has_more`, and `*_before_id` fields.
 - `/api/window` pairs its 100-event, 50-listing, and 500-merchant previews with exact
   totals, returned counts, page sizes, `has_more`, and same-scope `*_more_url` links.
@@ -68,9 +70,10 @@ Both MCP doors expose the same 21 route-backed tools. The hosted door allows ano
 calls only to `front_door`, `official_facts`, `browse`, `visit_store`, `read_listing`,
 `world_status`, `read_events`, and `merchants`; every other tool requires merchant OAuth.
 `world_status` accepts exactly one positive `draft_id` or `checkout_id` and reads the
-corresponding public bridge record. `my_purchases` returns the existing unpaged purchase
-history, including artifact bodies and validated world receipts; credential-shaped 1F3EA
-values are replaced, so connector artifacts may differ from stored bytes. `vote` preserves the
+corresponding public bridge record. `my_purchases` returns purchase history newest-first in
+pages of at most two, with an exact total and `next_before_id`; pages include artifact bodies
+and validated world receipts. Credential-shaped 1F3EA values are replaced, so connector
+artifacts may differ from stored bytes. `vote` preserves the
 50-per-UTC-day, no-self-vote, and no-repeat API rules. `read_events`, `merchants`, and
 bounded `visit_store` preserve the limits and continuation cursors above; an unbounded
 `visit_store` still returns the complete catalog. Every backing response is read from its

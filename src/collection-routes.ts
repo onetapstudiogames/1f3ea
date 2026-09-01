@@ -4,9 +4,10 @@ import { NETWORK, usdcBalance } from './chain.ts'
 import { auth, err, HANDLE_RE, QUOTAS } from './core.ts'
 import { sql } from './db.ts'
 import {
-  AISLES, isAisle, parseAisleCounts, PUBLIC_EVENT_SCOPES,
+  AISLES, isAisle, parseAisleCounts, parseStoreLine, PUBLIC_EVENT_SCOPES,
   type Aisle, type PublicEventScope,
 } from './market.ts'
+import { STANDING_LISTINGS_PAGE_LIMIT } from './collection-contract.ts'
 import { TREASURY } from './pay.ts'
 import {
   countedPage, decodeShelfCursor, encodeShelfCursor, invalidPageCursor, parseNumericPage,
@@ -58,6 +59,20 @@ function eventScope(params: URLSearchParams):
 }
 
 export function registerCollectionRoutes(app: Hono) {
+  app.post('/api/store', async c => {
+    const merchant = await auth(c)
+    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    const body = await c.req.json().catch(() => null)
+    const parsed = parseStoreLine(body?.line)
+    if (!parsed.ok) return err(c, 400, parsed.error)
+    await sql`UPDATE merchants SET storefront_line = ${parsed.line} WHERE id = ${merchant.id}`
+    return c.json({
+      handle: merchant.handle,
+      line: parsed.line,
+      store_url: `/api/store/${merchant.handle}`,
+    })
+  })
+
   app.get('/api/store/:handle', async c => {
     const handle = c.req.param('handle').toLowerCase()
     if (!HANDLE_RE.test(handle)) return err(c, 404, 'no such store')
@@ -349,6 +364,13 @@ export function registerCollectionRoutes(app: Hono) {
     const m = await auth(c)
     if (!m) return err(c, 401, 'bad or missing bearer secret')
     const params = new URL(c.req.url).searchParams
+    const listingsPage = parseNumericPage(params, {
+      cursorName: 'listings_before_id',
+      limitName: 'listings_limit',
+      defaultLimit: STANDING_LISTINGS_PAGE_LIMIT,
+      maxLimit: STANDING_LISTINGS_PAGE_LIMIT,
+    })
+    if (!listingsPage.ok) return err(c, 400, listingsPage.error)
     const salesPage = parseNumericPage(params, {
       cursorName: 'sales_before_id', limitName: 'sales_limit', defaultLimit: 50, maxLimit: 50,
     })
@@ -361,19 +383,42 @@ export function registerCollectionRoutes(app: Hono) {
       cursorName: 'replies_before_id', limitName: 'replies_limit', defaultLimit: 20, maxLimit: 20,
     })
     if (!repliesPage.ok) return err(c, 400, repliesPage.error)
-    const listings = await sql`
-      SELECT id, title, aisle, delivery_kind, world_state,
-        price_usdc::float8 AS price_usdc, votes, sales, pinned,
-        removed, removed_at, withdrawn, withdrawn_at, withdrawn_reason, created_at,
-        CASE
-          WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
-          WHEN removed THEN 'removed'
-          WHEN withdrawn AND withdrawn_reason = 'withdrawn by merchant' THEN 'withdrawn'
-          WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale') THEN world_state
-          WHEN withdrawn THEN 'withdrawn'
-          ELSE 'live'
-        END AS state
-      FROM listings WHERE merchant_id = ${m.id} ORDER BY created_at DESC`
+    const rawListings = (await sql`
+      /* private:me-listings */
+      WITH eligible AS (
+        SELECT id, title, aisle, delivery_kind, world_state,
+          price_usdc::float8 AS price_usdc, votes, sales, pinned,
+          removed, removed_at, withdrawn, withdrawn_at, withdrawn_reason, created_at,
+          CASE
+            WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
+            WHEN removed THEN 'removed'
+            WHEN withdrawn AND withdrawn_reason = 'withdrawn by merchant' THEN 'withdrawn'
+            WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale') THEN world_state
+            WHEN withdrawn THEN 'withdrawn'
+            ELSE 'live'
+          END AS state
+        FROM listings WHERE merchant_id = ${m.id}
+      ), totals AS (
+        SELECT count(*)::int AS __total,
+          (${listingsPage.cursor}::int IS NULL OR EXISTS (
+            SELECT 1 FROM eligible WHERE id = ${listingsPage.cursor}
+          )) AS __cursor_valid
+        FROM eligible
+      ), page AS (
+        SELECT candidate.* FROM eligible candidate
+        WHERE (${listingsPage.cursor}::int IS NULL OR EXISTS (
+          SELECT 1 FROM eligible anchor WHERE anchor.id = ${listingsPage.cursor} AND (
+            candidate.created_at < anchor.created_at OR
+            (candidate.created_at = anchor.created_at AND candidate.id < anchor.id)
+          )
+        ))
+        ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT ${listingsPage.fetchLimit}
+      )
+      SELECT page.*, totals.__total, totals.__cursor_valid FROM totals LEFT JOIN page ON TRUE
+      ORDER BY page.created_at DESC, page.id DESC`) as CountedRow[]
+    if (invalidPageCursor(rawListings))
+      return err(c, 400, 'listings_before_id is not one of your listings')
+    const listings = countedPage(rawListings, listingsPage.limit)
     const rawSales = (await sql`
       /* private:me-sales */
       WITH eligible AS (
@@ -465,7 +510,12 @@ export function registerCollectionRoutes(app: Hono) {
         comments: QUOTAS.comments - m.comments_today,
         votes: QUOTAS.votes - m.votes_today,
       },
-      listings,
+      listings: listings.items,
+      listings_total: listings.total,
+      listings_returned: listings.items.length,
+      listings_page_size: listingsPage.limit,
+      listings_has_more: listings.hasMore,
+      listings_next_before_id: listings.nextCursor,
       sales: sales.items,
       sales_total: sales.total,
       sales_returned: sales.items.length,

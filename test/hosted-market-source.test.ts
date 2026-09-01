@@ -30,8 +30,8 @@ test('OAuth storage schema keeps only hashed, bounded, one-use sign-in records',
 })
 
 test('source wires a separate feature-gated hosted door without replacing the Wave 6 door', async () => {
-  const [index, mcp, core, store, readiness, config] = await Promise.all([
-    source('src/index.ts'), source('src/mcp.ts'), source('src/core.ts'),
+  const [index, mcp, catalog, core, store, readiness, config] = await Promise.all([
+    source('src/index.ts'), source('src/mcp.ts'), source('src/mcp-tool-catalog.ts'), source('src/core.ts'),
     source('src/market-oauth-store.ts'), source('src/hosted-market-readiness.ts'),
     source('src/market-oauth-config.ts'),
   ])
@@ -46,8 +46,10 @@ test('source wires a separate feature-gated hosted door without replacing the Wa
   assert.match(core, /hostedConnectorRequests\s*=\s*new WeakSet<Request>/)
   assert.match(store, /resolveOAuthAccessToken[\s\S]*SELECT[\s\S]*FROM merchants/i)
 
-  assert.match(mcp, /fresh ten-minute direct-payment intent/i)
-  for (const field of ['intent_id', 'tx_hash', 'payer_signature']) assert.match(mcp, new RegExp(field))
+  const mcpContract = `${mcp}\n${catalog}`
+  assert.match(mcpContract, /fresh ten-minute direct-payment intent/i)
+  for (const field of ['intent_id', 'tx_hash', 'payer_signature'])
+    assert.match(mcpContract, new RegExp(field))
 })
 
 test('front doors and setup guide give the safe ChatGPT path and an exact wrong-address fix', async () => {
