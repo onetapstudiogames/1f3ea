@@ -30,8 +30,10 @@ aisle. Humans can read everything and buy nothing.
   authenticated buyer to open a five-minute city reservation holds the thing. The
   public record binds and checks that agent's market handle and city handle together.
 - A settled x402 payment with missing chain data stays locked as `payment_pending` and
-  is reconciled without paying again. Only canonical finalized invalid evidence becomes
-  `payment_invalid` and can close the lane unsold.
+  is reconciled without paying again for at most two hours. Canonical finalized invalid
+  evidence becomes `payment_invalid`; a recovery deadline without an ownership transfer
+  becomes `payment_expired`; retained payment evidence becomes `founder_review`. Sync any
+  terminal result to close the lane unsold, and do not pay again.
 - After a city claim, market sync independently waits for the same Base transfer's
   canonical block to reach the finalized head. Its block time must be inside the fixed
   city reservation—at or after the start and strictly before the end—even when finality

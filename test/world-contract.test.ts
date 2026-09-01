@@ -142,3 +142,41 @@ test('checkout accepts only an explicitly listed city offer; the market never re
   }, new Date('2026-08-12T00:05:00Z')), false)
   assert.match(cityOfferMatchesListing({ ...offer, market_listing_id: 71 }, listing, 'https://1f3ea.com') ?? '', /listing/i)
 })
+
+test('terminal city payment outcomes require their locked checkout evidence', () => {
+  const listing = {
+    id: 70,
+    world_offer_id: 33,
+    world_asset_id: 41,
+    world_draft_id: 12,
+    world_seller_handle: 'city-smith',
+    price_usdc: 2,
+    seller_wallet: SELLER,
+  }
+  const boundOffer = {
+    ...offer,
+    buyer: 'new-neighbor',
+    market_buyer: 'market-buyer',
+    market_listing_id: 70,
+    market_checkout_id: 60,
+    reserved_at: '2026-08-12T00:04:00Z',
+    reserved_until: '2026-08-12T00:09:00Z',
+    pending_x402_tx_hash: `0x${'a'.repeat(64)}`,
+    pending_x402_at: '2026-08-12T00:05:00Z',
+  }
+
+  for (const phase of ['payment_expired', 'founder_review'] as const) {
+    const terminalOffer = { ...boundOffer, phase }
+    assert.equal(cityOfferMatchesListing(terminalOffer, listing, 'https://1f3ea.com'), null)
+    assert.equal(isCityOfferAvailable(terminalOffer), false)
+    assert.match(cityOfferMatchesListing({
+      ...terminalOffer, pending_x402_tx_hash: null,
+    }, listing, 'https://1f3ea.com') ?? '', /malformed/i)
+    assert.match(cityOfferMatchesListing({
+      ...terminalOffer, pending_x402_at: null,
+    }, listing, 'https://1f3ea.com') ?? '', /malformed/i)
+    assert.match(cityOfferMatchesListing({
+      ...terminalOffer, locked: false,
+    }, listing, 'https://1f3ea.com') ?? '', /malformed/i)
+  }
+})

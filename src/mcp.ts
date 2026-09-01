@@ -401,8 +401,11 @@ const TOOLS: ToolDef[] = [
       'finality may be observed later. Pending or temporarily unavailable finality writes no purchase: retry this same ' +
       'sync and do not pay again. Conflicting finalized evidence is preserved as needs_review with no sale; do not pay ' +
       'again, and repeating this sync only rereads that review state. ' +
-      'payment_pending remains locked and writes no purchase; payment_invalid closes the lane without a sale ' +
-      'before city unlock. This never takes payment.',
+      'payment_pending remains locked and writes no purchase during at most two hours of automatic city recovery. ' +
+      'Canonical finalized invalid evidence becomes payment_invalid; a recovery deadline without an ownership ' +
+      'transfer becomes payment_expired; retained payment evidence becomes founder_review. All three close the lane ' +
+      'without a sale. Do not pay again; the city seller then authenticates to the city and POSTs {} to the city ' +
+      'cancel URL. This never takes payment.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
