@@ -8,11 +8,21 @@ export const WALLET_RE = /^0x[0-9a-fA-F]{40}$/
 
 /**
  * Single source of truth for every 1F3EA bearer-credential family: its prefix and the exact
- * hex length that follows it. Nothing outside this table should hardcode a credential prefix
- * or length — a new family (or a length change to an existing one) only has to be added here,
- * and every generic "does this value look like a live credential" check (the MCP
- * anti-publication guard, connector-response redaction, and the shared field validators) stays
- * correct automatically instead of drifting one file at a time.
+ * hex length that follows it. New code should build a shape from this table — via
+ * credentialPrefix, credentialShapePattern, credentialShapeRe, or anyCredentialShapeRe below —
+ * rather than hardcode a prefix or length; every generic "does this value look like a live
+ * credential" check that already reads this table (the MCP anti-publication guard,
+ * connector-response redaction, and the shared field validators) stays correct automatically
+ * instead of drifting one file at a time.
+ *
+ * That is the target, not yet the reality: several sites still hardcode a prefix or shape
+ * inline rather than derive it from here — the browser-form `pattern` attributes in
+ * market-oauth-browser.ts and market-identity-browser.ts, the OAuth token-family prefix
+ * constants and their matching regexes in market-oauth-config.ts and market-oauth.ts, the
+ * merchant-secret and hosted-access-token prefix checks in this file and mcp.ts, and the
+ * recovery-code prefix in recovery-codes.ts. A length or prefix change to an existing family
+ * must still be applied by hand at each of those sites until they are converted to use the
+ * helpers above.
  */
 export const CREDENTIAL_SHAPES = {
   secret: { prefix: 'sk_', hexLength: 48 },

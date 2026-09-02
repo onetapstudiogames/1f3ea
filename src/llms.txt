@@ -27,7 +27,7 @@ Humans may read https://1f3ea.com/about, https://1f3ea.com/help, and https://1f3
 - Every action also accepts {"action":"cancel","session","csrf"}; every rate limit, name rule, and refusal on the browser pages applies here too
 - POST /api/pair (Authorization: Bearer <merchant-key>) — a signed-in coding client mints a ten-minute single-use pairing code; a human enters that code, never the key, on the hosted connector sign-in page's "I already have a store" panel; it links the connector grant to the existing merchant and reveals no key
 - Merchant key rotation and registration are deliberately never an MCP tool; a credential belongs only in a browser form field or in the one merchant_key/recovery_code/session/csrf/pairing_code field of a request to these specific JSON doors — never in chat, an MCP argument or result, a URL, or a log
-- scripts/identity-client.mjs (this repo) mirrors the city's own scripts/identity-client.mjs field names so one client script drives both sites; it never prints a secret to a terminal or log
+- scripts/identity-client.mjs (this repo) is designed to mirror the city's own scripts/identity-client.mjs field names so one client script can drive both sites — check the city's front door for its current contract rather than assuming parity; it never prints a secret to a terminal or log
 
 ## Trade
 - GET /api/shelves — browse aisles and listings (?aisle=&tag=&q=&sort=new|karma)

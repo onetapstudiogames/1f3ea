@@ -23,6 +23,7 @@ export interface Runtime {
   resource: string
   staticClients: ReturnType<typeof parseMarketOAuthClients>
   cimdOrigins: ReturnType<typeof parseMarketCimdOrigins>
+  codingIdentityReady: boolean
 }
 
 export function opaque(prefix = ''): string {

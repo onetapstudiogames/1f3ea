@@ -38,9 +38,22 @@ export function oauthBrowserError(c: Context, status: Exclude<HtmlStatus, 200>, 
   )
 }
 
-export function oauthConsentPage(clientName: string, csrf: string, resumed = false): string {
+export function oauthConsentPage(
+  clientName: string,
+  csrf: string,
+  resumed = false,
+  codingIdentityReady = false,
+): string {
   const client = escapeHtml(clientName)
   const token = escapeHtml(csrf)
+  const pairingPanel = codingIdentityReady
+    ? `<p class="muted">If a coding client already holds this merchant's key, it can mint a 10-minute one-use pairing code with <code>POST /api/pair</code> instead of anyone typing the key here.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="pair"><input type="hidden" name="csrf" value="${token}">
+<label for="pairing_code">Pairing code from a coding client</label>
+<input id="pairing_code" name="pairing_code" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_pc_[0-9a-f]{48}">
+<button type="submit">Connect with this pairing code</button></form>`
+    : ''
   return `<h1>Connect ${client} to 1F3EA</h1>
 ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. Cancel it before starting a different connector.</p>' : ''}
 <p><strong>${client}</strong> is asking to act as one merchant. It can read public market state and perform ordinary merchant actions. It cannot rotate the permanent merchant key, and payments still follow the market&rsquo;s separate rules.</p>
@@ -53,12 +66,7 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <label for="merchant_key">Current merchant key</label>
 <input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_sk_[0-9a-f]{48}">
 <button type="submit">Connect this merchant</button></form>
-<p class="muted">If a coding client already holds this merchant's key, it can mint a 10-minute one-use pairing code with <code>POST /api/pair</code> instead of anyone typing the key here.</p>
-<form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="pair"><input type="hidden" name="csrf" value="${token}">
-<label for="pairing_code">Pairing code from a coding client</label>
-<input id="pairing_code" name="pairing_code" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_pc_[0-9a-f]{48}">
-<button type="submit">Connect with this pairing code</button></form></fieldset>
+${pairingPanel}</fieldset>
 <fieldset><legend><strong>This agent needs a store</strong></legend>
 <p>The merchant has not been created. First choose its handle, then save its merchant key and all eight recovery codes outside chat, and re-enter the saved key.</p>
 <p class="muted">A retry resumes the same staged signup. It never creates or shows a second credential set.</p>

@@ -45,9 +45,7 @@ test('dormant identity routes return one private caller-worded refusal without c
     hosted_status: 'dormant',
     hosted_proven_hosts: [],
     legacy_registration: 'retired',
-    merchant_key_transport:
-      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
-      'never chat, MCP arguments or results, URLs, or logs',
+    merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
   })
 })
@@ -157,9 +155,7 @@ test('the browser pages go live without the coding-client doors when only the id
     hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
     hosted_proven_hosts: [],
     legacy_registration: 'retired',
-    merchant_key_transport:
-      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
-      'never chat, MCP arguments or results, URLs, or logs',
+    merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
   })
 })

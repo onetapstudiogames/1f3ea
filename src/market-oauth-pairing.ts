@@ -38,10 +38,14 @@ export type PairingCodeResolver = typeof resolveAndConsumePairingCode
 export type PairingCodeReserver = typeof reservePairingCode
 export type PairingReservationTaker = typeof takeReservedPairingCode
 
-function pairingCodeRejected(pending: AuthorizationRequestRecord, csrf: string): string {
+function pairingCodeRejected(
+  pending: AuthorizationRequestRecord,
+  csrf: string,
+  codingIdentityReady: boolean,
+): string {
   return '<p class="warning">That pairing code could not be verified, was already used, or expired. ' +
     'Mint a fresh one from the coding client and try again.</p>' +
-    consentPage(pending.client_display_name, csrf, true)
+    consentPage(pending.client_display_name, csrf, true, codingIdentityReady)
 }
 
 /**
@@ -66,7 +70,7 @@ export async function handlePairAction(
   }
   const pairingCode = oneFormValue(values, 'pairing_code', 80)
   if (!pairingCode || !PAIRING_CODE_RE.test(pairingCode)) {
-    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf))
+    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf, oauth.codingIdentityReady))
   }
   const allowed = await admitted(
     oauth,
@@ -77,7 +81,7 @@ export async function handlePairAction(
   if (!allowed) return browserError(c, 429, 'Too many pairing attempts. Try again after the next UTC hour.')
   const reserved = await reservePairing({ sessionHash, csrfHash, codeHash: sha256(pairingCode) })
   if (!reserved) {
-    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf))
+    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf, oauth.codingIdentityReady))
   }
   return html(
     c,
@@ -111,11 +115,11 @@ export async function handleConfirmPairAction(
   }
   const reservation = await takeReservation({ sessionHash, csrfHash })
   if (!reservation) {
-    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf))
+    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf, oauth.codingIdentityReady))
   }
   const resolved = await resolvePairingCode({ codeHash: reservation.codeHash })
   if (!resolved) {
-    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf))
+    return html(c, 403, 'Pairing code not verified', pairingCodeRejected(pending, csrf, oauth.codingIdentityReady))
   }
   const code = opaque(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX)
   const approved = await oauth.store.approveExistingMerchantAndIssueAuthorizationCode({
@@ -134,7 +138,7 @@ export async function handleConfirmPairAction(
       403,
       'Pairing code not verified',
       '<p class="warning">That pairing code no longer matches a current merchant key. Mint a fresh pairing code and try again.</p>' +
-        consentPage(pending.client_display_name, csrf, true),
+        consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
     )
   }
   return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))

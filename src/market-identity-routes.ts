@@ -118,9 +118,10 @@ export function marketIdentityPublicFacts(
     hosted_status: hostedReady ? HOSTED_PROOF_CONTRACT : 'dormant',
     hosted_proven_hosts: HOSTED_PROVEN_HOSTS,
     legacy_registration: 'retired',
-    merchant_key_transport:
-      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
-      'never chat, MCP arguments or results, URLs, or logs',
+    merchant_key_transport: codingReady
+      ? 'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
+        'never chat, MCP arguments or results, URLs, or logs'
+      : 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: codingReady && origin ? {
       register: `${origin}/api/register`,
       rotate: `${origin}/api/rotate`,

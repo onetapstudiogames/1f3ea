@@ -10,6 +10,7 @@ import {
   ORIGIN,
   authorizationUrl,
   cookiePair,
+  environment,
   fixture,
   hiddenCsrf,
   sha256,
@@ -18,6 +19,13 @@ import {
 const MERCHANT_KEY = `1f3ea_sk_${'ab'.repeat(24)}`
 const PAIRING_CODE = `1f3ea_pc_${'11'.repeat(24)}`
 const RESERVED_HANDLE = 'tinylantern'
+
+// Reserving and confirming a pairing code (below) are server-side actions, reachable by POSTing
+// action=pair directly and never gated on MARKET_CODING_IDENTITY_ENABLED — only the consent
+// page's own pairing-code panel is, since that panel invites the human to type a code no coding
+// client could have minted while /api/pair itself stays dormant. See
+// hosted-market-readiness.ts's marketCodingIdentityReady and its docstring.
+const CODING_IDENTITY_READY = { ...environment, MARKET_CODING_IDENTITY_ENABLED: 'true' } as const
 
 async function startSignin(app: Awaited<ReturnType<typeof fixture>>['app']) {
   const start = await app.request(authorizationUrl())
@@ -55,12 +63,24 @@ function confirmPairRequest(
   return formRequest(app, cookie, { action: 'confirm_pair', csrf })
 }
 
-test('the consent page offers a pairing-code panel that never asks for the merchant key', async () => {
-  const { app } = fixture()
+test('the consent page offers a pairing-code panel that never asks for the merchant key, once coding-client doors are enabled', async () => {
+  const { app } = fixture({ environment: CODING_IDENTITY_READY })
   const { html } = await startSignin(app)
   assert.match(html, /name="action" value="pair"/u)
   assert.match(html, /name="pairing_code"/u)
   assert.doesNotMatch(html, /1f3ea_sk_[0-9a-f]{48}/u)
+})
+
+// The mirror of the test above: MARKET_CODING_IDENTITY_ENABLED is unset in the default harness
+// environment (matching production before its coding-client-identity migration runs, per
+// hosted-market-readiness.ts), so no coding client could ever have minted a pairing code —
+// offering the panel here would just invite a human to type a code that can never be valid.
+test('the consent page omits the pairing-code panel while coding-client doors are dormant', async () => {
+  const { app } = fixture()
+  const { html } = await startSignin(app)
+  assert.doesNotMatch(html, /name="action" value="pair"/u)
+  assert.doesNotMatch(html, /name="pairing_code"/u)
+  assert.match(html, /name="action" value="link"/u)
 })
 
 test('reserving a valid pairing code shows which merchant it names, without granting anything yet', async () => {

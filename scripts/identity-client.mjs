@@ -10,8 +10,14 @@
 //   for (const code of staged.recovery_codes) await mySecretStore.saveRecoveryCode(code)
 //   await registerConfirm({ session: staged.session, csrf: staged.csrf, merchantKey: staged.merchant_key })
 //
-// CLI use writes any secret-bearing field straight to a file (mode 0600) and NEVER prints the
-// value itself to stdout, stderr, or a log — only a redacted placeholder and the file it went to.
+// CLI use writes any secret-bearing field straight to a file and NEVER prints the value itself
+// to stdout, stderr, or a log — only a redacted placeholder and the file it went to. On a POSIX
+// filesystem (Linux, macOS) that file is created owner-read/write-only, mode 0600; Windows has
+// no equivalent permission bit, so on Windows this is ordinary file access control only, not an
+// 0600-equivalent restriction — use an encrypted volume or the OS credential store there if that
+// matters. After writing, this script reads the file back and compares it byte-for-byte against
+// what it meant to write before printing the summary, so a silently truncated or corrupted write
+// is caught here instead of surfacing later as an unusable saved credential.
 // Never put a merchant key, recovery code, or pairing code in a shell argument, environment
 // variable dump, or chat transcript; this script only ever puts one in a file you name.
 //
@@ -25,7 +31,7 @@
 // flags at the JSON file this script's own --out wrote, which holds several fields at once and
 // will be refused.
 
-import { readFile, writeFile, chmod } from 'node:fs/promises'
+import { readFile, writeFile, chmod, open } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 
 const DEFAULT_ORIGIN = 'https://1f3ea.com'
@@ -155,12 +161,47 @@ function redactedForDisplay(body) {
   return copy
 }
 
+// Writes the secret-bearing fields to --out, then reads the same file back and compares it
+// byte-for-byte against what was meant to be written. Mode 0600 (owner read/write only) is a
+// POSIX permission bit — Linux and macOS enforce it; Windows has no equivalent bit, so the
+// `mode` option and the chmod below are a no-op there, not a security boundary. The read-back
+// comparison, unlike the permission bit, works the same on every platform, and it is what
+// actually verifies the write: a full disk, a racing process, or a filesystem that silently
+// truncates would otherwise look identical to success right up until the file is opened again
+// for the value it was supposed to hold.
 async function writeSecretsToFile(path, body) {
   const secrets = {}
   for (const field of SECRET_FIELDS) if (field in body) secrets[field] = body[field]
-  await writeFile(path, JSON.stringify(secrets, null, 2) + '\n', { mode: 0o600 })
+  const contents = JSON.stringify(secrets, null, 2) + '\n'
+  await writeFile(path, contents, { mode: 0o600 })
   try { await chmod(path, 0o600) } catch { /* best-effort on platforms without POSIX modes */ }
+  const readBack = await readFile(path, 'utf8')
+  if (readBack !== contents) {
+    throw new Error(
+      `--out ${path} was written but reading it back did not match what was written. Do not trust ` +
+      'this file: the credential it should hold may be truncated or corrupted.',
+    )
+  }
 }
+
+// Opens --out in append mode and immediately closes it, without writing or truncating anything.
+// This is called BEFORE the network call for any command whose response can reveal a secret, so
+// a bad path (missing directory, no permission, read-only filesystem) is caught while there is
+// still nothing to lose — instead of after the door has already staged or activated a credential
+// the API will never show again. Append mode is deliberate: unlike a truncating open, it leaves
+// any pre-existing file at --out untouched if this probe is the only thing that runs.
+async function probeOutPathWritable(path) {
+  const handle = await open(path, 'a')
+  await handle.close()
+}
+
+// Commands whose response can contain a merchant key, recovery codes, or a pairing code — see
+// the corresponding stage/begin/generate handlers in src/market-identity-json-routes.ts. Every
+// one of these either stages or immediately activates server-side state before returning the
+// secret, so --out must be present and writable before the request is even sent.
+const SECRET_REVEALING_COMMANDS = new Set([
+  'register-stage', 'rotate-begin', 'recovery-generate', 'recovery-begin', 'pair',
+])
 
 // argv-flag name -> the -file flag that must supply it instead. Every value here can also
 // authenticate a request or consume a one-use credential, so none of them may ever be a bare
@@ -302,19 +343,65 @@ async function main() {
     process.exitCode = 1
     return
   }
+
+  const revealsSecret = SECRET_REVEALING_COMMANDS.has(command)
+  if (revealsSecret) {
+    if (!options.out) {
+      console.error(
+        `${command} can return a merchant key, recovery codes, or a pairing code, shown exactly once. ` +
+          'Re-run with --out <file> so it is written to a file this script controls — it is never printed. ' +
+          'This is checked before the request is sent, so refusing here throws nothing away.',
+      )
+      process.exitCode = 1
+      return
+    }
+    try {
+      await probeOutPathWritable(options.out)
+    } catch (error) {
+      const code = error && typeof error === 'object' && typeof error.code === 'string' ? ` (${error.code})` : ''
+      console.error(
+        `--out ${options.out} could not be opened for writing${code}. Fix the path or its permissions before ` +
+          `running ${command} — its response can contain a credential the server is about to stage or make ` +
+          'active, and this is checked before the request is sent so a bad --out never throws one away.',
+      )
+      process.exitCode = 1
+      return
+    }
+  }
+
   try {
     const body = await run(options)
     const hasSecret = SECRET_FIELDS.some(field => field in body)
     if (hasSecret) {
       if (!options.out) {
+        // Unreachable for any command listed in SECRET_REVEALING_COMMANDS, which was checked
+        // above before the request was sent. Kept as a last-resort guard in case a command not
+        // in that set ever starts returning a secret field.
         console.error(
-          'This response contains a merchant key, recovery codes, or a pairing code, shown exactly once. ' +
-            'Re-run with --out <file> so it is written to a file this script controls; it is never printed.',
+          'This response contains a merchant key, recovery codes, or a pairing code, shown exactly once, and ' +
+            'no --out was given to write it to. It is already staged or active on the server and cannot be ' +
+            'shown again by this API — there is nothing this process can do to recover it now.',
         )
         process.exitCode = 1
         return
       }
-      await writeSecretsToFile(options.out, body)
+      try {
+        await writeSecretsToFile(options.out, body)
+      } catch {
+        // The pre-flight probe above passed, so this is a race (the path or its permissions
+        // changed between the probe and this write, or the disk filled) rather than a mistake
+        // the caller could have caught earlier. The door call already succeeded — a new
+        // credential set is staged or already active on the server — and this API will not show
+        // it again, so say that plainly instead of a generic write error.
+        console.error(
+          `${command} succeeded and a new credential set is now staged or active on the server, but writing ` +
+            `it to --out ${options.out} failed. This exact value cannot be shown again by this API: fix the ` +
+            `--out path or its permissions, then run ${command} again to produce a fresh usable value — the ` +
+            'one just generated is already unrecoverable.',
+        )
+        process.exitCode = 1
+        return
+      }
       console.log(JSON.stringify({ ...redactedForDisplay(body), secrets_written_to: options.out }, null, 2))
       return
     }

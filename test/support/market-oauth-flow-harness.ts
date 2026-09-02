@@ -402,11 +402,12 @@ function fixture(options: {
   reservePairingCode?: MarketOAuthRouteOptions['reservePairingCode']
   takeReservedPairingCode?: MarketOAuthRouteOptions['takeReservedPairingCode']
   resolvePairingCode?: MarketOAuthRouteOptions['resolvePairingCode']
+  environment?: MarketOAuthRouteOptions['environment']
 } = {}) {
   const store = new MemoryOAuthStore()
   const app = new Hono()
   mountMarketOAuthRoutes(app, {
-    environment,
+    environment: options.environment ?? environment,
     store: store.api,
     fetcher: (async input => { throw new Error(`unexpected network call: ${String(input)}`) }) as typeof fetch,
     reservePairingCode: options.reservePairingCode,

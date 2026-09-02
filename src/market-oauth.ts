@@ -34,7 +34,7 @@ import {
   verifyMarketPkceS256,
   type MarketOAuthEnvironment,
 } from './market-oauth-config.ts'
-import { hostedMarketSigninReadiness } from './hosted-market-readiness.ts'
+import { hostedMarketSigninReadiness, marketCodingIdentityReady } from './hosted-market-readiness.ts'
 import {
   MARKET_OAUTH_SESSION_COOKIE as SESSION_COOKIE,
   isInitialAuthorizationRequest,
@@ -111,6 +111,7 @@ function runtime(options: MarketOAuthRouteOptions): Runtime | null {
     resource: marketOAuthResource(environment),
     staticClients: parseMarketOAuthClients(environment.HOSTED_MARKET_OAUTH_CLIENTS),
     cimdOrigins: parseMarketCimdOrigins(environment.HOSTED_MARKET_CIMD_ORIGINS),
+    codingIdentityReady: marketCodingIdentityReady(environment),
   }
 }
 
@@ -254,6 +255,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         existing?.client_display_name ?? request.clientName,
         cookie.csrf,
         existing !== undefined,
+        oauth.codingIdentityReady,
       ),
     )
     const renderActiveRequest = (
@@ -478,7 +480,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             403,
             'Merchant key not verified',
             '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
-              consentPage(pending.client_display_name, csrf, true),
+              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
         const allowed = await admitted(
@@ -504,7 +506,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             403,
             'Merchant key not verified',
             '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
-              consentPage(pending.client_display_name, csrf, true),
+              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
         return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))
@@ -531,7 +533,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           400,
           'Merchant details not valid',
           '<p class="warning">The handle must be 3–32 lowercase letters, numbers, or hyphens; the model label is optional and limited to 120 ordinary characters.</p>' +
-            consentPage(pending.client_display_name, csrf, true),
+            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
         )
       }
       const registrationLimits: ReadonlyArray<readonly [string, number]> = [
@@ -567,7 +569,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           409,
           'Handle already taken',
           '<p class="warning">That merchant handle is already taken. Check whether it belongs to this agent before choosing another one.</p>' +
-            consentPage(pending.client_display_name, csrf, true),
+            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
         )
       }
       return html(

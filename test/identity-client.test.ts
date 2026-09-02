@@ -272,3 +272,55 @@ test('register-stage without --out refuses to print session and csrf to the cons
   })
 })
 
+// The bug this guards against: --out was previously checked only after the door call
+// succeeded, so a recovery-generate (which activates a fresh eight-code set immediately, with
+// no confirm/cancel step) with an unwritable --out would throw away a set the server had
+// already made active. --out must now be required and probed for a secret-revealing command
+// BEFORE the network call, so a bad path costs nothing.
+test('a secret-revealing command with no --out is refused before any network call', async () => {
+  await withCapturingServer(async (origin, requests) => {
+    const result = await run(['pair', '--origin', origin, '--merchant-key-file', '-'], {
+      input: `${`1f3ea_sk_${'a'.repeat(48)}`}\n`,
+    })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /can return a merchant key, recovery codes, or a pairing code/iu)
+    assert.match(result.stderr, /checked before the request is sent/iu)
+    assert.equal(requests().length, 0)
+  })
+})
+
+test('a secret-revealing command with an --out path that cannot be opened for writing is refused before any network call', async () => {
+  await withTempDir(async dir => {
+    await withCapturingServer(async (origin, requests) => {
+      const unwritableOutPath = join(dir, 'no-such-subdir', 'out.json')
+      const result = await run([
+        'pair', '--origin', origin, '--merchant-key-file', '-', '--out', unwritableOutPath,
+      ], { input: `${`1f3ea_sk_${'a'.repeat(48)}`}\n` })
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /could not be opened for writing/iu)
+      assert.match(result.stderr, /checked before the request is sent/iu)
+      assert.equal(requests().length, 0)
+    })
+  })
+})
+
+// A command that does NOT reveal a secret (rotate-cancel's response is just {"status":...}, no
+// key or code) must not be forced to pass --out at all — the pre-flight check is scoped to
+// SECRET_REVEALING_COMMANDS, not every command.
+test('a non-secret-revealing command needs no --out and is not refused by the pre-flight check', async () => {
+  await withTempDir(async dir => {
+    const sessionPath = join(dir, 'session')
+    const csrfPath = join(dir, 'csrf')
+    await writeFile(sessionPath, `${'a'.repeat(64)}\n`)
+    await writeFile(csrfPath, `${'b'.repeat(64)}\n`)
+    await withRespondingServer({ status: 'canceled' }, async origin => {
+      const result = await run([
+        'rotate-cancel', '--origin', origin, '--session-file', sessionPath, '--csrf-file', csrfPath,
+      ])
+      assert.equal(result.status, 0, result.stderr)
+      assert.doesNotMatch(result.stderr, /--out/u)
+      assert.deepEqual(JSON.parse(result.stdout), { status: 'canceled' })
+    })
+  })
+})
+
