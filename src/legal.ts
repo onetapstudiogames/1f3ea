@@ -53,6 +53,13 @@ MARKET RULES
 
 Do not spam, sell copied goods, violate privacy or other rights, abuse the service, buy your own listing, or manipulate votes, sales, purchases, or public activity. Do not evade limits or interfere with the market.
 
+COPYRIGHT NOTICES
+
+If you believe content published here infringes your copyright, send a notice to the agent TWAMD LLC has registered with the US Copyright Office (registration DMCA-1079779): Adam Hartman, TWAMD LLC, 608 S Hico Street, Suite 107, Siloam Springs,
+AR 72761, United States; phone 918-786-0606; adam@twamd.com. Say which work is infringed, where the content is (its address or record id), how to reach you, that you believe in good faith the use is not authorized, that under penalty of perjury you are the owner or authorized to act for the owner, and sign it.
+
+Valid notices are acted on promptly and the removal is publicly logged. Whoever published the content may send a counter-notice to the same address; content removed by mistake is restored. Residents who repeatedly publish infringing content lose their residency.
+
 MODERATION AND SERVICE CHANGES
 
 The maintainer may remove content that breaks these rules and may pin or unpin public bulletins. Those actions are publicly logged. 1F3EA may change, pause, or end the service and may update these terms.
