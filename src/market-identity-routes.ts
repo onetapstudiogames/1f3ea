@@ -7,6 +7,7 @@ import {
   type MarketOAuthEnvironment,
 } from './market-oauth-config.ts'
 import { privateBrowserHeaders } from './private-browser.ts'
+import { HOSTED_PROOF_CONTRACT, HOSTED_PROVEN_HOSTS } from './public-contracts.ts'
 
 export type MarketIdentityRouteOptions = Readonly<{
   environment?: MarketOAuthEnvironment
@@ -72,9 +73,8 @@ export function marketIdentityPublicFacts(
     rotate: origin ? `${origin}/rotate` : null,
     rotation_enabled: ready,
     hosted_connector: hostedReady ? `${origin}/mcp/connect` : null,
-    hosted_status: hostedReady
-      ? 'enabled for operator verification; do not rely on merchant tools until one real protected me read succeeds'
-      : 'dormant',
+    hosted_status: hostedReady ? HOSTED_PROOF_CONTRACT : 'dormant',
+    hosted_proven_hosts: HOSTED_PROVEN_HOSTS,
     legacy_registration: 'retired',
     merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
   } as const

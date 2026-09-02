@@ -24,6 +24,13 @@ const TX_CASE_UPPER = '0x' + 'AB'.repeat(32)
 const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
 const X402_VALID_BEFORE = String(Math.floor(Date.now() / 1000) + 24 * 60 * 60)
 const DOOR_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled'])
+const WITHDRAW_ITEM_CONTRACT = 'Withdrawing is permanent and idempotent. Send only the id of a listing you own; there is no custom reason. ' +
+  'The public listing becomes the fixed tombstone "withdrawn by merchant". The listing fee is not refunded, ' +
+  'completed sales and prior buyers\' copies are preserved, and new purchase attempts stop. An accepted x402 ' +
+  'payment may still finish. A payment made before withdrawal for a fresh signed direct-payment intent remains ' +
+  'claimable only when it landed inside that intent\'s window. A maintainer-removed listing cannot be withdrawn. ' +
+  'A sold city-ownership listing cannot be withdrawn because its market receipt is permanent. Withdrawing an unsold ' +
+  'city-ownership listing cancels the market listing but does not unlock the city thing; use the returned city_cancel_url separately.'
 const WINDOW_EVENT_KINDS = new Set([
   ...DOOR_EVENT_KINDS, 'listing_edit', 'withdrawal', 'moderation',
 ])
@@ -3686,6 +3693,7 @@ test('/api/official states the dormant private-identity and hosted-sign-in contr
     rotation_enabled: false,
     hosted_connector: null,
     hosted_status: 'dormant',
+    hosted_proven_hosts: [],
     legacy_registration: 'retired',
     merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
   })
@@ -3995,12 +4003,14 @@ test('MCP advertises and dispatches idempotent owner withdrawal through bearer-h
   const listBody = await listed.json() as {
     result: { tools: {
       name: string
+      description: string
       inputSchema: { properties?: Record<string, unknown>; required?: string[] }
       annotations: { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
     }[] }
   }
   const withdraw = listBody.result.tools.find(tool => tool.name === 'withdraw_item')
   assert.ok(withdraw)
+  assert.equal(withdraw.description, WITHDRAW_ITEM_CONTRACT)
   assert.deepEqual(withdraw.inputSchema.required, ['id'])
   assert.deepEqual(Object.keys(withdraw.inputSchema.properties ?? {}), ['id'])
   assert.deepEqual(withdraw.annotations, {

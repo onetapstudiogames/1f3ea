@@ -3,9 +3,24 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+process.env.PUBLIC_ORIGIN = 'https://1f3ea.com'
+process.env.HOSTED_MARKET_SIGNIN_ENABLED = 'true'
+process.env.MARKET_IDENTITY_RECOVERY_ENABLED = 'true'
+process.env.MARKET_IDENTITY_ROTATION_ENABLED = 'true'
+process.env.HOSTED_MARKET_CIMD_ORIGINS = '["https://chatgpt.com"]'
 const { default: app } = await import('../src/index.ts')
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
+
+const WITHDRAW_ITEM_CONTRACT = 'Withdrawing is permanent and idempotent. Send only the id of a listing you own; there is no custom reason. ' +
+  'The public listing becomes the fixed tombstone "withdrawn by merchant". The listing fee is not refunded, ' +
+  'completed sales and prior buyers\' copies are preserved, and new purchase attempts stop. An accepted x402 ' +
+  'payment may still finish. A payment made before withdrawal for a fresh signed direct-payment intent remains ' +
+  'claimable only when it landed inside that intent\'s window. A maintainer-removed listing cannot be withdrawn. ' +
+  'A sold city-ownership listing cannot be withdrawn because its market receipt is permanent. Withdrawing an unsold ' +
+  'city-ownership listing cancels the market listing but does not unlock the city thing; use the returned city_cancel_url separately.'
+const HOSTED_PROOF_CONTRACT = 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is ' +
+  'proven only after that host completes and records a real protected me read. Recorded proven hosts: none.'
 
 function mcpRequest(method: string, params?: unknown) {
   return app.request('/mcp', {
@@ -90,14 +105,49 @@ test('hosted-access docs describe the current provisional state, not dormant ide
   const decisions = read('docs/DECISIONS.md')
 
   assert.match(hosted, /join.*recovery.*rotation.*enabled/isu)
-  assert.match(hosted, /protected[^.]*me[^.]*not (?:yet )?recorded/iu)
+  assert.ok(hosted.includes(HOSTED_PROOF_CONTRACT))
   assert.doesNotMatch(hosted, /whole identity ceremony[^.]*dormant/iu)
-  assert.match(frontdoorNotes, /provisional/iu)
-  for (const text of [specification, decisions]) {
-    assert.match(text, /provisionally[^.]*operator verification/iu)
-    assert.match(text, /protected[^.]*read[^.]*before[^.]*proven|before[^.]*proven[^.]*protected[^.]*read/iu)
-    assert.doesNotMatch(text, /real protected hosted-client read before activation/iu)
-  }
+  assert.ok(frontdoorNotes.includes(HOSTED_PROOF_CONTRACT))
+  assert.ok(specification.includes(HOSTED_PROOF_CONTRACT))
+  assert.match(decisions, /operator verification/iu)
+  assert.match(decisions, /protected[^.]*read[^.]*before[^.]*proven|before[^.]*proven[^.]*protected[^.]*read/iu)
+  assert.doesNotMatch(decisions, /real protected hosted-client read before activation/iu)
   assert.doesNotMatch(questions, /Issue #7 hosted-access activation/u)
   assert.doesNotMatch(questions, /This PR/u)
+})
+
+test('withdraw_item states one exact complete caller contract on every mirrored surface', async () => {
+  const toolsResponse = await mcpRequest('tools/list')
+  const toolsBody = await toolsResponse.json() as {
+    result: { tools: Array<{ name: string; description: string }> }
+  }
+  const withdrawal = toolsBody.result.tools.find(tool => tool.name === 'withdraw_item')
+  assert.ok(withdrawal)
+  assert.equal(withdrawal.description, WITHDRAW_ITEM_CONTRACT)
+
+  for (const [name, text] of [
+    ['front door', await (await app.request('/')).text()],
+    ['llms', await (await app.request('/llms.txt')).text()],
+    ['specification', read('docs/SPEC.md')],
+  ] as const) assert.ok(text.includes(WITHDRAW_ITEM_CONTRACT), name)
+})
+
+test('public hosted surfaces publish the same empty per-host proof record', async () => {
+  const official = await (await app.request('/api/official')).json() as {
+    identity: { hosted_status: string; hosted_proven_hosts: string[] }
+  }
+  assert.equal(official.identity.hosted_status, HOSTED_PROOF_CONTRACT)
+  assert.deepEqual(official.identity.hosted_proven_hosts, [])
+
+  for (const [path, text] of [
+    ['/', await (await app.request('/')).text()],
+    ['/llms.txt', await (await app.request('/llms.txt')).text()],
+    ['/about', await (await app.request('/about')).text()],
+    ['/help', await (await app.request('/help')).text()],
+    ['/privacy', await (await app.request('/privacy')).text()],
+    ['/support', await (await app.request('/support')).text()],
+  ] as const) {
+    assert.ok(text.includes(HOSTED_PROOF_CONTRACT), path)
+    assert.doesNotMatch(text, /\b(?:ChatGPT|Claude)\b/u, path)
+  }
 })

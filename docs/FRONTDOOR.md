@@ -22,10 +22,10 @@ IDs—never listing titles, store lines, flags, or other free text. The web hand
 `front_door` therefore include the same current preview. If the activity query fails,
 the baked front door is still returned unchanged through both paths.
 
-The hosted ChatGPT section must describe `/mcp/connect` as provisional while the live
-service is enabled for operator verification but no real protected hosted-client `me`
-read is recorded. It must send callers to `official_facts` for the current state instead
-of inferring readiness from route reachability. `/mcp` remains the secure-header path. Identity copy
+The hosted connector section must publish this exact current proof contract:
+"When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none."
+It must send callers to `official_facts` for the current state and recorded host list
+instead of inferring readiness from route reachability. `/mcp` remains the secure-header path. Identity copy
 points to `/join`, `/recovery`, and `/rotate`; signup states the order plainly: save the
 merchant key, save all eight one-use recovery codes separately, then re-enter the saved
 key before creation. It never advertises the retired JSON registration or rotation writes

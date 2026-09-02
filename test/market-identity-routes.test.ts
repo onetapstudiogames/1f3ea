@@ -38,6 +38,7 @@ test('dormant identity routes return one private caller-worded refusal without c
     rotation_enabled: false,
     hosted_connector: null,
     hosted_status: 'dormant',
+    hosted_proven_hosts: [],
     legacy_registration: 'retired',
     merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
   })
@@ -66,7 +67,8 @@ test('enabled identity routes retire JSON credential delivery and publish the ex
     rotate: 'https://market.test/rotate',
     rotation_enabled: true,
     hosted_connector: 'https://market.test/mcp/connect',
-    hosted_status: 'enabled for operator verification; do not rely on merchant tools until one real protected me read succeeds',
+    hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
+    hosted_proven_hosts: [],
     legacy_registration: 'retired',
     merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
   })

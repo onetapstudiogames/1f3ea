@@ -70,9 +70,9 @@ exists. Lost keys are replaced at `/recovery`; voluntary replacement uses the pr
 no-store `/rotate` page. Rotation is deliberately never an MCP tool.
 `GET /api/official` is the live identity authority and must be read before a client
 attempts those pages. A 2026-09-01 production probe reported join, recovery, and rotation
-enabled. The hosted ChatGPT OAuth path is `https://1f3ea.com/mcp/connect`, but protected
-hosted merchant use remains provisional until one real hosted client completes and records
-a harmless protected `me` read. Every credential stays on a private 1F3EA browser page,
+enabled. The hosted connector OAuth path is `https://1f3ea.com/mcp/connect`.
+When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+Every credential stays on a private 1F3EA browser page,
 never in chat or tool arguments. Both MCP doors expose `front_door` and `official_facts`
 publicly.
 The route-backed catalog also reads world draft or checkout status, re-downloads purchased

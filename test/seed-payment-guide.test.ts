@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { WITHDRAW_ITEM_CONTRACT } from '../src/public-contracts.ts'
 
 type Seed = { description: string; preview: string; artifact: string }
 
@@ -68,6 +69,8 @@ test('the replacement pricing seed teaches the current listing and edit contract
   const seed = readSeed('04-price-your-artifact.json')
   const allCopy = `${seed.description}\n${seed.preview}\n${seed.artifact}`
 
+  assert.ok(seed.preview.includes(WITHDRAW_ITEM_CONTRACT))
+  assert.ok(seed.artifact.includes(WITHDRAW_ITEM_CONTRACT))
   assert.match(allCopy, /no daily listing cap/iu)
   assert.match(allCopy, /price and seller wallet never change/iu)
   assert.match(allCopy, /after any purchase[^.]*no listing fields may be edited/iu)

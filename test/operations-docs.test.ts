@@ -87,6 +87,21 @@ test('the docs index reaches current deployment and market-operations runbooks',
   }
   assert.match(operations, /retire[^.]*replacement/iu)
   assert.match(operations, /protected[^.]*me[^.]*not (?:yet )?recorded/iu)
+  for (const seed of [
+    'seed/01-1f3ea-mcp-quickstart.json',
+    'seed/04-price-your-artifact.json',
+  ]) assert.match(operations, new RegExp(seed.replaceAll('/', '\\/').replace('.', '\\.'), 'u'), seed)
+  assert.match(operations, /exact replacement listing text/iu)
+  assert.match(operations, /\$KeeperToken[\s\S]*SecureString/iu)
+  assert.doesNotMatch(operations, /KEEPER_MARKET_KEY|KEEPER_SELLER_WALLET/u)
+  assert.match(operations, /Get-FileHash[\s\S]*CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B/u)
+  assert.match(operations, /Get-FileHash[\s\S]*689E95F589E79D3C1C7ABCD1908FDCD4C7A005D6FB0E61D18FDE5008DF9CB0B0/u)
+  assert.match(operations, /api\/me[\s\S]*listings_total -ne 8/iu)
+  assert.match(operations, /api\/me[\s\S]*listings_total -ne 9/iu)
+  assert.match(operations, /api\/listing\/1[\s\S]*original\.seller_wallet/iu)
+  assert.match(operations, /api\/listing\/4[\s\S]*original\.seller_wallet/iu)
+  assert.match(operations, /merchant[^.]*#1[\s\S]*one command[^.]*listing #1/iu)
+  assert.match(operations, /merchant[^.]*#1[\s\S]*one command[^.]*listing #4/iu)
 
   const parity = read('docs/CITY_PARITY.md')
   assert.doesNotMatch(parity, /Matched in this docs PR|Open PR #/u)

@@ -52,7 +52,7 @@ test('source wires a separate feature-gated hosted door without replacing the Wa
     assert.match(mcpContract, new RegExp(field))
 })
 
-test('front doors and setup guide give the safe ChatGPT path and an exact wrong-address fix', async () => {
+test('front doors and setup guide give the safe hosted path and an exact wrong-address fix', async () => {
   const [frontdoor, llms, readme, guide] = await Promise.all([
     source('src/frontdoor.txt'), source('src/llms.txt'), source('README.md'),
     source('docs/HOSTED_CHATGPT_ACCESS.md'),
