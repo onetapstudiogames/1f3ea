@@ -20,6 +20,7 @@ test('dormant identity routes return one private caller-worded refusal without c
   for (const [path, method, retryPath] of [
     ['/join', 'GET', '/join'], ['/recovery', 'GET', '/recovery'], ['/rotate', 'GET', '/rotate'],
     ['/api/register', 'POST', '/join'], ['/api/rotate', 'POST', '/rotate'],
+    ['/api/recovery', 'POST', '/recovery'], ['/api/pair', 'POST', '/api/pair'],
   ] as const) {
     const response = await app.request(path, { method })
     assert.equal(response.status, 503, path)
@@ -27,8 +28,8 @@ test('dormant identity routes return one private caller-worded refusal without c
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
     const text = await response.text()
     assert.match(text, /private merchant identity.*unavailable.*no merchant or key was (?:created|changed)/iu)
-    assert.match(text, new RegExp(`retry ${retryPath}`, 'iu'), path)
-    assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac)_[0-9a-f]+/iu)
+    assert.match(text, new RegExp(`retry ${retryPath.replace('/', '\\/')}`, 'iu'), path)
+    assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac|pc)_[0-9a-f]+/iu)
   }
   assert.deepEqual(marketIdentityPublicFacts({}, false), {
     join: null,
@@ -40,26 +41,34 @@ test('dormant identity routes return one private caller-worded refusal without c
     hosted_status: 'dormant',
     hosted_proven_hosts: [],
     legacy_registration: 'retired',
-    merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
+    merchant_key_transport:
+      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
+      'never chat, MCP arguments or results, URLs, or logs',
+    coding_client_doors: null,
   })
 })
 
-test('enabled identity routes retire JSON credential delivery and publish the exact live paths', async () => {
+test('enabled identity routes serve the coding-client JSON doors and pairing, and publish the exact live paths', async () => {
   const app = new Hono()
   mountMarketIdentityRoutes(app, { environment: READY, hostedMarketSigninReady: true })
 
-  for (const [path, movedTo] of [
-    ['/api/register', '/join'], ['/api/rotate', '/rotate'],
-  ] as const) {
+  // /api/register and /api/rotate no longer return the retired 410 stub: they answer with the
+  // new JSON-door contract (a caller-input refusal here, since this request sends no body).
+  for (const path of ['/api/register', '/api/rotate', '/api/recovery'] as const) {
     const response = await app.request(path, { method: 'POST' })
-    assert.equal(response.status, 410, path)
+    assert.notEqual(response.status, 410, path)
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
-    const text = await response.text()
-    assert.match(text, new RegExp(`https://market\\.test${movedTo}`))
-    assert.match(text, /no (?:merchant or )?key was (?:created|changed)/iu)
-    assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac)_[0-9a-f]+/iu)
+    const body = await response.json() as { error: string; reason: string }
+    assert.equal(response.status, 400, path)
+    assert.equal(body.reason, 'invalid_json', path)
   }
+
+  // /api/pair requires authentication before anything else.
+  const pairResponse = await app.request('/api/pair', { method: 'POST' })
+  assert.equal(pairResponse.status, 401)
+  assert.equal(pairResponse.headers.get('cache-control'), 'no-store')
+
   assert.deepEqual(marketIdentityPublicFacts(READY, true), {
     join: 'https://market.test/join',
     recovery: 'https://market.test/recovery',
@@ -70,6 +79,17 @@ test('enabled identity routes retire JSON credential delivery and publish the ex
     hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
     hosted_proven_hosts: [],
     legacy_registration: 'retired',
-    merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
+    merchant_key_transport:
+      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
+      'never chat, MCP arguments or results, URLs, or logs',
+    coding_client_doors: {
+      register: 'https://market.test/api/register',
+      rotate: 'https://market.test/api/rotate',
+      recovery: 'https://market.test/api/recovery',
+      pair: 'https://market.test/api/pair',
+      client_classes: ['coding_persistent', 'coding_ephemeral'],
+      registration_requires_human_approved: true,
+      key_and_codes_shown_exactly_once: true,
+    },
   })
 })

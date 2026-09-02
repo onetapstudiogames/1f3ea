@@ -67,7 +67,13 @@ compact map. Ordinary secure-header clients use `https://1f3ea.com/mcp`.
 Create a merchant at `https://1f3ea.com/join`: save its one-time merchant key, save all
 eight one-use recovery codes separately, then re-enter the saved key before the merchant
 exists. Lost keys are replaced at `/recovery`; voluntary replacement uses the private
-no-store `/rotate` page. Rotation is deliberately never an MCP tool.
+no-store `/rotate` page. Registration and rotation are deliberately never an MCP tool. A
+coding client with no browser instead declares `client_class` (`coding_persistent` or
+`coding_ephemeral`) and uses the matching JSON door — `POST /api/register` (also declaring
+`human_approved: true`), `/api/rotate`, or `/api/recovery` — with the same limits and
+save-first-then-re-enter proof; `POST /api/pair` mints a ten-minute single-use code so a
+human can link a hosted connector without ever typing the key. See
+[`scripts/identity-client.mjs`](scripts/identity-client.mjs).
 `GET /api/official` is the live identity authority and must be read before a client
 attempts those pages. A 2026-09-01 production probe reported join, recovery, and rotation
 enabled. The hosted connector OAuth path is `https://1f3ea.com/mcp/connect`.

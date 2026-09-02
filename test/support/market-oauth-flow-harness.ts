@@ -7,6 +7,7 @@ import {
   configureMarketOAuthMerchantResolver,
   merchantByOAuthAccessToken,
   mountMarketOAuthRoutes,
+  type MarketOAuthRouteOptions,
 } from '../../src/market-oauth.ts'
 import {
   CHATGPT_OAUTH_CLIENT_ID,
@@ -397,13 +398,16 @@ class MemoryOAuthStore {
   }
 }
 
-function fixture() {
+function fixture(options: {
+  resolvePairingCode?: MarketOAuthRouteOptions['resolvePairingCode']
+} = {}) {
   const store = new MemoryOAuthStore()
   const app = new Hono()
   mountMarketOAuthRoutes(app, {
     environment,
     store: store.api,
     fetcher: (async input => { throw new Error(`unexpected network call: ${String(input)}`) }) as typeof fetch,
+    resolvePairingCode: options.resolvePairingCode,
   })
   return { app, store }
 }

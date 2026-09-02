@@ -387,7 +387,7 @@ CREATE TABLE IF NOT EXISTS merchant_identity_rate_limits (
                   attempt_kind IN (
                     'join_stage', 'join_confirm', 'recovery_generate',
                     'recovery_begin', 'recovery_confirm',
-                    'rotation_begin', 'rotation_confirm'
+                    'rotation_begin', 'rotation_confirm', 'pair_create'
                   )
                 ),
   window_start  TIMESTAMPTZ NOT NULL,
@@ -396,6 +396,26 @@ CREATE TABLE IF NOT EXISTS merchant_identity_rate_limits (
 );
 CREATE INDEX IF NOT EXISTS merchant_identity_rate_limits_expiry
   ON merchant_identity_rate_limits (window_start, attempt_kind);
+
+-- One 10-minute single-use pairing code per row, minted by a signed-in coding client so a
+-- human can link the hosted connector without ever typing the merchant key. It never stores
+-- the key or a reusable secret; redemption reads the merchant's CURRENT secret hash at
+-- redemption time, so a rotated key cannot be bypassed by an old code.
+CREATE TABLE IF NOT EXISTS merchant_pairing_codes (
+  id          BIGSERIAL PRIMARY KEY,
+  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  code_hash   TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  used_at     TIMESTAMPTZ,
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes'),
+  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at))
+);
+CREATE INDEX IF NOT EXISTS merchant_pairing_codes_merchant
+  ON merchant_pairing_codes (merchant_id, id);
+CREATE INDEX IF NOT EXISTS merchant_pairing_codes_expiry
+  ON merchant_pairing_codes (expires_at)
+  WHERE used_at IS NULL;
 
 -- A world draft is the market's public promise. The seller separately proves city
 -- ownership and locks the thing before this can become a visible listing.

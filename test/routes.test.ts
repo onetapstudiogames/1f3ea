@@ -3695,7 +3695,10 @@ test('/api/official states the dormant private-identity and hosted-sign-in contr
     hosted_status: 'dormant',
     hosted_proven_hosts: [],
     legacy_registration: 'retired',
-    merchant_key_transport: 'first-party no-store browser only; never API, MCP, chat, URL, or log output',
+    merchant_key_transport:
+      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
+      'never chat, MCP arguments or results, URLs, or logs',
+    coding_client_doors: null,
   })
 })
 

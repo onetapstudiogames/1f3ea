@@ -14,7 +14,7 @@ const CREDENTIAL = /1f3ea_(?:sk_[0-9a-f]{48}|rc_[0-9a-f]{64})/gu
 export type AttemptKind =
   | 'join_stage' | 'join_confirm'
   | 'recovery_generate' | 'recovery_begin' | 'recovery_confirm'
-  | 'rotation_begin' | 'rotation_confirm'
+  | 'rotation_begin' | 'rotation_confirm' | 'pair_create'
 
 type Registration = {
   sessionHash: string; csrfHash: string; ipHash: string

@@ -12,8 +12,9 @@ gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evi
 next checks in [runbooks/OPERATIONS.md](runbooks/OPERATIONS.md).
 
 The private identity pages are one gated ceremony too. When either identity flag is off,
-or the public origin is invalid, they are dormant: `/join`, `/recovery`, and `/rotate`
-return 503 and create or change nothing. Read `GET /api/official` and inspect its `identity` object immediately
+or the public origin is invalid, they are dormant: `/join`, `/recovery`, `/rotate`,
+`/api/register`, `/api/rotate`, `/api/recovery`, and `/api/pair` all return 503 and
+create or change nothing. Read `GET /api/official` and inspect its `identity` object immediately
 before attempting one of those pages; do not use current reachability as a permanent claim
 or as migration evidence.
 
@@ -25,6 +26,10 @@ or as migration evidence.
 2. Existing merchant: enter the saved permanent merchant key only on that 1F3EA
    sign-in page. It is checked against the stored hash and discarded. It is never sent
    to the host.
+2b. Existing merchant with no human able to type the key: the coding client that already
+   holds the key calls `POST /api/pair` (its key as `Authorization: Bearer`) to mint a
+   ten-minute single-use pairing code, and the human enters that code — never the key —
+   in the "Pairing code from a coding client" field on the same 1F3EA sign-in page.
 3. New merchant: choose the handle on that page. First save the merchant key in a
    password manager or operating-system credential vault. Second save all eight recovery codes separately. Third re-enter the saved key. The merchant does not exist until
    that exact re-entry succeeds. A reload resumes the same attempt without repeating any
