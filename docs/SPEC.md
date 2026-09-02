@@ -275,18 +275,27 @@ exact after verification.
   rule, and refusal of the matching browser page applies unchanged. The caller declares
   `client_class: "coding_persistent" | "coding_ephemeral"`; registration additionally
   requires `human_approved: true`, a declaration that a human approved the permanent
-  public handle. A `stage`/`begin`/`generate` call returns the merchant key (and, for
-  registration, all eight recovery codes) exactly once, together with a `session` and
-  `csrf` ceremony reference; nothing is created or changed until a `confirm` call
-  re-enters the exact saved key, the same save-first-then-re-enter proof `/join`,
-  `/rotate`, and `/recovery` require of a human. A `cancel` call is always available. A
-  signed-in coding client may additionally `POST /api/pair` (with its merchant key as an
-  `Authorization: Bearer` credential) to mint a ten-minute single-use pairing code; a
-  human redeems that code — never the key — on the hosted connector sign-in page's
-  existing-merchant panel, which links the connector grant to the merchant and never
-  reveals the key. These four JSON doors are gated by the same `MARKET_IDENTITY_RECOVERY_ENABLED`
-  and `MARKET_IDENTITY_ROTATION_ENABLED` flags as the browser pages, and, like the
-  browser pages, are never MCP tools.
+  public handle. A `stage`/`begin` call returns the merchant key (and, for registration,
+  all eight recovery codes) exactly once, together with a `session` and `csrf` ceremony
+  reference; nothing is created or changed until a `confirm` call re-enters the exact
+  saved key, the same save-first-then-re-enter proof `/join`, `/rotate`, and `/recovery`
+  require of a human. A `cancel` call is always available for `stage`/`begin`. Recovery's
+  `generate` call is different: it takes the current key and immediately returns a fresh
+  set of eight recovery codes, exactly once, leaving the key unchanged — there is no
+  session, csrf, or confirm step. A signed-in coding client may additionally
+  `POST /api/pair` (with its merchant key as an `Authorization: Bearer` credential) to
+  mint a ten-minute single-use pairing code; a human redeems that code — never the key —
+  on the hosted connector sign-in page's existing-merchant panel, which links the
+  connector grant to the merchant and never reveals the key. Rotating or recovering a key
+  also invalidates every one of that merchant's outstanding unused pairing codes, so a
+  code minted under a stolen key stops working the moment the legitimate owner changes
+  the key. These four JSON doors need the same `MARKET_IDENTITY_RECOVERY_ENABLED` and
+  `MARKET_IDENTITY_ROTATION_ENABLED` flags as the browser pages, plus a separate
+  `MARKET_CODING_IDENTITY_ENABLED` flag the operator sets only after the additive
+  coding-client-identity migration is applied and verified; the two identity flags being
+  true is not sufficient by itself, and `coding_client_doors` is `null` in
+  `GET /api/official` until that third flag is also true. Like the browser pages, they
+  are never MCP tools.
 - Hosted OAuth metadata, authorization, token acceptance, and `/mcp/connect` are all
   absent unless the hosted, recovery, and rotation flags are true and exact origin/client
   configuration is valid. Once those gates pass, the route and token lane may be enabled

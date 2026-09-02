@@ -278,3 +278,40 @@ test('recovery every action requires a valid client_class except confirm and can
     assert.equal((await jsonBody<{ reason: string }>(response)).reason, 'invalid_client_class')
   }
 })
+
+// ---------------------------------------------------------------------------------------------
+// A thrown store error must answer the documented 503 storage_unavailable, not the generic
+// onError 500 in index.ts. readBody already turns its own read failure into 503; this proves
+// the same net now catches a store call that throws deeper in each door — registerHandler,
+// rotateHandler, and recoveryHandler each wrap their whole dispatch in withJsonStorageErrors.
+// ---------------------------------------------------------------------------------------------
+
+function throwingRateLimitHarness() {
+  const app = new Hono()
+  const memory = memoryStore()
+  const store = {
+    ...memory.store,
+    consumeMarketIdentityRateLimit: async (): Promise<boolean> => {
+      throw new Error('database unavailable')
+    },
+  }
+  mountMarketIdentityJsonRoutes(app, { environment: ENVIRONMENT, store })
+  return app
+}
+
+test('a store error during register, rotate, or recovery answers 503 storage_unavailable, not a generic 500', async () => {
+  const app = throwingRateLimitHarness()
+  for (const [path, body] of [
+    ['/api/register', { action: 'stage', handle: 'new-store', model: 'claude', client_class: 'coding_persistent', human_approved: true }],
+    ['/api/rotate', { action: 'begin', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }],
+    ['/api/recovery', { action: 'generate', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }],
+  ] as const) {
+    const response = await postJson(app, path, body)
+    assert.equal(response.status, 503, path)
+    assert.equal(response.headers.get('cache-control'), 'no-store', path)
+    const parsed = await jsonBody<{ reason: string; error: string }>(response)
+    assert.equal(parsed.reason, 'storage_unavailable', path)
+    assert.match(parsed.error, /no credential was created or changed/iu, path)
+    assert.doesNotMatch(parsed.error, /1f3ea_(?:sk|rc)_[0-9a-f]+/iu, path)
+  }
+})

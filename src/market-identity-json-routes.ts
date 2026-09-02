@@ -56,6 +56,24 @@ function fail(c: Context, status: JsonStatus, reason: string, message: string): 
   return c.json({ error: message, reason }, status)
 }
 
+/**
+ * The browser doors (market-identity-browser.ts) wrap every handler in withStorageErrors so a
+ * thrown store error becomes the documented 503 storage_unavailable instead of the generic
+ * onError 500 in index.ts. These JSON doors need the same net: readBody already turns its own
+ * read failure into 503, but a thrown error from admittedMarketIdentity or any runtime.store
+ * call deeper in stage/confirm/cancel/generate/begin did not, until now.
+ */
+async function withJsonStorageErrors(c: Context, operation: () => Promise<Response>): Promise<Response> {
+  try {
+    return await operation()
+  } catch {
+    return fail(
+      c, 503, 'storage_unavailable',
+      'The market could not finish this request. Retry the same request; no credential was created or changed.',
+    )
+  }
+}
+
 async function readBody(c: Context): Promise<Record<string, unknown> | Response> {
   const result = await readBoundedJson(c, MAX_JSON_BYTES)
   if (result.kind === 'json') return result.value
@@ -295,13 +313,15 @@ async function registerCancel(c: Context, runtime: Runtime, body: Record<string,
 }
 
 async function registerHandler(c: Context, runtime: Runtime): Promise<Response> {
-  const body = await readBody(c)
-  if (body instanceof Response) return body
-  const action = requireAction(c, body, ['stage', 'confirm', 'cancel'] as const)
-  if (action instanceof Response) return action
-  if (action === 'stage') return registerStage(c, runtime, body)
-  if (action === 'confirm') return registerConfirm(c, runtime, body)
-  return registerCancel(c, runtime, body)
+  return withJsonStorageErrors(c, async () => {
+    const body = await readBody(c)
+    if (body instanceof Response) return body
+    const action = requireAction(c, body, ['stage', 'confirm', 'cancel'] as const)
+    if (action instanceof Response) return action
+    if (action === 'stage') return registerStage(c, runtime, body)
+    if (action === 'confirm') return registerConfirm(c, runtime, body)
+    return registerCancel(c, runtime, body)
+  })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -408,13 +428,15 @@ async function rotateCancel(c: Context, runtime: Runtime, body: Record<string, u
 }
 
 async function rotateHandler(c: Context, runtime: Runtime): Promise<Response> {
-  const body = await readBody(c)
-  if (body instanceof Response) return body
-  const action = requireAction(c, body, ['begin', 'confirm', 'cancel'] as const)
-  if (action instanceof Response) return action
-  if (action === 'begin') return rotateBegin(c, runtime, body)
-  if (action === 'confirm') return rotateConfirm(c, runtime, body)
-  return rotateCancel(c, runtime, body)
+  return withJsonStorageErrors(c, async () => {
+    const body = await readBody(c)
+    if (body instanceof Response) return body
+    const action = requireAction(c, body, ['begin', 'confirm', 'cancel'] as const)
+    if (action instanceof Response) return action
+    if (action === 'begin') return rotateBegin(c, runtime, body)
+    if (action === 'confirm') return rotateConfirm(c, runtime, body)
+    return rotateCancel(c, runtime, body)
+  })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -549,14 +571,16 @@ async function recoveryCancel(c: Context, runtime: Runtime, body: Record<string,
 }
 
 async function recoveryHandler(c: Context, runtime: Runtime): Promise<Response> {
-  const body = await readBody(c)
-  if (body instanceof Response) return body
-  const action = requireAction(c, body, ['generate', 'begin', 'confirm', 'cancel'] as const)
-  if (action instanceof Response) return action
-  if (action === 'generate') return recoveryGenerate(c, runtime, body)
-  if (action === 'begin') return recoveryBegin(c, runtime, body)
-  if (action === 'confirm') return recoveryConfirm(c, runtime, body)
-  return recoveryCancel(c, runtime, body)
+  return withJsonStorageErrors(c, async () => {
+    const body = await readBody(c)
+    if (body instanceof Response) return body
+    const action = requireAction(c, body, ['generate', 'begin', 'confirm', 'cancel'] as const)
+    if (action instanceof Response) return action
+    if (action === 'generate') return recoveryGenerate(c, runtime, body)
+    if (action === 'begin') return recoveryBegin(c, runtime, body)
+    if (action === 'confirm') return recoveryConfirm(c, runtime, body)
+    return recoveryCancel(c, runtime, body)
+  })
 }
 
 export function mountMarketIdentityJsonRoutes(app: Hono, options: MarketIdentityJsonRouteOptions = {}): void {

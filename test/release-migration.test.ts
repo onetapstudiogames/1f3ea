@@ -411,6 +411,40 @@ test('merchant identity has its own guarded additive release migration', () => {
   }
 })
 
+test('coding-client identity has its own guarded additive release migration, separate from market-identity', () => {
+  const run = resolveReleaseMigration([
+    '--target', 'production',
+    '--migration', 'market-coding-identity',
+    '--database', 'market',
+    '--endpoint', PRODUCTION_HOST,
+  ], productionEnvironment())
+  assert.equal(run.migration, 'market-coding-identity')
+  assert.equal(run.migrationFile, 'db/migrations/20260902_market_identity_json_doors.sql')
+  assert.ok(run.postconditions.some(condition =>
+    condition.kind === 'table' && condition.name === 'merchant_pairing_codes'))
+  for (const name of ['id', 'merchant_id', 'code_hash', 'created_at', 'expires_at', 'used_at', 'invalidated_at']) {
+    assert.ok(run.postconditions.some(condition =>
+      condition.kind === 'column' && condition.table === 'merchant_pairing_codes' && condition.name === name), name)
+  }
+  for (const name of ['merchant_pairing_codes_merchant', 'merchant_pairing_codes_expiry']) {
+    assert.ok(run.postconditions.some(condition =>
+      condition.kind === 'index' && condition.table === 'merchant_pairing_codes' && condition.name === name), name)
+  }
+  assert.ok(run.postconditions.some(condition =>
+    condition.kind === 'constraint' && condition.table === 'merchant_identity_rate_limits'
+      && condition.name === 'merchant_identity_rate_limits_attempt_kind_allowed'
+      && condition.definitionIncludes?.includes('pair_create')))
+
+  const preview = resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'market-coding-identity',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment())
+  assert.equal(preview.migrationFile, run.migrationFile)
+})
+
 test('target resolution rejects pooled, mismatched, and generic database connections', () => {
   const args = [
     '--target', 'production',
@@ -632,6 +666,8 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(scripts['migrate:production:hosted-market-signin'] ?? '', /--target production --migration hosted-market-signin$/)
   assert.match(scripts['migrate:preview:market-identity'] ?? '', /--target preview --migration market-identity$/)
   assert.match(scripts['migrate:production:market-identity'] ?? '', /--target production --migration market-identity$/)
+  assert.match(scripts['migrate:preview:market-coding-identity'] ?? '', /--target preview --migration market-coding-identity$/)
+  assert.match(scripts['migrate:production:market-coding-identity'] ?? '', /--target production --migration market-coding-identity$/)
   assert.match(scripts['migrate:preview:world-payment-finality'] ?? '', /--target preview --migration world-payment-finality$/)
   assert.match(scripts['migrate:production:world-payment-finality'] ?? '', /--target production --migration world-payment-finality$/)
   assert.match(scripts['migrate:preview:x402-payment-attempts'] ?? '', /--target preview --migration x402-payment-attempts$/)
@@ -650,6 +686,9 @@ test('package and runbook expose separate guarded preview and production command
     runbook.indexOf('migrate:preview:direct-payments') <
     runbook.indexOf('migrate:production:direct-payments'),
   )
+  assert.match(runbook, /migrate:preview:market-coding-identity/)
+  assert.match(runbook, /migrate:production:market-coding-identity/)
+  assert.match(runbook, /MARKET_CODING_IDENTITY_ENABLED/)
   assert.match(runbook, /migrate:preview:world-payment-finality/)
   assert.match(runbook, /migrate:production:world-payment-finality/)
   assert.match(runbook, /migrate:preview:x402-payment-attempts/)

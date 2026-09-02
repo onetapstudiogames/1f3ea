@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 
-import { marketIdentityBrowserReady } from './hosted-market-readiness.ts'
+import { marketCodingIdentityReady, marketIdentityBrowserReady } from './hosted-market-readiness.ts'
 import { mountMarketIdentityBrowserRoutes } from './market-identity-browser.ts'
 import { mountMarketIdentityJsonRoutes } from './market-identity-json-routes.ts'
 import {
@@ -31,6 +31,21 @@ function unavailableIdentity(c: Context) {
   return c.json({ error: unavailableMessage(c.req.path) }, 503)
 }
 
+function codingIdentityUnavailableMessage(requestPath: string): string {
+  return 'The coding-client identity doors are unavailable on this deployment; no merchant or ' +
+    `key was created or changed by this request to ${requestPath}. This is separate from the ` +
+    'private browser pages, which may already be live: the operator must also apply the ' +
+    'reviewed coding-client-identity migration and set MARKET_CODING_IDENTITY_ENABLED=true ' +
+    'before this door opens. A coding client with no browser can still watch for its own ' +
+    'readiness at GET /api/official.'
+}
+
+function codingIdentityUnavailable(c: Context) {
+  privateBrowserHeaders(c)
+  c.header('Retry-After', '3600')
+  return c.json({ error: codingIdentityUnavailableMessage(c.req.path) }, 503)
+}
+
 export function mountMarketIdentityRoutes(
   app: Hono,
   options: MarketIdentityRouteOptions = {},
@@ -48,6 +63,20 @@ export function mountMarketIdentityRoutes(
     environment,
     hostedMarketSigninReady: options.hostedMarketSigninReady === true,
   })
+
+  // The coding-client JSON doors and pairing need their own additive migration (the
+  // merchant_pairing_codes table and the widened rate-limit attempt-kind constraint) beyond
+  // what the private browser pages above need. Production can already have both identity
+  // flags true, so gate these four doors on MARKET_CODING_IDENTITY_ENABLED separately —
+  // never let them go live merely because the browser pages did. See
+  // docs/RELEASE_MIGRATIONS.md and docs/runbooks/ENVIRONMENT.md.
+  if (!marketCodingIdentityReady(environment)) {
+    for (const path of ['/api/register', '/api/rotate', '/api/recovery', '/api/pair']) {
+      app.post(path, codingIdentityUnavailable)
+    }
+    return
+  }
+
   mountMarketIdentityJsonRoutes(app, { environment })
   mountMarketPairingRoutes(app, {
     environment,
@@ -62,6 +91,7 @@ export function marketIdentityPublicFacts(
   const ready = marketIdentityBrowserReady(environment)
   const origin = ready ? marketPublicOrigin(environment) : null
   const hostedReady = ready && hostedMarketSigninReady
+  const codingReady = marketCodingIdentityReady(environment)
   return {
     join: origin ? `${origin}/join` : null,
     recovery: origin ? `${origin}/recovery` : null,
@@ -75,7 +105,7 @@ export function marketIdentityPublicFacts(
     merchant_key_transport:
       'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
       'never chat, MCP arguments or results, URLs, or logs',
-    coding_client_doors: origin ? {
+    coding_client_doors: codingReady && origin ? {
       register: `${origin}/api/register`,
       rotate: `${origin}/api/rotate`,
       recovery: `${origin}/api/recovery`,

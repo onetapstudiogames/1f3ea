@@ -14,8 +14,15 @@
 // value itself to stdout, stderr, or a log — only a redacted placeholder and the file it went to.
 // Never put a merchant key, recovery code, or pairing code in a shell argument, environment
 // variable dump, or chat transcript; this script only ever puts one in a file you name.
+//
+// The same rule applies going in, not only coming out: --merchant-key, --recovery-code,
+// --session, and --csrf are refused as bare flags, because a bare flag value lands in shell
+// history and in any process listing (`ps`, Task Manager) for as long as the process runs.
+// Use the matching --merchant-key-file, --recovery-code-file, --session-file, or --csrf-file
+// instead, pointing at a file this script reads and never echoes — or pass `-` as that file's
+// path to read the one value from stdin.
 
-import { writeFile, chmod } from 'node:fs/promises'
+import { readFile, writeFile, chmod } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 
 const DEFAULT_ORIGIN = 'https://1f3ea.com'
@@ -152,6 +159,55 @@ async function writeSecretsToFile(path, body) {
   try { await chmod(path, 0o600) } catch { /* best-effort on platforms without POSIX modes */ }
 }
 
+// argv-flag name -> the -file flag that must supply it instead. Every value here can also
+// authenticate a request or consume a one-use credential, so none of them may ever be a bare
+// argv flag: process listings (`ps`, Task Manager) and shell history both expose argv.
+const SECRET_FIELD_FILES = {
+  'merchant-key': 'merchant-key-file',
+  'recovery-code': 'recovery-code-file',
+  session: 'session-file',
+  csrf: 'csrf-file',
+}
+
+async function readStdinText() {
+  process.stdin.setEncoding('utf8')
+  let text = ''
+  for await (const chunk of process.stdin) text += chunk
+  return text
+}
+
+async function readSecretFromPathOrStdin(source) {
+  const raw = source === '-' ? await readStdinText() : await readFile(source, 'utf8')
+  const value = raw.trim()
+  if (!value) throw new Error(`no value read from ${source === '-' ? 'stdin' : source}`)
+  return value
+}
+
+/**
+ * Refuses --merchant-key, --recovery-code, --session, or --csrf as a bare flag, and resolves
+ * each present --*-file flag (or `-` for stdin) into the plain field the CLI_COMMANDS table
+ * already expects, so command construction below needs no other change.
+ */
+async function resolveSecretFields(options) {
+  const resolved = { ...options }
+  for (const [field, fileField] of Object.entries(SECRET_FIELD_FILES)) {
+    if (field in resolved) {
+      throw new Error(
+        `--${field} is refused as a bare flag: it would land in shell history and process ` +
+        `listings. Use --${fileField} <path> (or --${fileField} - to read one value from ` +
+        'stdin) instead.',
+      )
+    }
+    if (fileField in resolved) {
+      const source = resolved[fileField]
+      if (typeof source !== 'string') throw new Error(`--${fileField} requires a path or -`)
+      resolved[field] = await readSecretFromPathOrStdin(source)
+      delete resolved[fileField]
+    }
+  }
+  return resolved
+}
+
 function parseArgs(argv) {
   const [command, ...rest] = argv
   const options = {}
@@ -197,12 +253,22 @@ const CLI_COMMANDS = {
 }
 
 async function main() {
-  const { command, options } = parseArgs(process.argv.slice(2))
+  const { command, options: rawOptions } = parseArgs(process.argv.slice(2))
   const run = CLI_COMMANDS[command]
   if (!run) {
     console.error(
-      `Usage: node identity-client.mjs <${Object.keys(CLI_COMMANDS).join('|')}> [--origin URL] [--out FILE] ...`,
+      `Usage: node identity-client.mjs <${Object.keys(CLI_COMMANDS).join('|')}> [--origin URL] [--out FILE] ...\n` +
+      'Secret-bearing input (merchant key, recovery code, session, csrf) is never a bare flag: ' +
+      'use --merchant-key-file, --recovery-code-file, --session-file, or --csrf-file <path|->.',
     )
+    process.exitCode = 1
+    return
+  }
+  let options
+  try {
+    options = await resolveSecretFields(rawOptions)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
     return
   }

@@ -93,3 +93,52 @@ test('pairing reports a storage failure without leaking a partial code', async (
   assert.equal(response.status, 503)
   assert.equal((await response.json() as { reason: string }).reason, 'storage_unavailable')
 })
+
+test('pairing reports a storage failure from the rate-limit check too, not a generic 500', async () => {
+  const throwingStore = {
+    ...memoryStore().store,
+    consumeMarketIdentityRateLimit: async (): Promise<boolean> => {
+      throw new Error('db down')
+    },
+  }
+  const app = harness({ identityStore: throwingStore })
+  const response = await app.request('/api/pair', {
+    method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
+  })
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.equal((await response.json() as { reason: string }).reason, 'storage_unavailable')
+})
+
+test('pairing takes its credential only from Authorization: Bearer, never from a request body', async () => {
+  const app = harness({
+    hostedMarketSigninReady: true,
+    createPairingCode: async () => ({ expiresAt: '2026-09-02T00:10:00.000Z' }),
+  })
+
+  // No Content-Type at all keeps working: the door's original, still-supported contract.
+  const noBody = await app.request('/api/pair', {
+    method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
+  })
+  assert.equal(noBody.status, 200)
+
+  // An empty JSON object is accepted too.
+  const emptyBody = await app.request('/api/pair', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${'x'.repeat(10)}`, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assert.equal(emptyBody.status, 200)
+
+  // Any field at all — even one that looks like a credential — is refused, not silently ignored.
+  const withBody = await app.request('/api/pair', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${'x'.repeat(10)}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ merchant_key: '1f3ea_sk_ignored' }),
+  })
+  assert.equal(withBody.status, 400)
+  assert.equal(withBody.headers.get('cache-control'), 'no-store')
+  const body = await withBody.json() as { reason: string; error: string }
+  assert.equal(body.reason, 'unexpected_fields')
+  assert.match(body.error, /Authorization: Bearer/u)
+})

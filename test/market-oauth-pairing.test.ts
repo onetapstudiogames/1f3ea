@@ -76,9 +76,17 @@ test('a malformed pairing code is refused before any resolution attempt', async 
   assert.equal(called, false)
 })
 
-test('a pairing code whose merchant key has since rotated fails closed, never falling back to a stale key', async () => {
+// This in-memory harness cannot prove "a code minted before rotation is refused after it" —
+// resolveAndConsumePairingCode (market-pairing-store.ts) always reads the merchant's CURRENT
+// secret hash fresh, so a resolver faked to return a hash mismatched from the merchant it
+// names is a scenario the real store can never produce. That real, store-level proof lives in
+// test/integration/market-identity-postgres.test.ts ("rotation invalidates every outstanding
+// pairing code, against the real store" and its recovery counterpart). What this harness can
+// still test honestly is the door's own refusal once a resolved grant matches no merchant it
+// knows about — the same "merchant_key_rejected" outcome, reached without any claim about why.
+test('a resolved pairing grant matching no current merchant is refused, not treated as a stale key', async () => {
   const { app } = fixture({
-    resolvePairingCode: async () => ({ merchantId: 7, merchantSecretHash: sha256('some-other-now-stale-key') }),
+    resolvePairingCode: async () => ({ merchantId: 999, merchantSecretHash: sha256('no-such-merchant-key') }),
   })
   const { cookie, csrf } = await startSignin(app)
   const response = await pairRequest(app, cookie, csrf, PAIRING_CODE)

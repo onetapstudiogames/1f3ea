@@ -66,6 +66,9 @@ mock.module(new URL('../../src/db.ts', import.meta.url).href, {
   namedExports: { runReadCommittedTransaction, sql },
 })
 
+const { createMerchantPairingCode, resolveAndConsumePairingCode } =
+  await import('../../src/market-pairing-store.ts')
+
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex')
 
 function runDocker(args: readonly string[]): string {
@@ -595,6 +598,68 @@ test('market identity storage is atomic against real PostgreSQL', async t => {
         sessionHash: input.sessionHash, csrfHash: input.csrfHash,
         replacementSecretHash: input.replacementSecretHash,
       }), { status: 'request_unavailable' })
+    })
+
+    await t.test('rotation invalidates every outstanding pairing code, against the real store', async () => {
+      await resetDatabase()
+      const merchantId = await seedMerchant()
+      const codeHash = sha256('pairing:before-rotation')
+      await createMerchantPairingCode({ merchantId, codeHash })
+
+      const input = rotation('pairing-rotation', 'existing-key', 'pairing-rotated-key')
+      assert.deepEqual(await store.stageMerchantRotation(input), {
+        status: 'staged', merchantId, handle: 'existing-merchant',
+      })
+      assert.deepEqual(await store.confirmMerchantRotation({
+        sessionHash: input.sessionHash, csrfHash: input.csrfHash,
+        replacementSecretHash: input.replacementSecretHash,
+      }), { status: 'rotated', merchantId, handle: 'existing-merchant' })
+
+      // The real store, not a mock: a code minted before rotation must be refused after it,
+      // even though resolveAndConsumePairingCode always reads the merchant's CURRENT secret
+      // hash and so could never surface this bug by returning a stale one.
+      assert.equal(
+        await resolveAndConsumePairingCode({ codeHash }), null,
+        'a pairing code minted before rotation must be refused after it',
+      )
+      const state = await database!.query(
+        `SELECT used_at, invalidated_at IS NOT NULL AS invalidated
+         FROM merchant_pairing_codes WHERE code_hash = $1`,
+        [codeHash],
+      )
+      assert.deepEqual(state.rows, [{ used_at: null, invalidated: true }])
+    })
+
+    await t.test('recovery invalidates every outstanding pairing code, against the real store', async () => {
+      await resetDatabase()
+      const merchantId = await seedMerchant()
+      const codes = await generateCodes(store, merchantId, 'pairing-recovery')
+      const codeHash = sha256('pairing:before-recovery')
+      await createMerchantPairingCode({ merchantId, codeHash })
+
+      const recovery = {
+        sessionHash: sha256('pairing-recovery-session'),
+        csrfHash: sha256('pairing-recovery-csrf'),
+        recoveryCodeHash: sha256(codes[0]!),
+        replacementSecretHash: sha256('pairing-recovered-key'),
+      }
+      assert.deepEqual(await store.stageMerchantRecovery(recovery), {
+        status: 'staged', handle: 'existing-merchant',
+      })
+      assert.deepEqual(await store.confirmMerchantRecovery(recovery), {
+        status: 'recovered', merchantId, handle: 'existing-merchant',
+      })
+
+      assert.equal(
+        await resolveAndConsumePairingCode({ codeHash }), null,
+        'a pairing code minted before recovery must be refused after it',
+      )
+      const state = await database!.query(
+        `SELECT used_at, invalidated_at IS NOT NULL AS invalidated
+         FROM merchant_pairing_codes WHERE code_hash = $1`,
+        [codeHash],
+      )
+      assert.deepEqual(state.rows, [{ used_at: null, invalidated: true }])
     })
 
     await t.test('recovery confirmation and cancellation expose exactly one terminal winner', async () => {

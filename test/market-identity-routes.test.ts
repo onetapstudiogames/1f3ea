@@ -11,6 +11,7 @@ const READY = {
   PUBLIC_ORIGIN: 'https://market.test',
   MARKET_IDENTITY_RECOVERY_ENABLED: 'true',
   MARKET_IDENTITY_ROTATION_ENABLED: 'true',
+  MARKET_CODING_IDENTITY_ENABLED: 'true',
 } as const
 
 test('dormant identity routes return one private caller-worded refusal without credentials', async () => {
@@ -91,5 +92,52 @@ test('enabled identity routes serve the coding-client JSON doors and pairing, an
       registration_requires_human_approved: true,
       key_and_codes_shown_exactly_once: true,
     },
+  })
+})
+
+test('the browser pages go live without the coding-client doors when only the identity flags are set', async () => {
+  // This is production's actual 2026-09-01 state: MARKET_IDENTITY_RECOVERY_ENABLED and
+  // MARKET_IDENTITY_ROTATION_ENABLED are true, but the additive coding-client-identity
+  // migration has not run and MARKET_CODING_IDENTITY_ENABLED is unset. The private browser
+  // ceremony must keep working; the four coding-client doors must stay refused.
+  const BROWSER_ONLY = {
+    PUBLIC_ORIGIN: 'https://market.test',
+    MARKET_IDENTITY_RECOVERY_ENABLED: 'true',
+    MARKET_IDENTITY_ROTATION_ENABLED: 'true',
+  } as const
+  const app = new Hono()
+  mountMarketIdentityRoutes(app, { environment: BROWSER_ONLY, hostedMarketSigninReady: true })
+
+  for (const path of ['/join', '/recovery', '/rotate'] as const) {
+    const response = await app.request(path)
+    assert.notEqual(response.status, 503, path)
+  }
+
+  for (const path of ['/api/register', '/api/rotate', '/api/recovery', '/api/pair'] as const) {
+    const response = await app.request(path, { method: 'POST' })
+    assert.equal(response.status, 503, path)
+    assert.equal(response.headers.get('cache-control'), 'no-store', path)
+    assert.equal(response.headers.get('access-control-allow-origin'), null, path)
+    const text = await response.text()
+    assert.match(text, /coding-client identity doors are unavailable/iu, path)
+    assert.match(text, /no merchant or key was created or changed/iu, path)
+    assert.match(text, /MARKET_CODING_IDENTITY_ENABLED=true/u, path)
+    assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac|pc)_[0-9a-f]+/iu, path)
+  }
+
+  assert.deepEqual(marketIdentityPublicFacts(BROWSER_ONLY, true), {
+    join: 'https://market.test/join',
+    recovery: 'https://market.test/recovery',
+    recovery_enabled: true,
+    rotate: 'https://market.test/rotate',
+    rotation_enabled: true,
+    hosted_connector: 'https://market.test/mcp/connect',
+    hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
+    hosted_proven_hosts: [],
+    legacy_registration: 'retired',
+    merchant_key_transport:
+      'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
+      'never chat, MCP arguments or results, URLs, or logs',
+    coding_client_doors: null,
   })
 })

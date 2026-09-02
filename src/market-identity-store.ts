@@ -494,6 +494,14 @@ async function confirmMerchantRotationOnce(input: {
           replacement_secret_hash = NULL, recovery_expires_at = NULL, staged_at = NULL
       FROM confirmed WHERE code.merchant_id = confirmed.merchant_id
         AND code.used_at IS NULL AND code.invalidated_at IS NULL
+    ), invalidated_pairing_codes AS (
+      -- A pairing code only proves its minter held a valid key at mint time, never a specific
+      -- hash; without this, a code minted under a stolen key would still redeem after the
+      -- legitimate owner rotates away from that key. See market-pairing-store.ts.
+      UPDATE merchant_pairing_codes code
+      SET invalidated_at = coalesce(code.invalidated_at, now())
+      FROM confirmed WHERE code.merchant_id = confirmed.merchant_id
+        AND code.used_at IS NULL AND code.invalidated_at IS NULL
     ), revoked_families AS (
       UPDATE oauth_token_families family
       SET revoked_at = coalesce(family.revoked_at, now()),

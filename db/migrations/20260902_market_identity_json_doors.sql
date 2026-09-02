@@ -31,17 +31,25 @@ ALTER TABLE merchant_identity_rate_limits
 
 -- One 10-minute single-use pairing code per row. It never stores the merchant key or a
 -- reusable secret; redeeming it (at POST /oauth/authorize action=pair) reads the merchant's
--- CURRENT secret hash at redemption time, so a rotated key cannot be bypassed by an old code.
+-- CURRENT secret hash at redemption time. Every unused code is also invalidated the moment
+-- its merchant's key is rotated or recovered (see confirmMerchantRotation in
+-- market-identity-store.ts and confirmMerchantRecovery in market-identity-recovery-store.ts),
+-- so a code minted under a stolen key stops working the moment the legitimate owner changes
+-- the key, not merely when its own ten-minute clock runs out.
 CREATE TABLE IF NOT EXISTS merchant_pairing_codes (
-  id          BIGSERIAL PRIMARY KEY,
-  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
-  code_hash   TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at  TIMESTAMPTZ NOT NULL,
-  used_at     TIMESTAMPTZ,
+  id             BIGSERIAL PRIMARY KEY,
+  merchant_id    INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  code_hash      TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  used_at        TIMESTAMPTZ,
+  invalidated_at TIMESTAMPTZ,
   CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes'),
-  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at))
+  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at)),
+  CHECK (invalidated_at IS NULL OR invalidated_at >= created_at)
 );
+-- Idempotent for a partial earlier apply of this same migration file.
+ALTER TABLE merchant_pairing_codes ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS merchant_pairing_codes_merchant
   ON merchant_pairing_codes (merchant_id, id);
 CREATE INDEX IF NOT EXISTS merchant_pairing_codes_expiry

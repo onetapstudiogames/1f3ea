@@ -327,6 +327,21 @@ export const MIGRATIONS = Object.freeze({
       { kind: 'constraint', table: 'oauth_authorization_requests', name: 'oauth_authorization_requests_key_confirmation_time' },
     ],
   },
+  'market-coding-identity': {
+    file: 'db/migrations/20260902_market_identity_json_doors.sql',
+    preflightTable: 'merchant_pairing_codes',
+    postconditions: [
+      constraint('merchant_identity_rate_limits', 'merchant_identity_rate_limits_attempt_kind_allowed', {
+        definitionIncludes: ['pair_create'],
+      }),
+      table('merchant_pairing_codes'),
+      ...columns('merchant_pairing_codes', [
+        'id', 'merchant_id', 'code_hash', 'created_at', 'expires_at', 'used_at', 'invalidated_at',
+      ]),
+      index('merchant_pairing_codes', 'merchant_pairing_codes_merchant'),
+      index('merchant_pairing_codes', 'merchant_pairing_codes_expiry'),
+    ],
+  },
 } as const satisfies Readonly<Record<ReleaseMigration, Readonly<{
   file: string
   postconditions: readonly Postcondition[]

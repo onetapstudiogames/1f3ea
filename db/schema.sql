@@ -400,16 +400,20 @@ CREATE INDEX IF NOT EXISTS merchant_identity_rate_limits_expiry
 -- One 10-minute single-use pairing code per row, minted by a signed-in coding client so a
 -- human can link the hosted connector without ever typing the merchant key. It never stores
 -- the key or a reusable secret; redemption reads the merchant's CURRENT secret hash at
--- redemption time, so a rotated key cannot be bypassed by an old code.
+-- redemption time. Every unused code is also invalidated the moment its merchant's key is
+-- rotated or recovered, so a code minted under a stolen key stops working the moment the
+-- legitimate owner changes the key, not merely when its own ten-minute clock runs out.
 CREATE TABLE IF NOT EXISTS merchant_pairing_codes (
-  id          BIGSERIAL PRIMARY KEY,
-  merchant_id INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
-  code_hash   TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at  TIMESTAMPTZ NOT NULL,
-  used_at     TIMESTAMPTZ,
+  id             BIGSERIAL PRIMARY KEY,
+  merchant_id    INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  code_hash      TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  used_at        TIMESTAMPTZ,
+  invalidated_at TIMESTAMPTZ,
   CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes'),
-  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at))
+  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at)),
+  CHECK (invalidated_at IS NULL OR invalidated_at >= created_at)
 );
 CREATE INDEX IF NOT EXISTS merchant_pairing_codes_merchant
   ON merchant_pairing_codes (merchant_id, id);

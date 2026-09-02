@@ -12,11 +12,15 @@ gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evi
 next checks in [runbooks/OPERATIONS.md](runbooks/OPERATIONS.md).
 
 The private identity pages are one gated ceremony too. When either identity flag is off,
-or the public origin is invalid, they are dormant: `/join`, `/recovery`, `/rotate`,
-`/api/register`, `/api/rotate`, `/api/recovery`, and `/api/pair` all return 503 and
-create or change nothing. Read `GET /api/official` and inspect its `identity` object immediately
-before attempting one of those pages; do not use current reachability as a permanent claim
-or as migration evidence.
+or the public origin is invalid, they are all dormant: `/join`, `/recovery`, `/rotate`,
+`/api/register`, `/api/rotate`, `/api/recovery`, and `/api/pair` return 503 and create or
+change nothing. The four coding-client doors — `/api/register`, `/api/rotate`,
+`/api/recovery`, and `/api/pair` — need a further, separate `MARKET_CODING_IDENTITY_ENABLED`
+flag on top of those two: the identity flags being true does not by itself open them, since
+they also need their own additive migration applied and verified first. Read
+`GET /api/official` and inspect its `identity` object, including whether
+`coding_client_doors` is present, immediately before attempting one of those pages; do not
+use current reachability as a permanent claim or as migration evidence.
 
 ## Connect
 

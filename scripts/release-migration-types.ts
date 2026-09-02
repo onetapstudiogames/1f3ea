@@ -3,6 +3,7 @@ export type ReleaseMigration =
   | 'direct-payments'
   | 'hosted-market-signin'
   | 'market-identity'
+  | 'market-coding-identity'
   | 'world-payment-finality'
   | 'x402-payment-attempts'
 

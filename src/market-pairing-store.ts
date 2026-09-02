@@ -45,11 +45,15 @@ export interface ResolvedPairingCode {
 }
 
 /**
- * Atomically consumes one unused, unexpired pairing code and returns the merchant's CURRENT
- * secret hash — never the pairing code itself, and the code is spent whether or not the
- * caller goes on to use the returned hash. A merchant key rotated in the narrow gap between
- * consuming the code and reading the hash simply makes the next step fail closed as a
- * credential mismatch; it never leaks a stale key.
+ * Atomically consumes one unused, unexpired, uninvalidated pairing code and returns the
+ * merchant's CURRENT secret hash — never the pairing code itself, and the code is spent
+ * whether or not the caller goes on to use the returned hash. Reading the current hash here
+ * is not what makes rotation or recovery fail closed: confirmMerchantRotation (in
+ * market-identity-store.ts) and confirmMerchantRecovery (in
+ * market-identity-recovery-store.ts) each invalidate every one of a merchant's outstanding
+ * pairing codes the moment the key changes, in the same transaction as the change itself. So
+ * a code minted under a stolen key stops resolving as soon as the legitimate owner rotates or
+ * recovers — it does not have to wait out its own ten-minute clock.
  */
 export async function resolveAndConsumePairingCode(input: {
   codeHash: string
@@ -59,6 +63,7 @@ export async function resolveAndConsumePairingCode(input: {
     UPDATE merchant_pairing_codes
     SET used_at = now()
     WHERE code_hash = ${input.codeHash} AND used_at IS NULL AND expires_at > now()
+      AND invalidated_at IS NULL
     RETURNING merchant_id
   `) as Array<{ merchant_id: number }>
   const merchantId = consumed[0]?.merchant_id
