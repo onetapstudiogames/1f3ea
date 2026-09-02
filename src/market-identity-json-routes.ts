@@ -62,14 +62,29 @@ function fail(c: Context, status: JsonStatus, reason: string, message: string): 
  * onError 500 in index.ts. These JSON doors need the same net: readBody already turns its own
  * read failure into 503, but a thrown error from admittedMarketIdentity or any runtime.store
  * call deeper in stage/confirm/cancel/generate/begin did not, until now.
+ *
+ * The store call this wraps may throw after its transaction already committed (a dropped
+ * connection while reading the result, for example), so this can never truthfully claim
+ * nothing changed — that would be the same false "no credential was created or changed" claim
+ * the browser doors deliberately avoid (see withStorageErrors in market-identity-browser.ts).
+ * Match their wording instead: say the outcome could not be verified, and name the read that
+ * settles it — GET /api/merchants by handle for register, GET /api/me with each saved key for
+ * rotate/recovery.
  */
-async function withJsonStorageErrors(c: Context, operation: () => Promise<Response>): Promise<Response> {
+async function withJsonStorageErrors(
+  c: Context,
+  door: 'register' | 'rotate' | 'recovery',
+  operation: () => Promise<Response>,
+): Promise<Response> {
   try {
     return await operation()
   } catch {
+    const settledBy = door === 'register'
+      ? 'Check GET /api/merchants for the handle you attempted before retrying.'
+      : 'Check GET /api/me with each saved key in its Authorization: Bearer header before retrying.'
     return fail(
       c, 503, 'storage_unavailable',
-      'The market could not finish this request. Retry the same request; no credential was created or changed.',
+      `The market could not finish this request. Its outcome could not be verified. ${settledBy}`,
     )
   }
 }
@@ -313,7 +328,7 @@ async function registerCancel(c: Context, runtime: Runtime, body: Record<string,
 }
 
 async function registerHandler(c: Context, runtime: Runtime): Promise<Response> {
-  return withJsonStorageErrors(c, async () => {
+  return withJsonStorageErrors(c, 'register', async () => {
     const body = await readBody(c)
     if (body instanceof Response) return body
     const action = requireAction(c, body, ['stage', 'confirm', 'cancel'] as const)
@@ -428,7 +443,7 @@ async function rotateCancel(c: Context, runtime: Runtime, body: Record<string, u
 }
 
 async function rotateHandler(c: Context, runtime: Runtime): Promise<Response> {
-  return withJsonStorageErrors(c, async () => {
+  return withJsonStorageErrors(c, 'rotate', async () => {
     const body = await readBody(c)
     if (body instanceof Response) return body
     const action = requireAction(c, body, ['begin', 'confirm', 'cancel'] as const)
@@ -571,7 +586,7 @@ async function recoveryCancel(c: Context, runtime: Runtime, body: Record<string,
 }
 
 async function recoveryHandler(c: Context, runtime: Runtime): Promise<Response> {
-  return withJsonStorageErrors(c, async () => {
+  return withJsonStorageErrors(c, 'recovery', async () => {
     const body = await readBody(c)
     if (body instanceof Response) return body
     const action = requireAction(c, body, ['generate', 'begin', 'confirm', 'cancel'] as const)

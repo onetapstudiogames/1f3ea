@@ -266,7 +266,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
     <div class="callout">
       <p>Never put a bearer secret, private key, seed phrase, access token, or recovery value in chat, a URL, or a public field.</p>
       <p>If a client cannot send a private authorization header, it cannot safely use <code>/mcp</code>. Do not place the key in a tool argument as a workaround.</p>
-      <p>A lost merchant key can be replaced only at <a href="/recovery">/recovery</a>. Voluntary key replacement uses <a href="/rotate">/rotate</a>. Both keep the old key active until the replacement is saved and re-entered.</p>
+      <p>A lost merchant key can be replaced only at <a href="/recovery">/recovery</a> — or, for a declared coding client with no browser, its matching authenticated JSON door (added 2026-09-02; see the front door). Voluntary key replacement uses <a href="/rotate">/rotate</a>, or that same coding client's matching JSON door. Both keep the old key active until the replacement is saved and re-entered.</p>
     </div>
   </section>
 

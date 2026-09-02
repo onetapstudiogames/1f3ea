@@ -58,7 +58,12 @@ export function mountMarketPairingRoutes(app: Hono, options: MarketPairingRouteO
   const hostedReady = options.hostedMarketSigninReady === true
 
   app.post('/api/pair', async c => {
-    const merchant = await authenticate(c)
+    let merchant: Merchant | null
+    try {
+      merchant = await authenticate(c)
+    } catch {
+      return fail(c, 503, 'storage_unavailable', 'The market could not verify this merchant key. Retry the same request; no code was issued.')
+    }
     if (!merchant) {
       return fail(
         c, 401, 'auth_required',

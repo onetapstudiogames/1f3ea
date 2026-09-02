@@ -27,6 +27,9 @@ test('dormant identity routes return one private caller-worded refusal without c
     assert.equal(response.status, 503, path)
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
+    assert.equal(response.headers.get('x-1f3ea-reason'), 'identity_dormant', path)
+    const parsed = await response.clone().json() as { error: string; reason: string }
+    assert.equal(parsed.reason, 'identity_dormant', path)
     const text = await response.text()
     assert.match(text, /private merchant identity.*unavailable.*no merchant or key was (?:created|changed)/iu)
     assert.match(text, new RegExp(`retry ${retryPath.replace('/', '\\/')}`, 'iu'), path)
@@ -118,6 +121,9 @@ test('the browser pages go live without the coding-client doors when only the id
     assert.equal(response.status, 503, path)
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
+    assert.equal(response.headers.get('x-1f3ea-reason'), 'coding_identity_dormant', path)
+    const parsed = await response.clone().json() as { error: string; reason: string }
+    assert.equal(parsed.reason, 'coding_identity_dormant', path)
     const text = await response.text()
     assert.match(text, /coding-client identity doors are unavailable/iu, path)
     assert.match(text, /no merchant or key was created or changed/iu, path)

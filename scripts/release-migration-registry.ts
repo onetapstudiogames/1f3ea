@@ -340,6 +340,11 @@ export const MIGRATIONS = Object.freeze({
       ]),
       index('merchant_pairing_codes', 'merchant_pairing_codes_merchant'),
       index('merchant_pairing_codes', 'merchant_pairing_codes_expiry'),
+      table('oauth_pairing_reservations'),
+      ...columns('oauth_pairing_reservations', [
+        'id', 'session_hash', 'csrf_hash', 'pairing_code_hash', 'merchant_id', 'expires_at', 'created_at',
+      ]),
+      index('oauth_pairing_reservations', 'oauth_pairing_reservations_expiry'),
     ],
   },
 } as const satisfies Readonly<Record<ReleaseMigration, Readonly<{

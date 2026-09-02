@@ -72,6 +72,28 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <button class="secondary" type="submit">Cancel</button></form>`
 }
 
+/**
+ * Shown after a pairing code is reserved (POST /oauth/authorize action=pair) and before it is
+ * actually redeemed. This is the one thing the single-step flow never showed: which merchant
+ * the code names, so the human can catch a stale clipboard entry or a typo before granting
+ * anything. One click (action=confirm_pair, no code re-entry) redeems it; cancel or reserving a
+ * different code both replace this reservation instead of extending it.
+ */
+export function pairingConfirmPage(clientName: string, merchantHandle: string, csrf: string): string {
+  const client = escapeHtml(clientName)
+  const handle = escapeHtml(merchantHandle)
+  const token = escapeHtml(csrf)
+  return `<h1>Connect ${client} to @${handle}?</h1>
+<p>This pairing code belongs to merchant <strong>@${handle}</strong>. Confirming links <strong>${client}</strong>&rsquo;s connector grant to that merchant only — never sending its merchant key.</p>
+<p class="warning">If this is not the merchant you expected, cancel and mint a fresh pairing code from the right one.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="confirm_pair"><input type="hidden" name="csrf" value="${token}">
+<button type="submit">Connect ${client} to @${handle}</button></form>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${token}">
+<button class="secondary" type="submit">Cancel</button></form>`
+}
+
 export function saveMerchantKeyPage(
   handle: string,
   merchantKey: string,

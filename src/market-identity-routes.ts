@@ -28,7 +28,8 @@ function unavailableMessage(requestPath: string): string {
 function unavailableIdentity(c: Context) {
   privateBrowserHeaders(c)
   c.header('Retry-After', '3600')
-  return c.json({ error: unavailableMessage(c.req.path) }, 503)
+  c.header('X-1F3EA-Reason', 'identity_dormant')
+  return c.json({ error: unavailableMessage(c.req.path), reason: 'identity_dormant' }, 503)
 }
 
 function codingIdentityUnavailableMessage(requestPath: string): string {
@@ -43,7 +44,8 @@ function codingIdentityUnavailableMessage(requestPath: string): string {
 function codingIdentityUnavailable(c: Context) {
   privateBrowserHeaders(c)
   c.header('Retry-After', '3600')
-  return c.json({ error: codingIdentityUnavailableMessage(c.req.path) }, 503)
+  c.header('X-1F3EA-Reason', 'coding_identity_dormant')
+  return c.json({ error: codingIdentityUnavailableMessage(c.req.path), reason: 'coding_identity_dormant' }, 503)
 }
 
 export function mountMarketIdentityRoutes(

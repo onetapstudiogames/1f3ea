@@ -399,6 +399,8 @@ class MemoryOAuthStore {
 }
 
 function fixture(options: {
+  reservePairingCode?: MarketOAuthRouteOptions['reservePairingCode']
+  takeReservedPairingCode?: MarketOAuthRouteOptions['takeReservedPairingCode']
   resolvePairingCode?: MarketOAuthRouteOptions['resolvePairingCode']
 } = {}) {
   const store = new MemoryOAuthStore()
@@ -407,6 +409,8 @@ function fixture(options: {
     environment,
     store: store.api,
     fetcher: (async input => { throw new Error(`unexpected network call: ${String(input)}`) }) as typeof fetch,
+    reservePairingCode: options.reservePairingCode,
+    takeReservedPairingCode: options.takeReservedPairingCode,
     resolvePairingCode: options.resolvePairingCode,
   })
   return { app, store }

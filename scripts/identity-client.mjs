@@ -20,13 +20,16 @@
 // history and in any process listing (`ps`, Task Manager) for as long as the process runs.
 // Use the matching --merchant-key-file, --recovery-code-file, --session-file, or --csrf-file
 // instead, pointing at a file this script reads and never echoes — or pass `-` as that file's
-// path to read the one value from stdin.
+// path to read the one value from stdin. Each of those files must hold exactly one secret in
+// its own shape (see SECRET_FIELD_SHAPES below) and nothing else — never point one of these
+// flags at the JSON file this script's own --out wrote, which holds several fields at once and
+// will be refused.
 
 import { readFile, writeFile, chmod } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 
 const DEFAULT_ORIGIN = 'https://1f3ea.com'
-const SECRET_FIELDS = ['merchant_key', 'recovery_codes', 'pairing_code']
+const SECRET_FIELDS = ['merchant_key', 'recovery_codes', 'pairing_code', 'session', 'csrf']
 
 class IdentityDoorError extends Error {
   constructor(message, { status, reason, body }) {
@@ -169,6 +172,20 @@ const SECRET_FIELD_FILES = {
   csrf: 'csrf-file',
 }
 
+// The exact shape each door itself requires (mirrors MERCHANT_KEY_RE, RECOVERY_CODE_RE, and
+// CEREMONY_TOKEN_RE in the server's src/market-identity-fields.ts). A file read for one of
+// these flags is checked against its shape before this script does anything else with the
+// value — including sending it in a header or body. That is what stops the file --out itself
+// wrote (a multi-field JSON blob, not a single 1f3ea_sk_… value) from ever reaching fetch():
+// it fails this check and is refused right here, with a message that names the problem but
+// never the file's contents.
+const SECRET_FIELD_SHAPES = {
+  'merchant-key': { re: /^1f3ea_sk_[0-9a-f]{48}$/u, describe: '"1f3ea_sk_" followed by 48 lowercase hex characters' },
+  'recovery-code': { re: /^1f3ea_rc_[0-9a-f]{64}$/u, describe: '"1f3ea_rc_" followed by 64 lowercase hex characters' },
+  session: { re: /^[0-9a-f]{64}$/u, describe: '64 lowercase hex characters' },
+  csrf: { re: /^[0-9a-f]{64}$/u, describe: '64 lowercase hex characters' },
+}
+
 async function readStdinText() {
   process.stdin.setEncoding('utf8')
   let text = ''
@@ -176,17 +193,30 @@ async function readStdinText() {
   return text
 }
 
-async function readSecretFromPathOrStdin(source) {
+async function readSecretFromPathOrStdin(source, field) {
   const raw = source === '-' ? await readStdinText() : await readFile(source, 'utf8')
   const value = raw.trim()
-  if (!value) throw new Error(`no value read from ${source === '-' ? 'stdin' : source}`)
+  const origin = source === '-' ? 'stdin' : source
+  if (!value) throw new Error(`no value read from ${origin}`)
+  const shape = SECRET_FIELD_SHAPES[field]
+  if (shape && !shape.re.test(value)) {
+    throw new Error(
+      `the value read from ${origin} does not have the shape a --${field} value must have ` +
+      `(${shape.describe}); refusing to use it. This usually means the file holds something ` +
+      "other than exactly the saved secret — check it is not, for instance, the JSON file this " +
+      'script\'s own --out wrote (which holds several fields together, not one bare value).',
+    )
+  }
   return value
 }
 
 /**
  * Refuses --merchant-key, --recovery-code, --session, or --csrf as a bare flag, and resolves
  * each present --*-file flag (or `-` for stdin) into the plain field the CLI_COMMANDS table
- * already expects, so command construction below needs no other change.
+ * already expects, so command construction below needs no other change. Every value read this
+ * way is checked against its door's own shape before it is returned, so nothing ever reaches a
+ * network call — and no later error message — with a value that was never a well-formed
+ * secret to begin with.
  */
 async function resolveSecretFields(options) {
   const resolved = { ...options }
@@ -201,7 +231,7 @@ async function resolveSecretFields(options) {
     if (fileField in resolved) {
       const source = resolved[fileField]
       if (typeof source !== 'string') throw new Error(`--${fileField} requires a path or -`)
-      resolved[field] = await readSecretFromPathOrStdin(source)
+      resolved[field] = await readSecretFromPathOrStdin(source, field)
       delete resolved[fileField]
     }
   }
@@ -295,7 +325,20 @@ async function main() {
       process.exitCode = 1
       return
     }
-    throw error
+    // Never print error.message or error.stack here. resolveSecretFields already rejects any
+    // file input that does not match its door's exact shape, but this is the last line of
+    // defense for whatever it did not anticipate — e.g. a network-layer TypeError from fetch()
+    // whose own message happens to quote back an invalid header value. Node's default
+    // uncaught-exception handler would otherwise print that message and a full stack trace to
+    // stderr verbatim; a re-throw here would do exactly that.
+    const errorName = error && typeof error === 'object' && typeof error.name === 'string' ? error.name : 'Error'
+    console.error(
+      `identity-client failed with an unexpected ${errorName}. No further detail is printed here, ` +
+      'by design, since it could contain a credential value. Check --origin, network ' +
+      'connectivity, and that every --*-file argument points at a file holding exactly one ' +
+      'secret value in its expected shape.',
+    )
+    process.exitCode = 1
   }
 }
 

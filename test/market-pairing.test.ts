@@ -94,6 +94,16 @@ test('pairing reports a storage failure without leaking a partial code', async (
   assert.equal((await response.json() as { reason: string }).reason, 'storage_unavailable')
 })
 
+test('pairing reports a storage failure from authentication too, not a generic 500', async () => {
+  const app = harness({ authenticate: async () => { throw new Error('db down') } })
+  const response = await app.request('/api/pair', {
+    method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
+  })
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.equal((await response.json() as { reason: string }).reason, 'storage_unavailable')
+})
+
 test('pairing reports a storage failure from the rate-limit check too, not a generic 500', async () => {
   const throwingStore = {
     ...memoryStore().store,

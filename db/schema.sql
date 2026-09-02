@@ -421,6 +421,26 @@ CREATE INDEX IF NOT EXISTS merchant_pairing_codes_expiry
   ON merchant_pairing_codes (expires_at)
   WHERE used_at IS NULL;
 
+-- One pending pairing-code reservation per active hosted sign-in session. Reserving a pairing
+-- code (POST /oauth/authorize action=pair) shows the human which merchant it names before
+-- anything is granted; it never marks the underlying merchant_pairing_codes row used, so an
+-- unconfirmed reservation simply expires alongside its code -- exactly like an unused code,
+-- never longer. Only the confirm step (action=confirm_pair) actually consumes the code, via
+-- the same atomic resolveAndConsumePairingCode that always reads the merchant's CURRENT secret
+-- hash at that moment, not at reservation time.
+CREATE TABLE IF NOT EXISTS oauth_pairing_reservations (
+  id                BIGSERIAL PRIMARY KEY,
+  session_hash      TEXT NOT NULL UNIQUE CHECK (session_hash ~ '^[0-9a-f]{64}$'),
+  csrf_hash         TEXT NOT NULL CHECK (csrf_hash ~ '^[0-9a-f]{64}$'),
+  pairing_code_hash TEXT NOT NULL CHECK (pairing_code_hash ~ '^[0-9a-f]{64}$'),
+  merchant_id       INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS oauth_pairing_reservations_expiry
+  ON oauth_pairing_reservations (expires_at);
+
 -- A world draft is the market's public promise. The seller separately proves city
 -- ownership and locks the thing before this can become a visible listing.
 CREATE TABLE IF NOT EXISTS world_drafts (

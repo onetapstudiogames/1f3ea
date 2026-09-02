@@ -73,3 +73,86 @@ export async function resolveAndConsumePairingCode(input: {
   `) as Array<{ secret_hash: string }>
   return merchant[0] ? { merchantId, merchantSecretHash: merchant[0].secret_hash } : null
 }
+
+// ------------------------------------------------------------------------------------------
+// Two-step browser redemption: reserve, then confirm. Splitting the single atomic consume
+// above into these two steps lets the human SEE which merchant a pairing code names — "connect
+// <client> to merchant @handle?" — before anything is granted, instead of a code typo or a
+// stale clipboard entry silently linking the wrong store. See market-oauth-pairing.ts.
+// ------------------------------------------------------------------------------------------
+
+export interface PairingReservation {
+  merchantId: number
+  handle: string
+  expiresAt: string
+}
+
+/**
+ * Reserving never marks the underlying merchant_pairing_codes row used — it is a read of that
+ * row (plus an upsert of this browser session's own reservation row) — so a reservation the
+ * human never confirms simply expires alongside its code, exactly like an unused code, never
+ * longer. One reservation per browser sign-in session (session_hash is UNIQUE): reserving a
+ * second code for the same session replaces the first, and re-reserving the same code refreshes
+ * which merchant it will show. The reservation's own expiry is pinned to the code's real
+ * expires_at, never extended past it.
+ */
+export async function reservePairingCode(input: {
+  sessionHash: string
+  csrfHash: string
+  codeHash: string
+}): Promise<PairingReservation | null> {
+  requireHash(input.sessionHash, 'session hash')
+  requireHash(input.csrfHash, 'csrf hash')
+  requireHash(input.codeHash, 'pairing-code hash')
+  const rows = (await sql`
+    WITH cleanup AS (
+      DELETE FROM oauth_pairing_reservations WHERE expires_at <= now()
+    ), peeked AS MATERIALIZED (
+      SELECT code.merchant_id, code.expires_at, merchant.handle
+      FROM merchant_pairing_codes code
+      JOIN merchants merchant ON merchant.id = code.merchant_id
+      WHERE code.code_hash = ${input.codeHash} AND code.used_at IS NULL AND code.expires_at > now()
+        AND code.invalidated_at IS NULL
+    ), upserted AS (
+      INSERT INTO oauth_pairing_reservations (
+        session_hash, csrf_hash, pairing_code_hash, merchant_id, expires_at
+      )
+      SELECT ${input.sessionHash}, ${input.csrfHash}, ${input.codeHash}, peeked.merchant_id, peeked.expires_at
+      FROM peeked
+      ON CONFLICT (session_hash) DO UPDATE SET
+        csrf_hash = EXCLUDED.csrf_hash,
+        pairing_code_hash = EXCLUDED.pairing_code_hash,
+        merchant_id = EXCLUDED.merchant_id,
+        expires_at = EXCLUDED.expires_at,
+        created_at = now()
+      RETURNING merchant_id, expires_at
+    )
+    SELECT upserted.merchant_id, upserted.expires_at, peeked.handle
+    FROM upserted JOIN peeked ON true
+  `) as Array<{ merchant_id: number; expires_at: string; handle: string }>
+  const row = rows[0]
+  return row ? { merchantId: row.merchant_id, handle: row.handle, expiresAt: row.expires_at } : null
+}
+
+/**
+ * Atomically reads and deletes this session's reservation, handing back the reserved code's
+ * hash for the caller to redeem through resolveAndConsumePairingCode above — the same atomic
+ * consume the single-step flow always used, so the confirm step still reads the merchant's
+ * CURRENT secret hash at the moment of redemption, not at reservation time. Returns null once
+ * the reservation is gone (never made, already taken by an earlier confirm, or expired), so a
+ * duplicate or replayed confirm click cannot redeem the same reservation twice.
+ */
+export async function takeReservedPairingCode(input: {
+  sessionHash: string
+  csrfHash: string
+}): Promise<{ codeHash: string } | null> {
+  requireHash(input.sessionHash, 'session hash')
+  requireHash(input.csrfHash, 'csrf hash')
+  const rows = (await sql`
+    DELETE FROM oauth_pairing_reservations
+    WHERE session_hash = ${input.sessionHash} AND csrf_hash = ${input.csrfHash} AND expires_at > now()
+    RETURNING pairing_code_hash
+  `) as Array<{ pairing_code_hash: string }>
+  const row = rows[0]
+  return row ? { codeHash: row.pairing_code_hash } : null
+}

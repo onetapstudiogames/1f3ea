@@ -66,7 +66,7 @@ mock.module(new URL('../../src/db.ts', import.meta.url).href, {
   namedExports: { runReadCommittedTransaction, sql },
 })
 
-const { createMerchantPairingCode, resolveAndConsumePairingCode } =
+const { createMerchantPairingCode, resolveAndConsumePairingCode, reservePairingCode, takeReservedPairingCode } =
   await import('../../src/market-pairing-store.ts')
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -660,6 +660,81 @@ test('market identity storage is atomic against real PostgreSQL', async t => {
         [codeHash],
       )
       assert.deepEqual(state.rows, [{ used_at: null, invalidated: true }])
+    })
+
+    await t.test('reserving a pairing code never consumes it, and confirm still reads the CURRENT secret hash', async () => {
+      await resetDatabase()
+      const merchantId = await seedMerchant('pairing-reserve-merchant', 'pairing-reserve-key')
+      const codeHash = sha256('pairing:reserve-then-confirm')
+      await createMerchantPairingCode({ merchantId, codeHash })
+      const sessionHash = sha256('pairing-reserve-session')
+      const csrfHash = sha256('pairing-reserve-csrf')
+
+      const reserved = await reservePairingCode({ sessionHash, csrfHash, codeHash })
+      assert.deepEqual(reserved && { merchantId: reserved.merchantId, handle: reserved.handle }, {
+        merchantId, handle: 'pairing-reserve-merchant',
+      })
+
+      // Reserving must not have touched the underlying code at all.
+      const unconsumed = await database!.query(
+        `SELECT used_at FROM merchant_pairing_codes WHERE code_hash = $1`,
+        [codeHash],
+      )
+      assert.deepEqual(unconsumed.rows, [{ used_at: null }])
+
+      // Rotate the key AFTER reserving but BEFORE confirming: confirm must still read the
+      // CURRENT secret hash, and the rotation's own invalidation must still reach this code
+      // even though it now has a live reservation pointed at it.
+      const rotationInput = rotation('pairing-reserve-rotation', 'pairing-reserve-key', 'pairing-reserve-rotated-key')
+      const staged = await store.stageMerchantRotation(rotationInput)
+      assert.equal(staged.status, 'staged')
+      const confirmedRotation = await store.confirmMerchantRotation({
+        sessionHash: rotationInput.sessionHash, csrfHash: rotationInput.csrfHash,
+        replacementSecretHash: rotationInput.replacementSecretHash,
+      })
+      assert.equal(confirmedRotation.status, 'rotated')
+
+      const taken = await takeReservedPairingCode({ sessionHash, csrfHash })
+      assert.deepEqual(taken, { codeHash })
+
+      // The code was invalidated by the rotation above, so confirming it now must fail closed —
+      // exactly as it would have under the old single-step door, never issuing a stale grant.
+      assert.equal(
+        await resolveAndConsumePairingCode({ codeHash: taken!.codeHash }), null,
+        'a reservation confirmed after its underlying code was invalidated by rotation must fail closed',
+      )
+    })
+
+    await t.test('an unconfirmed reservation expires alongside its code, never longer, and confirming it then fails like a bad code', async () => {
+      await resetDatabase()
+      const merchantId = await seedMerchant('pairing-expiry-merchant', 'pairing-expiry-key')
+      const codeHash = sha256('pairing:expires-unconfirmed')
+      await createMerchantPairingCode({ merchantId, codeHash })
+      const sessionHash = sha256('pairing-expiry-session')
+      const csrfHash = sha256('pairing-expiry-csrf')
+
+      const reserved = await reservePairingCode({ sessionHash, csrfHash, codeHash })
+      assert.ok(reserved)
+
+      // Force both the code and the reservation into the past, exactly as if the human simply
+      // never clicked confirm and the code's own ten-minute clock ran out. Both tables' own
+      // CHECK constraints require expires_at > created_at, so created_at must move back too.
+      await database!.query(
+        `UPDATE merchant_pairing_codes SET created_at = now() - interval '20 minutes', expires_at = now() - interval '10 minutes' WHERE code_hash = $1`,
+        [codeHash],
+      )
+      await database!.query(
+        `UPDATE oauth_pairing_reservations SET created_at = now() - interval '20 minutes', expires_at = now() - interval '10 minutes' WHERE session_hash = $1`,
+        [sessionHash],
+      )
+
+      assert.equal(
+        await takeReservedPairingCode({ sessionHash, csrfHash }), null,
+        'an expired reservation must not be redeemable',
+      )
+      // Confirming that same code fresh (as if typed again) must also fail: it is exactly as
+      // dead as an unused code that ran out its clock, never deader and never longer-lived.
+      assert.equal(await resolveAndConsumePairingCode({ codeHash }), null)
     })
 
     await t.test('recovery confirmation and cancellation expose exactly one terminal winner', async () => {

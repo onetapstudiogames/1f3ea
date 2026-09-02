@@ -434,6 +434,15 @@ test('coding-client identity has its own guarded additive release migration, sep
     condition.kind === 'constraint' && condition.table === 'merchant_identity_rate_limits'
       && condition.name === 'merchant_identity_rate_limits_attempt_kind_allowed'
       && condition.definitionIncludes?.includes('pair_create')))
+  assert.ok(run.postconditions.some(condition =>
+    condition.kind === 'table' && condition.name === 'oauth_pairing_reservations'))
+  for (const name of ['id', 'session_hash', 'csrf_hash', 'pairing_code_hash', 'merchant_id', 'expires_at', 'created_at']) {
+    assert.ok(run.postconditions.some(condition =>
+      condition.kind === 'column' && condition.table === 'oauth_pairing_reservations' && condition.name === name), name)
+  }
+  assert.ok(run.postconditions.some(condition =>
+    condition.kind === 'index' && condition.table === 'oauth_pairing_reservations'
+      && condition.name === 'oauth_pairing_reservations_expiry'))
 
   const preview = resolveReleaseMigration([
     '--target', 'preview',

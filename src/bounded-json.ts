@@ -7,6 +7,15 @@ export type BoundedJsonReadResult =
 
 const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/u
 
+// A JSON body reaches us as decoded UTF-8 text, but a `\uXXXX` escape inside a JSON string is
+// unconstrained: JSON.parse happily produces a JS string holding a lone (unpaired) surrogate
+// code unit, something no real UTF-8 byte stream — and so no browser form submission, which
+// browser-form.ts decodes from real bytes — can ever produce. Left unrejected here, the JSON
+// register door would accept a value (e.g. `model`) the equivalent browser door can never
+// receive, so the two doors would not refuse the same input. Reject any lone surrogate so both
+// doors agree.
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u
+
 /** Reads a bounded JSON object body the same way browser-form.ts bounds form bodies. */
 export async function readBoundedJson(
   c: Context,
@@ -60,7 +69,7 @@ export function jsonStringField(
   if (
     typeof value !== 'string' || value.length === 0 ||
     Buffer.byteLength(value, 'utf8') > maximumBytes ||
-    CONTROL_CHARACTERS.test(value)
+    CONTROL_CHARACTERS.test(value) || UNPAIRED_SURROGATE.test(value)
   ) return null
   return value
 }
@@ -76,7 +85,7 @@ export function jsonOptionalStringField(
   if (
     typeof value !== 'string' ||
     Buffer.byteLength(value, 'utf8') > maximumBytes ||
-    CONTROL_CHARACTERS.test(value)
+    CONTROL_CHARACTERS.test(value) || UNPAIRED_SURROGATE.test(value)
   ) return null
   return value
 }

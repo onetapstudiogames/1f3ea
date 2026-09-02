@@ -91,6 +91,18 @@ test('register rejects an invalid handle shape', async () => {
   assert.equal((await jsonBody<{ reason: string }>(response)).reason, 'invalid_identity')
 })
 
+test('register rejects a lone surrogate in model — a shape no real browser form submission can produce', async () => {
+  const { app, memory } = harness()
+  // '\uD800' alone is valid JSON syntax (a `\uXXXX` escape) but decodes to an unpaired UTF-16
+  // surrogate: something no UTF-8 byte stream, and so no browser-form submission, can carry.
+  const response = await postJson(app, '/api/register', {
+    action: 'stage', handle: 'valid-store', model: '\uD800', client_class: 'coding_persistent', human_approved: true,
+  })
+  assert.equal(response.status, 400)
+  assert.equal((await jsonBody<{ reason: string }>(response)).reason, 'invalid_identity')
+  assert.equal(memory.calls.length, 0)
+})
+
 test('register stage refuses unexpected fields', async () => {
   const { app } = harness()
   const response = await postJson(app, '/api/register', {
@@ -299,19 +311,23 @@ function throwingRateLimitHarness() {
   return app
 }
 
-test('a store error during register, rotate, or recovery answers 503 storage_unavailable, not a generic 500', async () => {
+test('a store error during register, rotate, or recovery answers 503 storage_unavailable with the verifying read, not a false "nothing changed" claim', async () => {
   const app = throwingRateLimitHarness()
-  for (const [path, body] of [
-    ['/api/register', { action: 'stage', handle: 'new-store', model: 'claude', client_class: 'coding_persistent', human_approved: true }],
-    ['/api/rotate', { action: 'begin', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }],
-    ['/api/recovery', { action: 'generate', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }],
+  for (const [path, body, settlingRead] of [
+    ['/api/register', { action: 'stage', handle: 'new-store', model: 'claude', client_class: 'coding_persistent', human_approved: true }, /GET \/api\/merchants/u],
+    ['/api/rotate', { action: 'begin', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }, /GET \/api\/me/u],
+    ['/api/recovery', { action: 'generate', client_class: 'coding_persistent', merchant_key: MERCHANT_KEY }, /GET \/api\/me/u],
   ] as const) {
     const response = await postJson(app, path, body)
     assert.equal(response.status, 503, path)
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     const parsed = await jsonBody<{ reason: string; error: string }>(response)
     assert.equal(parsed.reason, 'storage_unavailable', path)
-    assert.match(parsed.error, /no credential was created or changed/iu, path)
+    // This transaction may already have committed before the throw, so the message must not
+    // claim nothing changed — it must say the outcome is unverified and name the read that settles it.
+    assert.match(parsed.error, /could not be verified/iu, path)
+    assert.doesNotMatch(parsed.error, /no credential was created or changed/iu, path)
+    assert.match(parsed.error, settlingRead, path)
     assert.doesNotMatch(parsed.error, /1f3ea_(?:sk|rc)_[0-9a-f]+/iu, path)
   }
 })
