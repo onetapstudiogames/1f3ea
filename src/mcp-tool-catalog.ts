@@ -4,6 +4,7 @@ import {
   STANDING_LISTINGS_PAGE_LIMIT,
 } from './collection-contract.ts'
 import { AISLES } from './market.ts'
+import { WITHDRAW_ITEM_CONTRACT } from './public-contracts.ts'
 
 interface ToolDef {
   name: string
@@ -444,8 +445,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'withdraw_item',
-    description:
-      'Permanently withdraw one of your listings and block future purchases. Prior buyers keep their copy.',
+    description: WITHDRAW_ITEM_CONTRACT,
     inputSchema: {
       type: 'object',
       additionalProperties: false,

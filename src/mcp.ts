@@ -242,7 +242,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
           content: [{
             type: 'text',
             text: classifiedErrorText(
-              'A permanent merchant key is not accepted by the hosted connector. Enter it only on the private 1F3EA sign-in page opened by ChatGPT.',
+              'A permanent merchant key is not accepted by the hosted connector. Enter it only on the private 1F3EA sign-in page opened by the hosted client.',
               'auth_required',
             ),
           }],

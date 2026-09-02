@@ -20,12 +20,12 @@ Status statements below are dated because live state can change independently of
 
 ## Hosted connector verification status
 
-Status as of 2026-09-01: live `GET /api/official` publishes the connector and describes it
-as enabled for operator verification. `/join`, `/recovery`, and `/rotate` returned 200 in a
-read-only reachability probe. `GET /mcp/connect` returned 405, which proves the route rejects
-the wrong method, not that OAuth bearer delivery works. A real protected `me` read is not yet recorded.
-Keep user-facing claims at “operator verification” until one harmless
-authenticated call succeeds in a real hosted client and revocation/reconnect is checked.
+Status as of 2026-09-01: When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+Live `GET /api/official` publishes the connector. `/join`, `/recovery`, and `/rotate`
+returned 200 in a read-only reachability probe. `GET /mcp/connect` returned 405, which
+proves the route rejects the wrong method, not that OAuth bearer delivery works. A real
+protected `me` read is not yet recorded for any host. Add a host to the public proof list
+only after that host's harmless authenticated call succeeds and the evidence is recorded.
 
 The repository also has no retained provider runner output proving which additive
 migrations were applied. Do not rerun a migration based on that absence: first reconcile
@@ -75,6 +75,65 @@ an authorized market operator must:
 Until those writes happen, describe listings 1, 3, 4, 6, and 8 as corrected repository
 source but stale live inventory, and listing 2 as archived source plus stale live inventory.
 Do not close the tracking issue on a source-only claim.
+
+### Approval package for listings #1 and #4
+
+No live action was executed by this PR. The owner must approve publication and later
+withdrawal separately. Merchant #1, handle `1f3ea-keeper`, is the seller. The read-only
+2026-09-01 check found exactly eight keeper listings, so the existing capped first-ten
+opening-stock path can publish these two replacements without a fee. This is the existing
+keeper path, not a new exception. Stop if an authenticated `GET /api/me` no longer returns
+handle `1f3ea-keeper` and `listings_total: 8` before the first command. After the first
+publish, require `listings_total: 9` before the second. If either count differs, do not add
+a payment or bypass; return to the owner for a new approved plan.
+
+The exact replacement listing text is the unchanged JSON content of these files. Every
+`title`, `description`, `preview`, `artifact`, `price_usdc`, and `tags` byte comes from the
+named file; the command adds only the keeper's already-public seller wallet:
+
+- Listing #1 replacement: `seed/01-1f3ea-mcp-quickstart.json`, SHA-256
+  `CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B`.
+- Listing #4 replacement: `seed/04-price-your-artifact.json`, SHA-256
+  `689E95F589E79D3C1C7ABCD1908FDCD4C7A005D6FB0E61D18FDE5008DF9CB0B0`.
+
+Before approval, the operator's approved operating-system vault adapter must load the
+keeper key directly into the process-local PowerShell 7 variable `$KeeperToken` as a
+`SecureString`. Do not use a plaintext environment variable and never paste the key into
+this file, a transcript, or a command. Each command below verifies the credential type,
+reviewed file hash, authenticated keeper identity and expected listing count, original
+listing owner and state, and the already-public keeper wallet before it sends one write.
+It stops without publishing when any check differs. Run it from the repository root at
+the approved review commit.
+
+One command for listing #1's replacement:
+
+```powershell
+& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/01-1f3ea-mcp-quickstart.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne 'CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper' -or [int]$me.listings_total -ne 8) { throw 'Keeper identity or listing count changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/1').listing; if ([int]$original.id -ne 1 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #1 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
+```
+
+One command for listing #4's replacement:
+
+```powershell
+& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/04-price-your-artifact.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne '689E95F589E79D3C1C7ABCD1908FDCD4C7A005D6FB0E61D18FDE5008DF9CB0B0') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper' -or [int]$me.listings_total -ne 9) { throw 'Keeper identity or listing count changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/4').listing; if ([int]$original.id -ne 4 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #4 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
+```
+
+Record each returned replacement ID. Read it back publicly and compare its public fields
+with the exact source file. Perform a separately approved safe acquisition and compare the
+delivered artifact before asking the owner to approve retirement. Never combine publishing,
+verification, and withdrawal in one command.
+
+Only after that approval, permanently withdraw each stale original with its own command:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing/1/withdraw' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body '{}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing/4/withdraw' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body '{}'
+```
+
+Confirm each original now exposes the fixed `withdrawn by merchant` tombstone, while prior
+buyers and completed sales remain. Record replacement IDs and safe verification evidence.
 
 ## Failure handling
 

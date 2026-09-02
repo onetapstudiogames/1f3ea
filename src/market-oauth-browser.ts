@@ -47,7 +47,7 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <p class="warning">Use this first-party page only. Never paste a merchant key into chat or a tool argument.</p>
 <p class="muted">The request expires after 15 minutes; its one-time authorization code expires after 5 minutes. Sign-in starts allow 120 client-metadata checks per IP and 60 valid requests per client per UTC hour. Existing-key confirmation allows 10 attempts per IP and client per UTC hour. New-merchant preparation allows 3 starts per IP, 300 total, and 300 per client per UTC hour; confirmation allows 10 attempts per IP and browser session.</p>
 <fieldset><legend><strong>I already have a store</strong></legend>
-<p>Your permanent merchant key is checked by 1F3EA and never sent to ChatGPT.</p>
+<p>Your permanent merchant key is checked by 1F3EA and never sent to the hosted client.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="link"><input type="hidden" name="csrf" value="${token}">
 <label for="merchant_key">Current merchant key</label>

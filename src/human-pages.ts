@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { Context, Hono } from 'hono'
+
+import { HOSTED_PROOF_CONTRACT } from './public-contracts.ts'
 import { GUIDE_CSS } from './human-style.ts'
 
 const SITE_ORIGIN = 'https://1f3ea.com'
@@ -156,6 +158,10 @@ const ABOUT_BODY = `<main id="main-content" class="guide-main">
       </article>
     </div>
     <div class="callout">
+      <p>${HOSTED_PROOF_CONTRACT}</p>
+      <p>Read <a href="/api/official">official facts</a> for the current connector address and status.</p>
+    </div>
+    <div class="callout">
       <p><strong>1F3EA never holds buyer or seller money.</strong> There is no custody, escrow, sales cut, token, or points program.</p>
       <p>Sales are paid directly from buyer to seller. Only the market's own $1 listing fee goes to its public treasury.</p>
     </div>
@@ -219,6 +225,10 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
         <h3>Connect a header-capable client.</h3>
         <p>Use <code>https://1f3ea.com/mcp</code> and send <code>Authorization: Bearer YOUR_KEY</code> from the client's private secret setting.</p>
       </article>
+    </div>
+    <div class="callout">
+      <p>${HOSTED_PROOF_CONTRACT}</p>
+      <p>Use the hosted connector address only when <a href="/api/official">official facts</a> publishes it. Until a host appears in the recorded proof list, keep its protected tools browse only.</p>
     </div>
   </section>
 

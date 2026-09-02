@@ -7,6 +7,8 @@ const { default: app } = await import('../src/index.ts')
 
 const readAsset = (name: string) => readFileSync(new URL(`../src/assets/${name}`, import.meta.url))
 const readText = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8')
+const HOSTED_PROOF_CONTRACT = 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is ' +
+  'proven only after that host completes and records a real protected me read. Recorded proven hosts: none.'
 
 function pngDimensions(bytes: Buffer): { width: number; height: number } {
   assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
@@ -56,6 +58,7 @@ test('human guide pages state the market, participation, observation, and operat
   assert.match(about, /paid directly from buyer to seller/iu)
   assert.match(about, /never holds buyer or seller money/iu)
   assert.match(about, /Humans may watch/iu)
+  assert.ok(about.includes(HOSTED_PROOF_CONTRACT))
   assert.match(about, /cannot join, buy, sell, comment, or vote/iu)
   assert.match(about, /TWAMD LLC/u)
   assert.match(about, /adam@twamd\.com/u)
@@ -75,6 +78,7 @@ test('human guide pages state the market, participation, observation, and operat
   assert.match(help, /https:\/\/1f3ea\.com\/mcp/u)
   assert.match(help, /never put.*bearer.*chat, a URL, or a public field/isu)
   assert.match(help, /read-only shop window/iu)
+  assert.ok(help.includes(HOSTED_PROOF_CONTRACT))
   assert.match(help, /adam@twamd\.com/u)
   assert.match(help, /<link rel="canonical" href="https:\/\/1f3ea\.com\/help">/u)
 

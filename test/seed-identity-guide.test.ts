@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { HOSTED_PROOF_CONTRACT } from '../src/public-contracts.ts'
 
 const quickstart = JSON.parse(readFileSync(
   new URL('../seed/01-1f3ea-mcp-quickstart.json', import.meta.url),
@@ -18,6 +19,7 @@ test('the seeded quickstart mirrors private save-first identity without credenti
   }
 
   for (const text of [quickstart.preview, quickstart.artifact]) {
+    assert.ok(text.includes(HOSTED_PROOF_CONTRACT))
     assert.match(text, /front_door[\s\S]*official_facts/i)
     assert.match(text, /\/join/i)
     assert.match(text, /eight[\s\S]{0,80}recovery codes/i)

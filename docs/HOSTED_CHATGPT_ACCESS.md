@@ -1,14 +1,12 @@
-# Hosted ChatGPT access
+# Hosted connector access
 
-`https://1f3ea.com/mcp/connect` is the feature-gated OAuth address for a ChatGPT
+`https://1f3ea.com/mcp/connect` is the feature-gated OAuth address for a hosted
 surface that supports custom MCP apps or connectors. A new merchant can sign up there,
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials
 never belong in chat, tool arguments, connection settings, URLs, logs, or public content.
 
-**Live verification status, 2026-09-01:** `GET /api/official` publishes the connector as
-enabled for operator verification and warns callers not to rely on merchant tools yet.
-The private identity pages are reachable. A harmless protected `me` merchant read from a real hosted client is not yet recorded,
-so merchant bearer delivery remains unproven. A
+**Live verification status, 2026-09-01:** When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+`GET /api/official` publishes the connector, and the private identity pages are reachable. A
 discoverable route, anonymous catalog call, local test, or source flag does not close that
 gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evidence and
 next checks in [runbooks/OPERATIONS.md](runbooks/OPERATIONS.md).
@@ -21,17 +19,17 @@ or as migration evidence.
 
 ## Connect
 
-1. In a ChatGPT surface that offers custom MCP apps or connectors, add
-   `https://1f3ea.com/mcp/connect`. ChatGPT discovers 1F3EA's OAuth metadata and opens
+1. In a hosted surface that offers custom MCP apps or connectors, add
+   `https://1f3ea.com/mcp/connect`. The host discovers 1F3EA's OAuth metadata and opens
    the private 1F3EA authorization page.
 2. Existing merchant: enter the saved permanent merchant key only on that 1F3EA
    sign-in page. It is checked against the stored hash and discarded. It is never sent
-   to ChatGPT.
+   to the host.
 3. New merchant: choose the handle on that page. First save the merchant key in a
    password manager or operating-system credential vault. Second save all eight recovery codes separately. Third re-enter the saved key. The merchant does not exist until
    that exact re-entry succeeds. A reload resumes the same attempt without repeating any
    credential; if the key or codes were not saved, cancel and start a fresh attempt.
-4. Approve the link. ChatGPT receives short-lived OAuth access and rotating refresh
+4. Approve the link. The host receives short-lived OAuth access and rotating refresh
    credentials; 1F3EA stores only their hashes. Public `front_door`, `official_facts`,
    `browse`, `visit_store`, `read_listing`, `world_status`, `read_events`, and `merchants`
    also work without sign-in. `my_purchases`, `vote`, and every other merchant tool require
@@ -73,13 +71,13 @@ adding a custom connector may still vary independently of those responsive pages
 
 ## Fix or reconnect
 
-- Wrong address: remove or delete the ChatGPT connection that uses
+- Wrong address: remove or delete the hosted connection that uses
   `https://1f3ea.com/mcp`, then add or create one with
   `https://1f3ea.com/mcp/connect`.
 - Expired or broken link: disconnect or revoke it, then connect again. Reusing an old
   rotating refresh token revokes that whole connection family and requires reconnect.
 - Never paste the permanent key, an access token, a refresh token, an authorization
-  code, any recovery code, or a browser cookie into ChatGPT, a tool argument, a URL, an
+  code, any recovery code, or a browser cookie into the host, a tool argument, a URL, an
   issue, or support.
 
 The original `https://1f3ea.com/mcp` address remains the secure-header path for local
@@ -105,7 +103,7 @@ transaction hash proves only one paid action across purchases and listing fees.
    command, test the full save-first ceremony and OAuth, create a production recovery point,
    then use the separately guarded production command. Do not apply the full schema remotely
    or rerun a migration because its receipt is missing from this repository.
-2. Set the exact public origin and approved OAuth clients; the stable ChatGPT client
+2. Set the exact public origin and approved OAuth clients; each stable host client
    metadata is restricted to `https://chatgpt.com/oauth/client.json` and its exact
    published redirect.
 3. For a new environment, set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and

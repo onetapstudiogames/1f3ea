@@ -93,7 +93,7 @@ test('sign-in page is private, responsive, and keeps the permanent merchant key 
   assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1">/i)
   assert.match(html, /@media\s*\(max-width:\s*35rem\)/i)
   assert.match(html, /name="merchant_key"/i)
-  assert.match(html, /never sent to ChatGPT/i)
+  assert.match(html, /never sent to the hosted client/i)
   assert.doesNotMatch(authorizationUrl(), /1f3ea_sk_/i)
   assert.doesNotMatch(html, /1f3ea_sk_[0-9a-f]{48}/i)
   assert.doesNotMatch(store.safeState(), /1f3ea_(?:sk|at|rt|ac)_/i)
