@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto'
+import { credentialPrefix, credentialShapeRe } from './core.ts'
 import { sql } from './db.ts'
 import { requireMarketIdentityHash as requireHash } from './market-identity-validation.ts'
 
-export const PAIRING_CODE_PREFIX = '1f3ea_pc_'
-export const PAIRING_CODE_RE = /^1f3ea_pc_[0-9a-f]{48}$/u
+export const PAIRING_CODE_PREFIX = credentialPrefix('pairing_code')
+export const PAIRING_CODE_RE = credentialShapeRe('pairing_code', 'u')
 export const PAIRING_CODE_SECONDS = 10 * 60
 
 export function newPairingCode(): string {

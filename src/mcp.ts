@@ -1,5 +1,5 @@
 import type { Context, Hono } from 'hono'
-import { allowOAuthForHostedConnectorRequest, SECRET_PREFIX } from './core.ts'
+import { allowOAuthForHostedConnectorRequest, anyCredentialShapeRe, SECRET_PREFIX } from './core.ts'
 import { MARKET_OAUTH_SCOPE, marketOAuthChallenge, marketPublicOrigin } from './market-oauth-config.ts'
 import {
   MCP_TOOLS,
@@ -28,9 +28,13 @@ export interface McpOptions {
 
 const OAUTH_SCHEME = Object.freeze({ type: 'oauth2', scopes: [MARKET_OAUTH_SCOPE] })
 const NOAUTH_SCHEME = Object.freeze({ type: 'noauth' })
-const CREDENTIAL_VALUE = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})/i
-const CREDENTIAL_REDACTION = /1f3ea_(?:sk_[0-9a-f]{48}|(?:at|rt|ac|rc)_[0-9a-f]{64})/gi
-const CREDENTIAL_FIELD = /^(?:secret|merchant_key|replacement_key|recovery_code|access_token|refresh_token|authorization_code|code)$/i
+// Built from core.ts's CREDENTIAL_SHAPES table so a new credential family (or a length change
+// to an existing one) can never land recognized by only one of the guard below and the
+// connector-response redaction — both read the exact same pattern.
+const CREDENTIAL_VALUE = anyCredentialShapeRe('i')
+const CREDENTIAL_REDACTION = anyCredentialShapeRe('gi')
+const CREDENTIAL_FIELD =
+  /^(?:secret|merchant_key|replacement_key|recovery_code|access_token|refresh_token|authorization_code|pairing_code|code)$/i
 const SAFE_ARGUMENT_NAME = /^[a-z][a-z0-9_]{0,63}$/
 const FALLBACK_FRONT_DOOR = 'https://1f3ea.com/'
 

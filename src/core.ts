@@ -6,6 +6,51 @@ export const SECRET_PREFIX = '1f3ea_sk_'
 export const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
 export const WALLET_RE = /^0x[0-9a-fA-F]{40}$/
 
+/**
+ * Single source of truth for every 1F3EA bearer-credential family: its prefix and the exact
+ * hex length that follows it. Nothing outside this table should hardcode a credential prefix
+ * or length — a new family (or a length change to an existing one) only has to be added here,
+ * and every generic "does this value look like a live credential" check (the MCP
+ * anti-publication guard, connector-response redaction, and the shared field validators) stays
+ * correct automatically instead of drifting one file at a time.
+ */
+export const CREDENTIAL_SHAPES = {
+  secret: { prefix: 'sk_', hexLength: 48 },
+  access_token: { prefix: 'at_', hexLength: 64 },
+  refresh_token: { prefix: 'rt_', hexLength: 64 },
+  authorization_code: { prefix: 'ac_', hexLength: 64 },
+  recovery_code: { prefix: 'rc_', hexLength: 64 },
+  pairing_code: { prefix: 'pc_', hexLength: 48 },
+} as const satisfies Record<string, { prefix: string; hexLength: number }>
+
+export type CredentialFamily = keyof typeof CREDENTIAL_SHAPES
+
+/** The full `1f3ea_<prefix>` string a value of this family starts with. */
+export function credentialPrefix(family: CredentialFamily): string {
+  return `1f3ea_${CREDENTIAL_SHAPES[family].prefix}`
+}
+
+/** Regex source (no anchors, no flags) matching one credential of exactly this family. */
+export function credentialShapePattern(family: CredentialFamily): string {
+  const shape = CREDENTIAL_SHAPES[family]
+  return `1f3ea_${shape.prefix}[0-9a-f]{${shape.hexLength}}`
+}
+
+/** Anchored regex matching exactly one credential of this family — nothing more, nothing less. */
+export function credentialShapeRe(family: CredentialFamily, flags = ''): RegExp {
+  return new RegExp(`^${credentialShapePattern(family)}$`, flags)
+}
+
+/** Regex source (no anchors, no flags) matching a credential of ANY known family. */
+export function anyCredentialShapePattern(): string {
+  return (Object.keys(CREDENTIAL_SHAPES) as CredentialFamily[]).map(credentialShapePattern).join('|')
+}
+
+/** Unanchored regex matching a credential of any family anywhere in a string. */
+export function anyCredentialShapeRe(flags = ''): RegExp {
+  return new RegExp(anyCredentialShapePattern(), flags)
+}
+
 export const QUOTAS = { comments: 20, votes: 50 } as const
 
 export interface Merchant {

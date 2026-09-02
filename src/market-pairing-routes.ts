@@ -73,6 +73,13 @@ export function mountMarketPairingRoutes(app: Hono, options: MarketPairingRouteO
     }
     const bodyError = await rejectNonEmptyBody(c)
     if (bodyError) return bodyError
+    if (!hostedReady) {
+      return fail(
+        c, 503, 'pairing_unavailable',
+        'The hosted connector sign-in door is not enabled on this deployment, so a pairing code would have ' +
+          'nowhere to be redeemed. No code was issued.',
+      )
+    }
     const ip = identityClientAddress(c, environment)
     let allowed: boolean
     try {
@@ -99,12 +106,13 @@ export function mountMarketPairingRoutes(app: Hono, options: MarketPairingRouteO
       expires_in_seconds: PAIRING_CODE_SECONDS,
       expires_at: created.expiresAt,
       one_use: true,
-      instructions: hostedReady
-        ? 'Shown exactly once. Within 10 minutes, have the human enter this code — instead of the merchant ' +
-          'key — on the "I already have a store" panel of the hosted connector sign-in page. It links that ' +
-          'connector grant to this merchant and reveals no key.'
-        : 'Shown exactly once. The hosted connector sign-in door is not enabled on this deployment, so there ' +
-          'is nowhere to redeem this code yet; it will simply expire unused in 10 minutes.',
+      // hostedReady is always true here — the pairing_unavailable refusal above returns before
+      // a code is ever minted when it is false, so this door never issues a code with nowhere
+      // to redeem it.
+      instructions:
+        'Shown exactly once. Within 10 minutes, have the human enter this code — instead of the merchant ' +
+        'key — on the "I already have a store" panel of the hosted connector sign-in page. It links that ' +
+        'connector grant to this merchant and reveals no key.',
     }, 200)
   })
 }

@@ -16,11 +16,16 @@ export type MarketIdentityRouteOptions = Readonly<{
   hostedMarketSigninReady?: boolean
 }>
 
+/** The private browser page that does the same job as each coding-client JSON door. */
+function browserPathForApi(requestPath: string): string | null {
+  if (requestPath === '/api/register') return '/join'
+  if (requestPath === '/api/rotate') return '/rotate'
+  if (requestPath === '/api/recovery') return '/recovery'
+  return null
+}
+
 function unavailableMessage(requestPath: string): string {
-  const retryPath = requestPath === '/api/register' ? '/join'
-    : requestPath === '/api/rotate' ? '/rotate'
-      : requestPath === '/api/recovery' ? '/recovery'
-        : requestPath
+  const retryPath = browserPathForApi(requestPath) ?? requestPath
   return 'Private merchant identity is unavailable on this deployment; no merchant or key was created or changed. ' +
     `The operator must apply the reviewed migration and enable both identity flags before you retry ${retryPath}.`
 }
@@ -32,18 +37,27 @@ function unavailableIdentity(c: Context) {
   return c.json({ error: unavailableMessage(c.req.path), reason: 'identity_dormant' }, 503)
 }
 
+// Reached only once marketIdentityBrowserReady(environment) is already true (see the early
+// return above), so the private browser pages are live right now — naming the live path here
+// is a real alternative, not a "when it's ready" hedge. There is no browser page for /api/pair
+// (pairing has no browser-only equivalent), so that one just points back at the browser sign-in
+// pages in general.
 function codingIdentityUnavailableMessage(requestPath: string): string {
+  const browserPath = browserPathForApi(requestPath)
+  const alternative = browserPath
+    ? `The private browser page at ${browserPath} is already live on this deployment and needs no ` +
+      'coding-client door; use it directly while this one is dormant. '
+    : 'The private browser sign-in pages (/join, /rotate, /recovery) are already live on this ' +
+      'deployment and need no coding-client door; a human can use them directly while this one is dormant. '
   return 'The coding-client identity doors are unavailable on this deployment; no merchant or ' +
-    `key was created or changed by this request to ${requestPath}. This is separate from the ` +
-    'private browser pages, which may already be live: the operator must also apply the ' +
-    'reviewed coding-client-identity migration and set MARKET_CODING_IDENTITY_ENABLED=true ' +
-    'before this door opens. A coding client with no browser can still watch for its own ' +
-    'readiness at GET /api/official.'
+    `key was created or changed by this request to ${requestPath}. ${alternative}` +
+    'The operator must also apply the reviewed coding-client-identity migration and set ' +
+    'MARKET_CODING_IDENTITY_ENABLED=true before this door opens. A coding client with no browser ' +
+    'can still watch for its own readiness at GET /api/official.'
 }
 
 function codingIdentityUnavailable(c: Context) {
   privateBrowserHeaders(c)
-  c.header('Retry-After', '3600')
   c.header('X-1F3EA-Reason', 'coding_identity_dormant')
   return c.json({ error: codingIdentityUnavailableMessage(c.req.path), reason: 'coding_identity_dormant' }, 503)
 }

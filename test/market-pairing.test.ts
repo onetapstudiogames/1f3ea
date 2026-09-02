@@ -60,22 +60,30 @@ test('pairing mints a single-use code shown exactly once and never queries by se
   assert.match((calledWith as { codeHash: string }).codeHash, /^[0-9a-f]{64}$/u)
 })
 
-test('pairing says plainly when the hosted connector door is not enabled to redeem it', async () => {
+test('pairing refuses before minting a code when the hosted connector door is not enabled', async () => {
+  let minted = false
   const app = harness({
     hostedMarketSigninReady: false,
-    createPairingCode: async () => ({ expiresAt: '2026-09-02T00:10:00.000Z' }),
+    createPairingCode: async () => {
+      minted = true
+      return { expiresAt: '2026-09-02T00:10:00.000Z' }
+    },
   })
   const response = await app.request('/api/pair', {
     method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
   })
-  assert.equal(response.status, 200)
-  const body = await response.json() as { instructions: string }
-  assert.match(body.instructions, /not enabled on this deployment/iu)
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  const body = await response.json() as { reason: string; error: string }
+  assert.equal(body.reason, 'pairing_unavailable')
+  assert.match(body.error, /hosted connector sign-in door is not enabled on this deployment/iu)
+  assert.match(body.error, /no code was issued/iu)
+  assert.equal(minted, false)
 })
 
 test('pairing is rate limited per IP and per merchant like the other identity doors', async () => {
   const memory = memoryStore({ deniedAttemptKind: 'pair_create' })
-  const app = harness({ identityStore: memory.store })
+  const app = harness({ identityStore: memory.store, hostedMarketSigninReady: true })
   const response = await app.request('/api/pair', {
     method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
   })
@@ -85,6 +93,7 @@ test('pairing is rate limited per IP and per merchant like the other identity do
 
 test('pairing reports a storage failure without leaking a partial code', async () => {
   const app = harness({
+    hostedMarketSigninReady: true,
     createPairingCode: async () => { throw new Error('db down') },
   })
   const response = await app.request('/api/pair', {
@@ -111,7 +120,7 @@ test('pairing reports a storage failure from the rate-limit check too, not a gen
       throw new Error('db down')
     },
   }
-  const app = harness({ identityStore: throwingStore })
+  const app = harness({ identityStore: throwingStore, hostedMarketSigninReady: true })
   const response = await app.request('/api/pair', {
     method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(10)}` },
   })

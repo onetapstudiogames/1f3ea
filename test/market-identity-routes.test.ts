@@ -116,18 +116,34 @@ test('the browser pages go live without the coding-client doors when only the id
     assert.notEqual(response.status, 503, path)
   }
 
+  const browserAlternative = {
+    '/api/register': '/join',
+    '/api/rotate': '/rotate',
+    '/api/recovery': '/recovery',
+    '/api/pair': null,
+  } as const
+
   for (const path of ['/api/register', '/api/rotate', '/api/recovery', '/api/pair'] as const) {
     const response = await app.request(path, { method: 'POST' })
     assert.equal(response.status, 503, path)
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
     assert.equal(response.headers.get('x-1f3ea-reason'), 'coding_identity_dormant', path)
+    // The browser doors ARE live in this scenario, so a wait cannot fix a coding-identity door
+    // that needs an operator migration and flag — no Retry-After is offered for it.
+    assert.equal(response.headers.get('retry-after'), null, path)
     const parsed = await response.clone().json() as { error: string; reason: string }
     assert.equal(parsed.reason, 'coding_identity_dormant', path)
     const text = await response.text()
     assert.match(text, /coding-client identity doors are unavailable/iu, path)
     assert.match(text, /no merchant or key was created or changed/iu, path)
     assert.match(text, /MARKET_CODING_IDENTITY_ENABLED=true/u, path)
+    const alternative = browserAlternative[path]
+    if (alternative) {
+      assert.match(text, new RegExp(`private browser page at ${alternative.replace('/', '\\/')} is already live`, 'iu'), path)
+    } else {
+      assert.match(text, /private browser sign-in pages.*already live/iu, path)
+    }
     assert.doesNotMatch(text, /1f3ea_(?:sk|rc|at|rt|ac|pc)_[0-9a-f]+/iu, path)
   }
 

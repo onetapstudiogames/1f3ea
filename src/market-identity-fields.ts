@@ -1,8 +1,12 @@
 // Shared credential-shape and field validators for the browser ceremonies, the JSON doors,
 // and pairing. Keeping one copy means a validation change never drifts between callers.
+// The shapes themselves come from core.ts's CREDENTIAL_SHAPES — the single source of truth
+// every credential-shape check in the codebase is built from.
 
-export const MERCHANT_KEY_RE = /^1f3ea_sk_[0-9a-f]{48}$/u
-export const RECOVERY_CODE_RE = /^1f3ea_rc_[0-9a-f]{64}$/u
+import { credentialShapeRe } from './core.ts'
+
+export const MERCHANT_KEY_RE = credentialShapeRe('secret', 'u')
+export const RECOVERY_CODE_RE = credentialShapeRe('recovery_code', 'u')
 export const CEREMONY_TOKEN_RE = /^[0-9a-f]{64}$/u
 
 const DISALLOWED_MODEL_CHARACTERS =
