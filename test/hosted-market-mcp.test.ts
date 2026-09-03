@@ -9,6 +9,7 @@ import { mcp } from '../src/mcp.ts'
 const ORIGIN = 'https://1f3ea.com'
 const LEGACY_SECRET = `1f3ea_sk_${'ab'.repeat(24)}`
 const ACCESS_TOKEN = `1f3ea_at_${'cd'.repeat(32)}`
+const PAIRING_CODE = `1f3ea_pc_${'ef'.repeat(24)}`
 const RESOURCE_METADATA = `${ORIGIN}/.well-known/oauth-protected-resource/mcp/connect`
 const OAUTH_SCHEME = { type: 'oauth2', scopes: ['market:merchant'] } as const
 const NOAUTH_SCHEME = { type: 'noauth' } as const
@@ -527,9 +528,11 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
 
   const credentialArguments: Array<[string, string]> = [
     ['body', `remember ${LEGACY_SECRET}`],
+    ['body', `remember ${PAIRING_CODE}`],
     ['refresh_token', 'hidden'],
     ['recovery_code', 'hidden'],
     ['replacement_key', 'hidden'],
+    ['pairing_code', 'hidden'],
   ]
   for (const [field, value] of credentialArguments) {
     const rejected = await rpc(gateway, '/mcp/connect', 'tools/call', {
@@ -537,7 +540,7 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
     }) as { result: ToolResult }
     assert.equal(rejected.result.isError, true)
     assert.match(rejected.result.content[0]!.text, /do not put (?:secrets|credentials)/i)
-    assert.doesNotMatch(JSON.stringify(rejected), /1f3ea_(?:sk|at|rt|ac|rc)_/i)
+    assert.doesNotMatch(JSON.stringify(rejected), /1f3ea_(?:sk|at|rt|ac|rc|pc)_/i)
   }
 
   const credentialAsPropertyName = `1f3ea_sk_${'f6'.repeat(24)}`
@@ -549,6 +552,34 @@ test('the hosted door refuses permanent keys and credentials in any tool argumen
   assert.doesNotMatch(JSON.stringify(rejectedKey), new RegExp(credentialAsPropertyName, 'i'))
 })
 
+test('a pairing code is refused as a tool argument on every public-write tool, on both MCP doors', async () => {
+  // The anti-publication guard runs once for every tool by argument shape, not by tool name —
+  // but a pairing code is the newest credential family (added alongside the coding-client JSON
+  // doors) and it is exactly the kind of addition that could land recognized by only one of the
+  // guard and the redaction below. Exercise it explicitly on each free-text public-write tool
+  // and through both the plain and hosted-connector doors so neither can silently regress.
+  const { gateway } = createHarness()
+  const publicWrites: Array<[string, Record<string, unknown>]> = [
+    ['comment', { listing_id: 1, body: `save this ${PAIRING_CODE}` }],
+    ['set_store', { line: `reach me with ${PAIRING_CODE}` }],
+    ['list_item', {
+      title: 'notes', description: 'd', artifact: `code: ${PAIRING_CODE}`,
+      price_usdc: 0, seller_wallet: `0x${'1'.repeat(40)}`,
+    }],
+    ['edit_item', { id: 1, artifact: PAIRING_CODE }],
+  ]
+  for (const path of ['/mcp', '/mcp/connect'] as const) {
+    for (const [name, toolArguments] of publicWrites) {
+      const rejected = await rpc(gateway, path, 'tools/call', {
+        name, arguments: toolArguments,
+      }) as { result: ToolResult }
+      assert.equal(rejected.result.isError, true, `${path} ${name}`)
+      assert.match(rejected.result.content[0]!.text, /do not put (?:secrets|credentials)/i, `${path} ${name}`)
+      assert.doesNotMatch(JSON.stringify(rejected), new RegExp(PAIRING_CODE, 'i'), `${path} ${name}`)
+    }
+  }
+})
+
 test('MCP redacts every 1F3EA credential family from backing responses', async () => {
   for (const credential of [
     `1f3ea_sk_${'a1'.repeat(24)}`,
@@ -556,6 +587,7 @@ test('MCP redacts every 1F3EA credential family from backing responses', async (
     `1f3ea_rt_${'c3'.repeat(32)}`,
     `1f3ea_ac_${'d4'.repeat(32)}`,
     `1f3ea_rc_${'e5'.repeat(32)}`,
+    PAIRING_CODE,
   ]) {
     const { gateway } = createHarness({ merchant: { id: 7, note: `old ${credential}` } })
     const response = await rpc(gateway, '/mcp', 'tools/call', {
@@ -574,6 +606,7 @@ test('hosted my_purchases reads streamed bytes without trusting Content-Length a
     `1f3ea_rt_${'c3'.repeat(32)}`,
     `1f3ea_ac_${'d4'.repeat(32)}`,
     `1f3ea_rc_${'e5'.repeat(32)}`,
+    PAIRING_CODE,
   ]
   for (const contentLength of [undefined, '0']) {
     const { gateway, market } = createHarness()

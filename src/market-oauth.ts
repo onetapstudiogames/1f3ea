@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto'
 import type { Context, Hono } from 'hono'
 import {
   HANDLE_RE,
@@ -14,7 +13,6 @@ import {
   trustedBrowserForm,
 } from './browser-form.ts'
 import {
-  clearBrowserSessionCookie,
   inspectBrowserSessionCookie,
   newBrowserSessionCookie,
   setBrowserSessionCookie,
@@ -36,7 +34,7 @@ import {
   verifyMarketPkceS256,
   type MarketOAuthEnvironment,
 } from './market-oauth-config.ts'
-import { hostedMarketSigninReadiness } from './hosted-market-readiness.ts'
+import { hostedMarketSigninReadiness, marketCodingIdentityReady } from './hosted-market-readiness.ts'
 import {
   MARKET_OAUTH_SESSION_COOKIE as SESSION_COOKIE,
   isInitialAuthorizationRequest,
@@ -51,15 +49,36 @@ import {
   stagedAuthorizationResponse,
   terminalAuthorizationResponse,
 } from './market-oauth-browser.ts'
+import {
+  handleConfirmPairAction,
+  handlePairAction,
+  type PairingCodeResolver,
+  type PairingCodeReserver,
+  type PairingReservationTaker,
+} from './market-oauth-pairing.ts'
+import {
+  resolveAndConsumePairingCode as defaultResolvePairingCode,
+  reservePairingCode as defaultReservePairingCode,
+  takeReservedPairingCode as defaultTakeReservedPairingCode,
+} from './market-pairing-store.ts'
+import {
+  admitted,
+  callbackUrl,
+  clientAddress,
+  opaque,
+  redirect,
+  type Runtime,
+} from './market-oauth-runtime.ts'
 import { newRecoveryCodeSet } from './recovery-codes.ts'
 import {
   postgresMarketOAuthStore,
   type AuthorizationRequestInput,
   type AuthorizationRequestRecord,
   type MarketOAuthStore,
-  type OAuthAttemptKind,
 } from './market-oauth-store.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
+
+export type { Runtime }
 
 const ACCESS_TOKEN_SECONDS = 10 * 60
 const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
@@ -75,16 +94,9 @@ export interface MarketOAuthRouteOptions {
   environment?: MarketOAuthEnvironment
   store?: MarketOAuthStore
   fetcher?: typeof fetch
-}
-
-interface Runtime {
-  environment: MarketOAuthEnvironment
-  store: MarketOAuthStore
-  fetcher: typeof fetch
-  origin: string
-  resource: string
-  staticClients: ReturnType<typeof parseMarketOAuthClients>
-  cimdOrigins: ReturnType<typeof parseMarketCimdOrigins>
+  reservePairingCode?: PairingCodeReserver
+  takeReservedPairingCode?: PairingReservationTaker
+  resolvePairingCode?: PairingCodeResolver
 }
 
 function runtime(options: MarketOAuthRouteOptions): Runtime | null {
@@ -99,11 +111,8 @@ function runtime(options: MarketOAuthRouteOptions): Runtime | null {
     resource: marketOAuthResource(environment),
     staticClients: parseMarketOAuthClients(environment.HOSTED_MARKET_OAUTH_CLIENTS),
     cimdOrigins: parseMarketCimdOrigins(environment.HOSTED_MARKET_CIMD_ORIGINS),
+    codingIdentityReady: marketCodingIdentityReady(environment),
   }
-}
-
-function opaque(prefix = ''): string {
-  return prefix + randomBytes(32).toString('hex')
 }
 
 function queryObject(url: URL): Record<string, string> | null {
@@ -113,45 +122,6 @@ function queryObject(url: URL): Record<string, string> | null {
     result[key] = value
   }
   return result
-}
-
-function clientAddress(c: Context, environment: MarketOAuthEnvironment): string {
-  if (environment.VERCEL !== '1') return 'unknown'
-  return (c.req.header('x-vercel-forwarded-for') ?? '').split(',').at(-1)?.trim() || 'unknown'
-}
-
-async function admitted(
-  oauth: Runtime,
-  buckets: readonly string[],
-  attemptKind: OAuthAttemptKind,
-  maximum: number,
-): Promise<boolean> {
-  for (const bucket of buckets) {
-    const accepted = await oauth.store.consumeOAuthRateLimit({
-      bucketHash: sha256(`market-oauth:${bucket}`), attemptKind, maximum,
-    })
-    if (!accepted) return false
-  }
-  return true
-}
-
-function redirect(c: Context, destination: string): Response {
-  privateHeaders(c)
-  clearBrowserSessionCookie(c, SESSION_COOKIE)
-  return c.redirect(destination, 302)
-}
-
-function callbackUrl(
-  redirectUri: string,
-  state: string,
-  issuer: string,
-  values: Readonly<Record<string, string>>,
-): string {
-  const url = new URL(redirectUri)
-  for (const [key, value] of Object.entries({ ...values, state, iss: issuer })) {
-    url.searchParams.set(key, value)
-  }
-  return url.href
 }
 
 function tokenError(c: Context, error: 'invalid_request' | 'invalid_client' | 'invalid_grant') {
@@ -187,6 +157,9 @@ function tokenResponse(c: Context, accessToken: string, refreshToken: string) {
 export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptions = {}): void {
   const oauth = runtime(options)
   if (!oauth) return
+  const reservePairingCode = options.reservePairingCode ?? defaultReservePairingCode
+  const takeReservedPairingCode = options.takeReservedPairingCode ?? defaultTakeReservedPairingCode
+  const resolvePairingCode = options.resolvePairingCode ?? defaultResolvePairingCode
 
   const protectedResource = (c: Context) => {
     c.header('Access-Control-Allow-Origin', '*')
@@ -282,6 +255,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         existing?.client_display_name ?? request.clientName,
         cookie.csrf,
         existing !== undefined,
+        oauth.codingIdentityReady,
       ),
     )
     const renderActiveRequest = (
@@ -387,7 +361,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       const values = formRead.kind === 'form' ? formRead.values : null
       const action = values ? oneFormValue(values, 'action', 20) : null
       const csrf = values ? oneFormValue(values, 'csrf', 128) : null
-      if (!values || !csrf || !['link', 'register', 'confirm', 'cancel'].includes(action ?? '')) {
+      if (!values || !csrf || !['link', 'pair', 'confirm_pair', 'register', 'confirm', 'cancel'].includes(action ?? '')) {
         return browserError(c, 403, 'This sign-in page expired or is incomplete.')
       }
       const cookieState = inspectBrowserSessionCookie(c, SESSION_COOKIE)
@@ -399,6 +373,8 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       }
       const allowedFields = {
         link: ['action', 'csrf', 'merchant_key'],
+        pair: ['action', 'csrf', 'pairing_code'],
+        confirm_pair: ['action', 'csrf'],
         register: ['action', 'csrf', 'handle', 'model'],
         confirm: ['action', 'csrf', 'merchant_key'],
         cancel: ['action', 'csrf'],
@@ -504,7 +480,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             403,
             'Merchant key not verified',
             '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
-              consentPage(pending.client_display_name, csrf, true),
+              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
         const allowed = await admitted(
@@ -530,10 +506,38 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             403,
             'Merchant key not verified',
             '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
-              consentPage(pending.client_display_name, csrf, true),
+              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
         return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))
+      }
+
+      if (action === 'pair' || action === 'confirm_pair') {
+        // The consent page only ever renders the pairing panel that posts these two actions
+        // when oauth.codingIdentityReady is true (see oauthConsentPage's pairingPanel), but a
+        // client can still POST action=pair or action=confirm_pair directly with the flag off —
+        // both handlers below would otherwise reach reservePairingCode / takeReservedPairingCode
+        // / resolveAndConsumePairingCode and query merchant_pairing_codes, a table that needs
+        // its own additive migration and may not exist yet on this deployment. Refuse before
+        // either handler runs, with the same documented dormant-door refusal every other
+        // coding-identity door gives while MARKET_CODING_IDENTITY_ENABLED is off: no table
+        // access, no 500.
+        if (!oauth.codingIdentityReady) {
+          return browserError(
+            c,
+            503,
+            'The coding-client pairing door is unavailable on this deployment; no merchant or key ' +
+              'was created or changed. The operator must apply the reviewed coding-client-identity ' +
+              'migration and set MARKET_CODING_IDENTITY_ENABLED=true before this door opens. Use ' +
+              'the "I already have a store" merchant key field on this page instead while it is dormant.',
+          )
+        }
+        if (action === 'pair') {
+          return handlePairAction(c, oauth, pending, csrf, values, sessionHash, csrfHash, reservePairingCode)
+        }
+        return handleConfirmPairAction(
+          c, oauth, pending, csrf, sessionHash, csrfHash, takeReservedPairingCode, resolvePairingCode,
+        )
       }
 
       if (!isInitialAuthorizationRequest(pending)) {
@@ -547,7 +551,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           400,
           'Merchant details not valid',
           '<p class="warning">The handle must be 3–32 lowercase letters, numbers, or hyphens; the model label is optional and limited to 120 ordinary characters.</p>' +
-            consentPage(pending.client_display_name, csrf, true),
+            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
         )
       }
       const registrationLimits: ReadonlyArray<readonly [string, number]> = [
@@ -583,7 +587,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           409,
           'Handle already taken',
           '<p class="warning">That merchant handle is already taken. Check whether it belongs to this agent before choosing another one.</p>' +
-            consentPage(pending.client_display_name, csrf, true),
+            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
         )
       }
       return html(

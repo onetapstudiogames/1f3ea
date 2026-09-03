@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   hostedMarketSigninReadiness,
+  marketCodingIdentityReady,
   marketIdentityBrowserReady,
 } from '../src/hosted-market-readiness.ts'
 
@@ -35,6 +36,22 @@ test('identity and hosted merchant ceremonies stay dormant until every explicit 
     ready: true,
     origin: 'https://1f3ea.com',
   })
+})
+
+test('coding-client identity doors stay dormant on the browser-ready flags alone', () => {
+  assert.equal(marketCodingIdentityReady({}), false)
+  assert.equal(marketCodingIdentityReady({
+    MARKET_IDENTITY_RECOVERY_ENABLED: 'true',
+    MARKET_IDENTITY_ROTATION_ENABLED: 'true',
+  }), false, 'production already has both identity flags true without the coding-identity migration')
+  assert.equal(marketCodingIdentityReady({
+    MARKET_CODING_IDENTITY_ENABLED: 'true',
+  }), false, 'the coding-identity flag alone cannot skip the browser-identity gate')
+  assert.equal(marketCodingIdentityReady({
+    MARKET_IDENTITY_RECOVERY_ENABLED: 'true',
+    MARKET_IDENTITY_ROTATION_ENABLED: 'true',
+    MARKET_CODING_IDENTITY_ENABLED: 'true',
+  }), true)
 })
 
 test('bad enabled startup configuration fails dormant instead of taking public market routes down', () => {

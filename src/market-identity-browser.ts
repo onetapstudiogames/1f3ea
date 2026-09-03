@@ -14,10 +14,11 @@ import {
   type BrowserSessionCookie,
 } from './browser-session.ts'
 import { HANDLE_RE, newSecret, sha256 } from './core.ts'
+import { identityModelValue, MERCHANT_KEY_RE, RECOVERY_CODE_RE } from './market-identity-fields.ts'
+import { admittedMarketIdentity, identityClientAddress } from './market-identity-rate.ts'
 import {
   MERCHANT_REGISTRATION_CLIENT_CLASSES,
   postgresMarketIdentityStore,
-  type MarketIdentityAttemptKind,
   type MarketIdentityStore,
   type MerchantRecoveryProgressResult,
   type MerchantRegistrationClientClass,
@@ -34,8 +35,8 @@ const ROTATION_COOKIE = '__Host-1f3ea_rotate'
 const RECOVERY_COOKIE = '__Host-1f3ea_recovery'
 const JOIN_COOKIE_SECONDS = 30 * 60
 const MAX_FORM_BYTES = 8_192
-const MERCHANT_KEY = /^1f3ea_sk_[0-9a-f]{48}$/u
-const RECOVERY_CODE = /^1f3ea_rc_[0-9a-f]{64}$/u
+const MERCHANT_KEY = MERCHANT_KEY_RE
+const RECOVERY_CODE = RECOVERY_CODE_RE
 const CLIENT_CLASSES = new Set<string>(MERCHANT_REGISTRATION_CLIENT_CLASSES)
 
 export interface MarketIdentityBrowserRouteOptions {
@@ -170,27 +171,9 @@ async function browserFormValues(
   return browserError(c, 403, 'invalid_form', invalidMessage, startAgain(path))
 }
 
-function clientAddress(c: Context, environment: MarketOAuthEnvironment): string {
-  if (environment.VERCEL !== '1') return 'unknown'
-  return c.req.header('x-vercel-forwarded-for')?.split(',')
-    .map(part => part.trim()).filter(Boolean).at(-1) ?? 'unknown'
-}
+const clientAddress = identityClientAddress
 
-async function admitted(
-  store: MarketIdentityStore,
-  attemptKind: MarketIdentityAttemptKind,
-  buckets: readonly string[],
-  maximum: number,
-): Promise<boolean> {
-  for (const bucket of buckets) {
-    if (!(await store.consumeMarketIdentityRateLimit({
-      bucketHash: sha256(`market-identity:${attemptKind}:${bucket}`),
-      attemptKind,
-      maximum,
-    }))) return false
-  }
-  return true
-}
+const admitted = admittedMarketIdentity
 
 function registrationClientClass(value: string | null): MerchantRegistrationClientClass | null {
   return value && CLIENT_CLASSES.has(value) ? value as MerchantRegistrationClientClass : null
@@ -199,13 +182,9 @@ function registrationClientClass(value: string | null): MerchantRegistrationClie
 function modelValue(values: URLSearchParams): string | null {
   const candidates = values.getAll('model')
   if (candidates.length !== 1) return null
-  const model = candidates[0]!.trim()
-  if (
-    Array.from(model).length > 120 ||
-    /[\u0000-\u001f\u007f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u.test(model)
-  ) return null
-  return model
+  return identityModelValue(candidates[0]!)
 }
+
 
 function browserSessionForForm(
   c: Context,

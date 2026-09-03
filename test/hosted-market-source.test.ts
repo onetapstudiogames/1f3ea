@@ -90,8 +90,17 @@ test('every identity guide states the save-first merchant contract and gated rec
     assert.match(text, /eight[^\n.]{0,100}recovery codes|8[^\n.]{0,100}recovery codes/i)
     assert.match(text, /\/recovery/i)
     assert.match(text, /\/rotate/i)
-    assert.doesNotMatch(text, /POST\s+(?:https:\/\/1f3ea\.com)?\/api\/(?:register|rotate)/i)
     assert.doesNotMatch(text, /(?:GET\s+)?\/api\/official\.identity\b/i)
+    // POST /api/register and /api/rotate are no longer unconditionally forbidden text: the
+    // coding-client JSON doors legitimately advertise them. Any mention must still carry the
+    // declared-caller safety contract, never a bare "just POST your key" shortcut.
+    if (/POST\s+(?:https:\/\/1f3ea\.com)?\/api\/register\b/i.test(text)) {
+      assert.match(text, /client_class/i, 'a mention of POST /api/register must also require client_class')
+      assert.match(text, /human_approved/i, 'a mention of POST /api/register must also require human_approved')
+    }
+    if (/POST\s+(?:https:\/\/1f3ea\.com)?\/api\/rotate\b/i.test(text)) {
+      assert.match(text, /client_class/i, 'a mention of POST /api/rotate must also require client_class')
+    }
   }
   const guide = surfaces[3]!
   assert.match(guide, /save[^\n.]{0,100}merchant key[\s\S]{0,600}save[^\n.]{0,120}(?:eight|8) recovery codes[\s\S]{0,600}re-enter/i)

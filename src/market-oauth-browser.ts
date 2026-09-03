@@ -38,21 +38,35 @@ export function oauthBrowserError(c: Context, status: Exclude<HtmlStatus, 200>, 
   )
 }
 
-export function oauthConsentPage(clientName: string, csrf: string, resumed = false): string {
+export function oauthConsentPage(
+  clientName: string,
+  csrf: string,
+  resumed = false,
+  codingIdentityReady = false,
+): string {
   const client = escapeHtml(clientName)
   const token = escapeHtml(csrf)
+  const pairingPanel = codingIdentityReady
+    ? `<p class="muted">If a coding client already holds this merchant's key, it can mint a 10-minute one-use pairing code with <code>POST /api/pair</code> instead of anyone typing the key here.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="pair"><input type="hidden" name="csrf" value="${token}">
+<label for="pairing_code">Pairing code from a coding client</label>
+<input id="pairing_code" name="pairing_code" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_pc_[0-9a-f]{48}">
+<button type="submit">Connect with this pairing code</button></form>`
+    : ''
   return `<h1>Connect ${client} to 1F3EA</h1>
 ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. Cancel it before starting a different connector.</p>' : ''}
 <p><strong>${client}</strong> is asking to act as one merchant. It can read public market state and perform ordinary merchant actions. It cannot rotate the permanent merchant key, and payments still follow the market&rsquo;s separate rules.</p>
 <p class="warning">Use this first-party page only. Never paste a merchant key into chat or a tool argument.</p>
-<p class="muted">The request expires after 15 minutes; its one-time authorization code expires after 5 minutes. Sign-in starts allow 120 client-metadata checks per IP and 60 valid requests per client per UTC hour. Existing-key confirmation allows 10 attempts per IP and client per UTC hour. New-merchant preparation allows 3 starts per IP, 300 total, and 300 per client per UTC hour; confirmation allows 10 attempts per IP and browser session.</p>
+<p class="muted">The request expires after 15 minutes; its one-time authorization code expires after 5 minutes. Sign-in starts allow 120 client-metadata checks per IP and 60 valid requests per client per UTC hour. Existing-key and pairing-code confirmation share the same limit: 10 attempts per IP and client per UTC hour. New-merchant preparation allows 3 starts per IP, 300 total, and 300 per client per UTC hour; confirmation allows 10 attempts per IP and browser session. A pairing code is single-use and expires after 10 minutes.</p>
 <fieldset><legend><strong>I already have a store</strong></legend>
 <p>Your permanent merchant key is checked by 1F3EA and never sent to the hosted client.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="link"><input type="hidden" name="csrf" value="${token}">
 <label for="merchant_key">Current merchant key</label>
 <input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_sk_[0-9a-f]{48}">
-<button type="submit">Connect this merchant</button></form></fieldset>
+<button type="submit">Connect this merchant</button></form>
+${pairingPanel}</fieldset>
 <fieldset><legend><strong>This agent needs a store</strong></legend>
 <p>The merchant has not been created. First choose its handle, then save its merchant key and all eight recovery codes outside chat, and re-enter the saved key.</p>
 <p class="muted">A retry resumes the same staged signup. It never creates or shows a second credential set.</p>
@@ -61,6 +75,28 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120">
 <button type="submit">Prepare merchant and show its key</button></form></fieldset>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${token}">
+<button class="secondary" type="submit">Cancel</button></form>`
+}
+
+/**
+ * Shown after a pairing code is reserved (POST /oauth/authorize action=pair) and before it is
+ * actually redeemed. This is the one thing the single-step flow never showed: which merchant
+ * the code names, so the human can catch a stale clipboard entry or a typo before granting
+ * anything. One click (action=confirm_pair, no code re-entry) redeems it; cancel or reserving a
+ * different code both replace this reservation instead of extending it.
+ */
+export function pairingConfirmPage(clientName: string, merchantHandle: string, csrf: string): string {
+  const client = escapeHtml(clientName)
+  const handle = escapeHtml(merchantHandle)
+  const token = escapeHtml(csrf)
+  return `<h1>Connect ${client} to @${handle}?</h1>
+<p>This pairing code belongs to merchant <strong>@${handle}</strong>. Confirming links <strong>${client}</strong>&rsquo;s connector grant to that merchant only — never sending its merchant key.</p>
+<p class="warning">If this is not the merchant you expected, cancel and mint a fresh pairing code from the right one.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="confirm_pair"><input type="hidden" name="csrf" value="${token}">
+<button type="submit">Connect ${client} to @${handle}</button></form>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${token}">
 <button class="secondary" type="submit">Cancel</button></form>`

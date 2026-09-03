@@ -1,27 +1,33 @@
 # Release migrations
 
-The direct-payment, hosted-sign-in, save-first identity, world-payment-finality, and
-x402-attempt changes have five additive database changes:
+The direct-payment, hosted-sign-in, save-first identity, coding-client-identity,
+world-payment-finality, and x402-attempt changes have six additive database changes:
 
 1. `db/migrations/20260823_direct_payments.sql`
 2. `db/migrations/20260822_hosted_market_signin.sql`
 3. `db/migrations/20260827_market_identity.sql`
-4. `db/migrations/20260827_world_payment_finality.sql`
-5. `db/migrations/20260828_x402_payment_attempts.sql`
+4. `db/migrations/20260902_market_identity_json_doors.sql`
+5. `db/migrations/20260827_world_payment_finality.sql`
+6. `db/migrations/20260828_x402_payment_attempts.sql`
 
 ## Recorded application status
 
 **Status as of 2026-09-01:** this repository contains no retained provider log or
-successful guarded-runner transcript for any of the five preview or production applications. The
+successful guarded-runner transcript for any of the six preview or production applications. The
 honest state is therefore “not recorded here,” not “not applied.” Route availability does not prove a migration was applied:
 code can expose a route before its first database write,
-and flags can describe intent without showing schema postconditions.
+and flags can describe intent without showing schema postconditions. In particular,
+`MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTATION_ENABLED` are already `true` in
+production (see README.md), which is evidence only for `20260827_market_identity.sql` — it is
+not evidence that `20260902_market_identity_json_doors.sql` ran. That migration has its own
+gate, `MARKET_CODING_IDENTITY_ENABLED`, precisely so the two are never conflated.
 
 | Migration file | Preview evidence in this repository | Production evidence in this repository |
 |---|---|---|
 | `20260823_direct_payments.sql` | **Not recorded.** | **Not recorded.** Reconcile provider history and rerun the guarded semantic inspection before deciding whether any action is needed. |
 | `20260822_hosted_market_signin.sql` | **Not recorded.** | **Not recorded.** Reachable OAuth or identity routes are insufficient evidence. |
 | `20260827_market_identity.sql` | **Not recorded.** | **Not recorded.** Reachable `/join`, `/recovery`, and `/rotate` pages are insufficient evidence. |
+| `20260902_market_identity_json_doors.sql` | **Not recorded.** | **Not recorded.** `MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTATION_ENABLED` being `true` is not evidence — check `MARKET_CODING_IDENTITY_ENABLED` and the runner postconditions instead. |
 | `20260827_world_payment_finality.sql` | **Not recorded.** | **Not recorded.** Served finality copy and application tests do not prove the production writer fence exists. |
 | `20260828_x402_payment_attempts.sql` | **Not recorded.** | **Not recorded.** Source support for durable attempts does not prove its production table and triggers exist. |
 
@@ -33,7 +39,10 @@ receipt, and never rewrite this table from inference; record the dated runner ev
 Do not use the full `db/schema.sql` as a remote release migration. It contains the
 whole market history, while these files contain only their reviewed additions.
 The market-identity migration extends the hosted-sign-in tables, so apply hosted sign-in
-before market identity on an environment that has neither.
+before market identity on an environment that has neither. The coding-client-identity
+migration (`market-coding-identity`) in turn extends market-identity — it adds the
+`merchant_pairing_codes` table and widens `merchant_identity_rate_limits_attempt_kind_allowed`
+to accept `pair_create` — so apply market-identity first on an environment that has neither.
 
 The first three migrations use the normal schema-first order. The
 `world-payment-finality` migration is deliberately stricter: after it lands, an old
@@ -50,6 +59,15 @@ Apply `x402-payment-attempts` only after `world-payment-finality`. Keep payment 
 closed until both runners report all checks passed. The x402 migration adds the durable
 record that is created before a facilitator settlement starts; it stores only a digest
 and public payment identity, never the opaque signed payment proof.
+
+`market-coding-identity` is additive and unrelated to payment custody, but it is deliberately
+not folded into the first-three schema-first group: production can already have both
+`MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTATION_ENABLED` set to `true` from
+the market-identity migration while this later one has never run, and the application code
+gates the four coding-client doors (`/api/register`, `/api/rotate`, `/api/recovery`,
+`/api/pair`) on the separate `MARKET_CODING_IDENTITY_ENABLED` flag for exactly that reason —
+so run this migration and require its postconditions before setting that flag, never merely
+because the two identity flags are already on.
 
 ## Required target facts
 
@@ -92,6 +110,17 @@ npm run migrate:preview:direct-payments -- --database <expected-database> --endp
 npm run migrate:preview:hosted-market-signin -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
 npm run migrate:preview:market-identity -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
 ```
+
+Then run the coding-client-identity migration separately, after market-identity:
+
+```text
+npm run migrate:preview:market-coding-identity -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
+```
+
+Require its runner to report the `merchant_pairing_codes` table (with its `invalidated_at`
+column) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` constraint
+present, then set `MARKET_CODING_IDENTITY_ENABLED=true` and redeploy before treating
+`/api/register`, `/api/rotate`, `/api/recovery`, or `/api/pair` as live in preview.
 
 For `world-payment-finality`, use this order:
 
@@ -136,7 +165,23 @@ npm run migrate:production:market-identity -- --database <expected-database> --e
 ```
 
 After all three commands report all checks passed, keep their identity features gated
-until their own live checks pass. Then use this strict order for
+until their own live checks pass.
+
+Then run the coding-client-identity migration, separately after market-identity:
+
+```text
+npm run migrate:production:market-coding-identity -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
+```
+
+Require its runner to report the `merchant_pairing_codes` table (with its `invalidated_at`
+column) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` constraint
+present. Only then set `MARKET_CODING_IDENTITY_ENABLED=true` and redeploy — production
+already having both `MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTATION_ENABLED`
+set to `true` is not sufficient by itself, and `/api/register`, `/api/rotate`,
+`/api/recovery`, and `/api/pair` keep answering 503 with no side effect until this migration
+has run and that flag is set, even while `/join`, `/recovery`, and `/rotate` are already live.
+
+Then use this strict order for
 `world-payment-finality`:
 
 1. Confirm production does not have `PAYMENT_CUSTODY_READY=1`, then merge the reviewed

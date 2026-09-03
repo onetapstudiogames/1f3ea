@@ -18,6 +18,7 @@ export const MARKET_IDENTITY_ATTEMPT_KINDS = [
   'recovery_confirm',
   'rotation_begin',
   'rotation_confirm',
+  'pair_create',
 ] as const
 export type MarketIdentityAttemptKind = typeof MARKET_IDENTITY_ATTEMPT_KINDS[number]
 

@@ -387,7 +387,7 @@ CREATE TABLE IF NOT EXISTS merchant_identity_rate_limits (
                   attempt_kind IN (
                     'join_stage', 'join_confirm', 'recovery_generate',
                     'recovery_begin', 'recovery_confirm',
-                    'rotation_begin', 'rotation_confirm'
+                    'rotation_begin', 'rotation_confirm', 'pair_create'
                   )
                 ),
   window_start  TIMESTAMPTZ NOT NULL,
@@ -396,6 +396,50 @@ CREATE TABLE IF NOT EXISTS merchant_identity_rate_limits (
 );
 CREATE INDEX IF NOT EXISTS merchant_identity_rate_limits_expiry
   ON merchant_identity_rate_limits (window_start, attempt_kind);
+
+-- One 10-minute single-use pairing code per row, minted by a signed-in coding client so a
+-- human can link the hosted connector without ever typing the merchant key. It never stores
+-- the key or a reusable secret; redemption reads the merchant's CURRENT secret hash at
+-- redemption time. Every unused code is also invalidated the moment its merchant's key is
+-- rotated or recovered, so a code minted under a stolen key stops working the moment the
+-- legitimate owner changes the key, not merely when its own ten-minute clock runs out.
+CREATE TABLE IF NOT EXISTS merchant_pairing_codes (
+  id             BIGSERIAL PRIMARY KEY,
+  merchant_id    INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  code_hash      TEXT NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  used_at        TIMESTAMPTZ,
+  invalidated_at TIMESTAMPTZ,
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes'),
+  CHECK (used_at IS NULL OR (used_at >= created_at AND used_at <= expires_at)),
+  CHECK (invalidated_at IS NULL OR invalidated_at >= created_at)
+);
+CREATE INDEX IF NOT EXISTS merchant_pairing_codes_merchant
+  ON merchant_pairing_codes (merchant_id, id);
+CREATE INDEX IF NOT EXISTS merchant_pairing_codes_expiry
+  ON merchant_pairing_codes (expires_at)
+  WHERE used_at IS NULL;
+
+-- One pending pairing-code reservation per active hosted sign-in session. Reserving a pairing
+-- code (POST /oauth/authorize action=pair) shows the human which merchant it names before
+-- anything is granted; it never marks the underlying merchant_pairing_codes row used, so an
+-- unconfirmed reservation simply expires alongside its code -- exactly like an unused code,
+-- never longer. Only the confirm step (action=confirm_pair) actually consumes the code, via
+-- the same atomic resolveAndConsumePairingCode that always reads the merchant's CURRENT secret
+-- hash at that moment, not at reservation time.
+CREATE TABLE IF NOT EXISTS oauth_pairing_reservations (
+  id                BIGSERIAL PRIMARY KEY,
+  session_hash      TEXT NOT NULL UNIQUE CHECK (session_hash ~ '^[0-9a-f]{64}$'),
+  csrf_hash         TEXT NOT NULL CHECK (csrf_hash ~ '^[0-9a-f]{64}$'),
+  pairing_code_hash TEXT NOT NULL CHECK (pairing_code_hash ~ '^[0-9a-f]{64}$'),
+  merchant_id       INTEGER NOT NULL REFERENCES merchants(id) ON DELETE RESTRICT,
+  expires_at        TIMESTAMPTZ NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS oauth_pairing_reservations_expiry
+  ON oauth_pairing_reservations (expires_at);
 
 -- A world draft is the market's public promise. The seller separately proves city
 -- ownership and locks the thing before this can become a visible listing.
