@@ -190,8 +190,17 @@ async function writeSecretsToFile(path, body) {
 // still nothing to lose — instead of after the door has already staged or activated a credential
 // the API will never show again. Append mode is deliberate: unlike a truncating open, it leaves
 // any pre-existing file at --out untouched if this probe is the only thing that runs.
+//
+// The mode argument matters as much as the flag: if this probe creates the file (it did not
+// already exist), it must come into existence at 0o600 (owner read/write only) immediately, not
+// at the platform default (typically 0644, world-readable) with a chmod to follow later. Node
+// applies `mode` at creation time for the underlying open(2)/CreateFile call, so there is no
+// window where the file exists world-readable before writeSecretsToFile's later chmod tightens
+// it — that race is exactly what left a freshly staged credential briefly world-readable before
+// this fix. On Windows, POSIX mode bits do not exist and this argument is a no-op: the file's
+// access control is whatever the filesystem/ACLs already grant, same as noted on writeSecretsToFile.
 async function probeOutPathWritable(path) {
-  const handle = await open(path, 'a')
+  const handle = await open(path, 'a', 0o600)
   await handle.close()
 }
 

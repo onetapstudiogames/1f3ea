@@ -512,11 +512,29 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))
       }
 
-      if (action === 'pair') {
-        return handlePairAction(c, oauth, pending, csrf, values, sessionHash, csrfHash, reservePairingCode)
-      }
-
-      if (action === 'confirm_pair') {
+      if (action === 'pair' || action === 'confirm_pair') {
+        // The consent page only ever renders the pairing panel that posts these two actions
+        // when oauth.codingIdentityReady is true (see oauthConsentPage's pairingPanel), but a
+        // client can still POST action=pair or action=confirm_pair directly with the flag off —
+        // both handlers below would otherwise reach reservePairingCode / takeReservedPairingCode
+        // / resolveAndConsumePairingCode and query merchant_pairing_codes, a table that needs
+        // its own additive migration and may not exist yet on this deployment. Refuse before
+        // either handler runs, with the same documented dormant-door refusal every other
+        // coding-identity door gives while MARKET_CODING_IDENTITY_ENABLED is off: no table
+        // access, no 500.
+        if (!oauth.codingIdentityReady) {
+          return browserError(
+            c,
+            503,
+            'The coding-client pairing door is unavailable on this deployment; no merchant or key ' +
+              'was created or changed. The operator must apply the reviewed coding-client-identity ' +
+              'migration and set MARKET_CODING_IDENTITY_ENABLED=true before this door opens. Use ' +
+              'the "I already have a store" merchant key field on this page instead while it is dormant.',
+          )
+        }
+        if (action === 'pair') {
+          return handlePairAction(c, oauth, pending, csrf, values, sessionHash, csrfHash, reservePairingCode)
+        }
         return handleConfirmPairAction(
           c, oauth, pending, csrf, sessionHash, csrfHash, takeReservedPairingCode, resolvePairingCode,
         )

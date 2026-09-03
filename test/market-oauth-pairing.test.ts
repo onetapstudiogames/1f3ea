@@ -20,11 +20,12 @@ const MERCHANT_KEY = `1f3ea_sk_${'ab'.repeat(24)}`
 const PAIRING_CODE = `1f3ea_pc_${'11'.repeat(24)}`
 const RESERVED_HANDLE = 'tinylantern'
 
-// Reserving and confirming a pairing code (below) are server-side actions, reachable by POSTing
-// action=pair directly and never gated on MARKET_CODING_IDENTITY_ENABLED — only the consent
-// page's own pairing-code panel is, since that panel invites the human to type a code no coding
-// client could have minted while /api/pair itself stays dormant. See
-// hosted-market-readiness.ts's marketCodingIdentityReady and its docstring.
+// Reserving and confirming a pairing code (below) are server-side actions, gated on
+// MARKET_CODING_IDENTITY_ENABLED the same way every other coding-client identity door is: both
+// query merchant_pairing_codes, a table that needs its own additive migration beyond what the
+// private browser pages need, and that table may not exist yet on a deployment where only the
+// browser pages are ready. See hosted-market-readiness.ts's marketCodingIdentityReady and its
+// docstring, and the dormant-refusal tests below.
 const CODING_IDENTITY_READY = { ...environment, MARKET_CODING_IDENTITY_ENABLED: 'true' } as const
 
 async function startSignin(app: Awaited<ReturnType<typeof fixture>>['app']) {
@@ -85,6 +86,7 @@ test('the consent page omits the pairing-code panel while coding-client doors ar
 
 test('reserving a valid pairing code shows which merchant it names, without granting anything yet', async () => {
   const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
     reservePairingCode: async (input): Promise<PairingReservation | null> => {
       assert.match(input.codeHash, /^[0-9a-f]{64}$/u)
       assert.equal(input.codeHash, sha256(PAIRING_CODE))
@@ -104,6 +106,7 @@ test('reserving a valid pairing code shows which merchant it names, without gran
 
 test('confirming a reservation issues the authorization code without ever sending the key', async () => {
   const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
     reservePairingCode: async () => ({ merchantId: 7, handle: RESERVED_HANDLE, expiresAt: '2026-09-02T00:10:00.000Z' }),
     takeReservedPairingCode: async () => ({ codeHash: sha256(PAIRING_CODE) }),
     resolvePairingCode: async (input): Promise<ResolvedPairingCode | null> => {
@@ -123,6 +126,7 @@ test('confirming a reservation issues the authorization code without ever sendin
 
 test('confirming without a live reservation is refused the same way a bad code would be', async () => {
   const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
     takeReservedPairingCode: async () => null,
   })
   const { cookie, csrf } = await startSignin(app)
@@ -133,7 +137,7 @@ test('confirming without a live reservation is refused the same way a bad code w
 })
 
 test('an expired, used, or unknown pairing code is refused at the reserve step, without a redirect', async () => {
-  const { app } = fixture({ reservePairingCode: async () => null })
+  const { app } = fixture({ environment: CODING_IDENTITY_READY, reservePairingCode: async () => null })
   const { cookie, csrf } = await startSignin(app)
   const response = await pairRequest(app, cookie, csrf, PAIRING_CODE)
   assert.equal(response.status, 403)
@@ -142,7 +146,10 @@ test('an expired, used, or unknown pairing code is refused at the reserve step, 
 
 test('a malformed pairing code is refused before any reservation attempt', async () => {
   let called = false
-  const { app } = fixture({ reservePairingCode: async () => { called = true; return null } })
+  const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
+    reservePairingCode: async () => { called = true; return null },
+  })
   const { cookie, csrf } = await startSignin(app)
   const response = await pairRequest(app, cookie, csrf, 'not-a-real-code')
   assert.equal(response.status, 403)
@@ -161,6 +168,7 @@ test('a malformed pairing code is refused before any reservation attempt', async
 // final confirm-time resolution is the mismatch this test is about.
 test('a resolved pairing grant matching no current merchant is refused, not treated as a stale key', async () => {
   const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
     reservePairingCode: async () => ({ merchantId: 999, handle: RESERVED_HANDLE, expiresAt: '2026-09-02T00:10:00.000Z' }),
     takeReservedPairingCode: async () => ({ codeHash: sha256(PAIRING_CODE) }),
     resolvePairingCode: async () => ({ merchantId: 999, merchantSecretHash: sha256('no-such-merchant-key') }),
@@ -176,6 +184,7 @@ test('a resolved pairing grant matching no current merchant is refused, not trea
 
 test('a repeated confirm click after success cannot redeem or approve a second time', async () => {
   const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
     reservePairingCode: async () => ({ merchantId: 7, handle: RESERVED_HANDLE, expiresAt: '2026-09-02T00:10:00.000Z' }),
     takeReservedPairingCode: async () => ({ codeHash: sha256(PAIRING_CODE) }),
     resolvePairingCode: async () => ({ merchantId: 7, merchantSecretHash: sha256(MERCHANT_KEY) }),
@@ -192,4 +201,36 @@ test('a repeated confirm click after success cannot redeem or approve a second t
   const second = await confirmPairRequest(app, cookie, csrf)
   assert.equal(second.status, 403)
   assert.match(await second.text(), /already completed|already used|no longer available/iu)
+})
+
+// The bug these two guard against: only the consent page's own pairing-code panel was gated on
+// MARKET_CODING_IDENTITY_ENABLED — a client that POSTed action=pair or action=confirm_pair
+// directly, flag off, still reached reservePairingCode / takeReservedPairingCode /
+// resolveAndConsumePairingCode, which query merchant_pairing_codes, a table that may not exist
+// yet on this deployment (it needs its own additive migration beyond what the browser pages
+// need). Both actions must now refuse before either handler — and before any of those three
+// resolvers — ever runs, with the same documented dormant-door refusal every other coding-
+// identity door already gives, not a 500 from a missing table.
+test('action=pair is refused with the documented dormant-door message while coding-client doors are off, without reserving anything', async () => {
+  let called = false
+  const { app } = fixture({ reservePairingCode: async () => { called = true; return null } })
+  const { cookie, csrf } = await startSignin(app)
+  const response = await pairRequest(app, cookie, csrf, PAIRING_CODE)
+  assert.equal(response.status, 503)
+  const body = await response.text()
+  assert.match(body, /coding-client pairing door is unavailable/iu)
+  assert.match(body, /MARKET_CODING_IDENTITY_ENABLED/u)
+  assert.equal(called, false)
+})
+
+test('action=confirm_pair is refused with the documented dormant-door message while coding-client doors are off, without taking any reservation', async () => {
+  let called = false
+  const { app } = fixture({ takeReservedPairingCode: async () => { called = true; return null } })
+  const { cookie, csrf } = await startSignin(app)
+  const response = await confirmPairRequest(app, cookie, csrf)
+  assert.equal(response.status, 503)
+  const body = await response.text()
+  assert.match(body, /coding-client pairing door is unavailable/iu)
+  assert.match(body, /MARKET_CODING_IDENTITY_ENABLED/u)
+  assert.equal(called, false)
 })

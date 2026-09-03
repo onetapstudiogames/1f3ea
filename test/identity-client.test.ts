@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -301,6 +301,33 @@ test('a secret-revealing command with an --out path that cannot be opened for wr
       assert.match(result.stderr, /checked before the request is sent/iu)
       assert.equal(requests().length, 0)
     })
+  })
+})
+
+// The bug this guards against: the --out pre-flight probe used to open the file with the
+// platform default mode (no `mode` argument), so on a fresh path it created the file
+// world-readable and only tightened it to 0600 after the real write finished — leaving a
+// staged-or-active credential briefly world-readable on disk. The probe must create the file at
+// 0600 from the very first open, and the file must stay at 0600 through the real write that
+// follows. Mode bits do not exist on Windows, so this assertion only makes sense on POSIX.
+test('--out is created at mode 0600 by the pre-flight probe and stays 0600 after the real write', async () => {
+  if (process.platform === 'win32') return
+  await withTempDir(async dir => {
+    await withRespondingServer(
+      {
+        status: 'created', pairing_code: `1f3ea_rc_${'a'.repeat(64)}`, expires_in_seconds: 600,
+        one_use: true, instructions: '',
+      },
+      async origin => {
+        const outPath = join(dir, 'pair-result.json')
+        const result = await run([
+          'pair', '--origin', origin, '--merchant-key-file', '-', '--out', outPath,
+        ], { input: `${`1f3ea_sk_${'a'.repeat(48)}`}\n` })
+        assert.equal(result.status, 0, result.stderr)
+        const info = await stat(outPath)
+        assert.equal(info.mode & 0o777, 0o600)
+      },
+    )
   })
 })
 
