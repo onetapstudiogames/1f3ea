@@ -96,6 +96,52 @@ test('readBoundedJson returns the parsed body promptly when raw.body never settl
   assert.ok(elapsedMs < 500, `readBoundedJson took ${elapsedMs}ms; it must not touch the stuck raw.body reader`)
 })
 
+// Regression test for round 2 of the 2026-09-03 incident (PR #40, issue #39): the round-1 fix
+// above still hung on the deployed Vercel runtime because readBoundedJson's own "does a body
+// exist" guard evaluated `c.req.raw.body`. On @hono/node-server 2.1.0's real Request, that
+// getter itself — merely reading it, never mind reading from the stream it returns — builds and
+// CACHES a Request whose body is `Readable.toWeb(incoming)` (see get body() /
+// [getRequestCache]() in node_modules/@hono/node-server/dist/index.mjs). Once that cache exists,
+// the fast path (readBodyWithFastPath, which backs c.req.arrayBuffer()/text()/json()) sees the
+// cache and reads through that same cached, never-delivering stream instead of the raw Node
+// stream — so it hangs too. The two contextWithFastPath-based tests above cannot catch this: they
+// give arrayBuffer() and raw.body as two independent, uncoupled stand-ins, exactly the shape that
+// let the round-1 regression ship. This context instead couples them the way the real runtime
+// does: raw.body is a getter that records it was touched, and arrayBuffer() hangs forever if and
+// only if raw.body was touched first.
+function contextWithCoupledFastPath(options: { text: string; contentType?: string }): Context {
+  let rawBodyTouched = false
+  const bytes = new TextEncoder().encode(options.text).buffer as ArrayBuffer
+  return {
+    req: {
+      header: (name: string) => {
+        const lower = name.toLowerCase()
+        if (lower === 'content-type') return options.contentType ?? 'application/json'
+        return undefined
+      },
+      raw: {
+        get body(): ReadableStream<Uint8Array> {
+          rawBodyTouched = true
+          return new ReadableStream()
+        },
+      },
+      arrayBuffer: (): Promise<ArrayBuffer> =>
+        rawBodyTouched ? new Promise<ArrayBuffer>(() => {}) : Promise.resolve(bytes),
+      text: (): Promise<string> =>
+        rawBodyTouched ? new Promise<string>(() => {}) : Promise.resolve(options.text),
+    },
+  } as unknown as Context
+}
+
+test('readBoundedJson never evaluates c.req.raw.body (which would poison the fast path into hanging forever on the real Vercel runtime) and returns the parsed body promptly', async () => {
+  const startedAt = Date.now()
+  const result = await readBoundedJson(contextWithCoupledFastPath({ text: '{"action":"stage"}' }))
+  const elapsedMs = Date.now() - startedAt
+
+  assert.deepEqual(result, { kind: 'json', value: { action: 'stage' } })
+  assert.ok(elapsedMs < 500, `readBoundedJson took ${elapsedMs}ms; touching c.req.raw.body must have poisoned the fast path`)
+})
+
 // A body read through the fast path either resolves or rejects on its own (there is no separate
 // stream construction step left to hang); a rejection must still land on the documented
 // 'unreadable' outcome rather than throwing out of readBoundedJson.

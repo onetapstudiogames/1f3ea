@@ -131,6 +131,53 @@ test('readBoundedFormResult returns the parsed form promptly when raw.body never
   assert.ok(elapsedMs < 500, `readBoundedFormResult took ${elapsedMs}ms; it must not touch the stuck raw.body reader`)
 })
 
+// Regression test for round 2 of the 2026-09-03 incident (PR #40, issue #39): the round-1 fix
+// above still hung on the deployed Vercel runtime because readBoundedFormResult's own "does a
+// body exist" guard evaluated `c.req.raw.body`. On @hono/node-server 2.1.0's real Request, that
+// getter itself — merely reading it, never mind reading from the stream it returns — builds and
+// CACHES a Request whose body is `Readable.toWeb(incoming)` (see get body() /
+// [getRequestCache]() in node_modules/@hono/node-server/dist/index.mjs). Once that cache exists,
+// the fast path (readBodyWithFastPath, which backs c.req.arrayBuffer()/text()/json()) sees the
+// cache and reads through that same cached, never-delivering stream instead of the raw Node
+// stream — so it hangs too. The contextWithFastPath-based test above cannot catch this: it gives
+// arrayBuffer() and raw.body as two independent, uncoupled stand-ins, exactly the shape that let
+// the round-1 regression ship. This context instead couples them the way the real runtime does:
+// raw.body is a getter that records it was touched, and arrayBuffer() hangs forever if and only
+// if raw.body was touched first.
+function contextWithCoupledFastPath(options: { text: string; contentType?: string }): Context {
+  let rawBodyTouched = false
+  const bytes = new TextEncoder().encode(options.text).buffer as ArrayBuffer
+  return {
+    req: {
+      header: (name: string) => {
+        const lower = name.toLowerCase()
+        if (lower === 'content-type') return options.contentType ?? 'application/x-www-form-urlencoded'
+        return undefined
+      },
+      raw: {
+        get body(): ReadableStream<Uint8Array> {
+          rawBodyTouched = true
+          return new ReadableStream()
+        },
+      },
+      arrayBuffer: (): Promise<ArrayBuffer> =>
+        rawBodyTouched ? new Promise<ArrayBuffer>(() => {}) : Promise.resolve(bytes),
+      text: (): Promise<string> =>
+        rawBodyTouched ? new Promise<string>(() => {}) : Promise.resolve(options.text),
+    },
+  } as unknown as Context
+}
+
+test('readBoundedFormResult never evaluates c.req.raw.body (which would poison the fast path into hanging forever on the real Vercel runtime) and returns the parsed form promptly', async () => {
+  const startedAt = Date.now()
+  const result = await readBoundedFormResult(contextWithCoupledFastPath({ text: 'a=1' }))
+  const elapsedMs = Date.now() - startedAt
+
+  assert.equal(result.kind, 'form')
+  assert.equal((result as { kind: 'form'; values: URLSearchParams }).values.get('a'), '1')
+  assert.ok(elapsedMs < 500, `readBoundedFormResult took ${elapsedMs}ms; touching c.req.raw.body must have poisoned the fast path`)
+})
+
 test('readBoundedFormResult refuses a body whose actual bytes exceed the bound', async () => {
   const result = await readBoundedFormResult(
     contextWithFastPath({ arrayBuffer: formBytes('a=1234567') }),
@@ -161,7 +208,7 @@ test('browser form fields are exact, single, bounded, and control-free', () => {
   assert.equal(oneFormValue(new URLSearchParams('a=line%0Abreak'), 'a', 100), null)
 })
 
-test('browser form trust accepts exact first-party evidence and rejects cross-site ambiguity', () => {
+test('browser form trust accepts exact first-party evidence and rejects cross-site ambiguity', async () => {
   const app = new Hono()
   app.post('/check', c => c.json({ trusted: trustedBrowserForm(c, 'https://1f3ea.com') }))
   const checks = [
@@ -173,8 +220,8 @@ test('browser form trust accepts exact first-party evidence and rejects cross-si
     [{}, false],
   ] as const
 
-  return Promise.all(checks.map(async ([headers, expected]) => {
+  await Promise.all(checks.map(async ([headers, expected]) => {
     const response = await app.request('/check', { method: 'POST', headers })
     assert.equal((await response.json() as { trusted: boolean }).trusted, expected)
-  })).then(() => undefined)
+  }))
 })

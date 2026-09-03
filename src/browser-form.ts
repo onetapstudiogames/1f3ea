@@ -21,12 +21,21 @@ export async function readBoundedForm(
 // Content-Length is deliberately never trusted to refuse a request on its own — see the
 // 'ignores Content-Length claims' tests in test/browser-form.test.ts and
 // test/market-identity-browser.test.ts — only the actual byte count of the body once read can.
+//
+// Round 2 (2026-09-03, PR #40): merely evaluating `c.req.raw.body` for presence — even without
+// reading from it — is itself enough to poison every later c.req.arrayBuffer()/text()/json()
+// call on the same request into hanging forever on Vercel's deployed runtime; see the round-2
+// note in src/bounded-json.ts for the exact @hono/node-server 2.1.0 mechanism. So this function
+// must never touch `c.req.raw.body` (or `.clone()`, `.formData()`, or `c.req.parseBody()`) on
+// the request path. An absent body reads through c.req.arrayBuffer() as a zero-length buffer,
+// which fails UTF-8/URLSearchParams parsing (or simply yields an empty form) exactly like any
+// other malformed body — the content-type check alone is enough to gate this door.
 export async function readBoundedFormResult(
   c: Context,
   maximumBytes = 8_192,
 ): Promise<BoundedFormReadResult> {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
-  if (contentType !== 'application/x-www-form-urlencoded' || !c.req.raw.body) {
+  if (contentType !== 'application/x-www-form-urlencoded') {
     return { kind: 'invalid' }
   }
 

@@ -34,6 +34,23 @@ const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBF
 // rejects on its own; there is no hang left here to bound with a deadline, so (unlike the
 // short-lived 4s-timeout version of this fix) none is needed.
 //
+// Round 2 (2026-09-03, PR #40): the round-1 fix above still hung on the deployed Vercel runtime,
+// because this function's own "does a body exist" guard read `c.req.raw.body` — the exact getter
+// that triggers the failure. In @hono/node-server 2.1.0
+// (node_modules/@hono/node-server/dist/index.mjs), `get body()` (~line 373) calls
+// `this[getRequestCache]()`, which builds and CACHES a real global `Request` whose body is
+// `Readable.toWeb(incoming)` (~line 350-372). Once that cache exists, `readBodyWithFastPath`
+// (~line 216-234, which backs c.req.arrayBuffer()/text()/json()) sees `request[requestCache]` is
+// already set and returns `request[requestCache][method]()` — i.e. it now reads through the very
+// toWeb-wrapped cached Request instead of driving the Node stream directly, and that stream never
+// delivers a chunk on Vercel's runtime. So merely evaluating `c.req.raw.body` for its presence —
+// even without ever reading from it — poisons every later c.req.arrayBuffer()/text()/json() call
+// on that same request into hanging forever. The fix is to never touch `c.req.raw.body` (or
+// `.clone()`, `.formData()`, or `c.req.parseBody()`) on the request path at all: an absent body
+// reads through c.req.arrayBuffer() as a zero-length buffer, which this function already refuses
+// as 'invalid' via the same JSON-parse-failure path used for any other malformed body, so the
+// content-type check alone is enough to gate this door.
+//
 // strict UTF-8 decoding is preserved deliberately rather than delegated to c.req.text(): the
 // Fetch `Body.text()` UTF-8 decode is lenient (invalid sequences become U+FFFD) where this door's
 // documented contract is fatal (invalid UTF-8 refuses as 'invalid'). Reading raw bytes via
@@ -64,7 +81,7 @@ export async function readBoundedJson(
   maximumBytes = 8_192,
 ): Promise<BoundedJsonReadResult> {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
-  if (contentType !== 'application/json' || !c.req.raw.body) return { kind: 'invalid' }
+  if (contentType !== 'application/json') return { kind: 'invalid' }
 
   const drained = await readBoundedBytes(c, maximumBytes)
   if (drained.kind !== 'bytes') return drained
