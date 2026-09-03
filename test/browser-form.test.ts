@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import type { Context } from 'hono'
 import { Hono } from 'hono'
 
 import {
@@ -71,6 +72,83 @@ test('a broken request stream is distinguishable from caller-invalid form bytes'
   } as RequestInit & { duplex: 'half' })
   const response = await app.request(request)
   assert.deepEqual(await response.json(), { kind: 'unreadable' })
+})
+
+// ---------------------------------------------------------------------------------------------
+// readBoundedFormResult: reads through the proven fast path (c.req.arrayBuffer()), not the raw
+// c.req.raw.body stream reader — see src/bounded-json.ts for the full 2026-09-03 root-cause
+// writeup (issue #39). The tests above already prove this end-to-end through a real Hono app
+// (app.request() builds its Request in-process, so it does not itself exercise the hung Vercel
+// stream state); this section proves the reader's own behavior against a Context modeling that
+// state directly, the same way test/bounded-json.test.ts does for readBoundedJson.
+// ---------------------------------------------------------------------------------------------
+
+function contextWithFastPath(options: {
+  arrayBuffer: () => Promise<ArrayBuffer>
+  rawBody?: ReadableStream<Uint8Array> | null
+  contentLength?: string
+}): Context {
+  const { arrayBuffer, rawBody = new ReadableStream(), contentLength } = options
+  return {
+    req: {
+      header: (name: string) => {
+        const lower = name.toLowerCase()
+        if (lower === 'content-type') return 'application/x-www-form-urlencoded'
+        if (lower === 'content-length') return contentLength
+        return undefined
+      },
+      raw: { body: rawBody },
+      arrayBuffer,
+    },
+  } as unknown as Context
+}
+
+function formBytes(text: string): () => Promise<ArrayBuffer> {
+  return async () => new TextEncoder().encode(text).buffer as ArrayBuffer
+}
+
+// On Vercel's deployed Node runtime, c.req.raw.body.getReader() never delivers a single chunk
+// even once the body has fully arrived — every reader.read() on it hangs forever — while
+// c.req.arrayBuffer() (Hono's fast path) resolves in under 1ms. This models that exact state:
+// raw.body is a stream that never settles, while arrayBuffer() resolves normally.
+// readBoundedFormResult must read through the fast path, never touching raw.body's reader, so it
+// still returns the parsed form promptly instead of hanging.
+test('readBoundedFormResult returns the parsed form promptly when raw.body never settles but arrayBuffer() does (the proven Vercel state)', async () => {
+  const stuckForever = new ReadableStream<Uint8Array>({
+    // Never enqueues, never closes, never errors — reading raw.body directly would hang forever.
+    pull() {},
+  })
+
+  const startedAt = Date.now()
+  const result = await readBoundedFormResult(contextWithFastPath({
+    arrayBuffer: formBytes('a=1'),
+    rawBody: stuckForever,
+  }))
+  const elapsedMs = Date.now() - startedAt
+
+  assert.equal(result.kind, 'form')
+  assert.equal((result as { kind: 'form'; values: URLSearchParams }).values.get('a'), '1')
+  assert.ok(elapsedMs < 500, `readBoundedFormResult took ${elapsedMs}ms; it must not touch the stuck raw.body reader`)
+})
+
+test('readBoundedFormResult refuses a body whose actual bytes exceed the bound', async () => {
+  const result = await readBoundedFormResult(
+    contextWithFastPath({ arrayBuffer: formBytes('a=1234567') }),
+    4,
+  )
+  assert.deepEqual(result, { kind: 'invalid' })
+})
+
+// Mirrors the top-level 'trust actual bytes' app.request() test above: a declared Content-Length
+// above the bound must not refuse a request on its own — only the actual byte count of the body
+// once read can.
+test('readBoundedFormResult does not refuse a body on a falsely large declared Content-Length alone — only actual bytes count', async () => {
+  const result = await readBoundedFormResult(
+    contextWithFastPath({ arrayBuffer: formBytes('a=1'), contentLength: '999999' }),
+    8_192,
+  )
+  assert.equal(result.kind, 'form')
+  assert.equal((result as { kind: 'form'; values: URLSearchParams }).values.get('a'), '1')
 })
 
 test('browser form fields are exact, single, bounded, and control-free', () => {

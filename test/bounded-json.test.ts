@@ -42,50 +42,97 @@ test('jsonOptionalStringField still distinguishes absent from present-but-invali
 })
 
 // ---------------------------------------------------------------------------------------------
-// readBoundedJson: bounded wait, not an unbounded one
+// readBoundedJson: reads through the proven fast path (c.req.arrayBuffer()), not the raw
+// c.req.raw.body stream reader — see src/bounded-json.ts for the full 2026-09-03 root-cause
+// writeup (issue #39).
 // ---------------------------------------------------------------------------------------------
 
-function contextWithBody(body: ReadableStream<Uint8Array> | null): Context {
+function contextWithFastPath(options: {
+  arrayBuffer: () => Promise<ArrayBuffer>
+  rawBody?: ReadableStream<Uint8Array> | null
+  contentLength?: string
+}): Context {
+  const { arrayBuffer, rawBody = new ReadableStream(), contentLength } = options
   return {
     req: {
-      header: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : undefined),
-      raw: { body },
+      header: (name: string) => {
+        const lower = name.toLowerCase()
+        if (lower === 'content-type') return 'application/json'
+        if (lower === 'content-length') return contentLength
+        return undefined
+      },
+      raw: { body: rawBody },
+      arrayBuffer,
     },
   } as unknown as Context
 }
 
-// Regression test for the 2026-09-03 production incident: POST /api/register, /api/rotate, and
-// /api/recovery never answered on Vercel's deployed runtime because the request body reader
-// awaited a chunk that never arrived, with no deadline. This never depends on any particular
-// runtime's stream quirk to prove the fix: a reader whose `pull` never enqueues or closes is a
-// stream that, by construction, never settles on its own — exactly the shape "an await with no
-// timeout" takes — and readBoundedJson must still resolve to 'unreadable' well inside its own
-// configured deadline rather than hang the caller.
-test('readBoundedJson resolves to unreadable instead of hanging when the body stream never settles', async () => {
-  let canceled = false
+function jsonBytes(text: string): () => Promise<ArrayBuffer> {
+  return async () => new TextEncoder().encode(text).buffer as ArrayBuffer
+}
+
+// Regression test for the 2026-09-03 production incident, root-caused on a deployed Vercel
+// preview with a dedicated probe route (issue #39): on that runtime's Node adapter,
+// c.req.raw.body.getReader() never delivers a single chunk even once the body has fully
+// arrived — every reader.read() on it hangs forever — while c.req.arrayBuffer() (Hono's fast
+// path, which reads the underlying Node stream directly instead of through Readable.toWeb())
+// resolves in under 1ms. This models that exact state: raw.body is a stream that never settles,
+// while arrayBuffer() resolves normally. readBoundedJson must read through the fast path, never
+// touching raw.body's reader, so it still returns the parsed body promptly instead of hanging.
+test('readBoundedJson returns the parsed body promptly when raw.body never settles but arrayBuffer() does (the proven Vercel state)', async () => {
   const stuckForever = new ReadableStream<Uint8Array>({
-    // Never enqueues, never closes, never errors — reader.read() on this stream would await
-    // forever with no timeout wrapped around it.
+    // Never enqueues, never closes, never errors — reading raw.body directly would hang forever.
     pull() {},
-    cancel() { canceled = true },
   })
 
   const startedAt = Date.now()
-  const result = await readBoundedJson(contextWithBody(stuckForever), 8_192, 50)
+  const result = await readBoundedJson(contextWithFastPath({
+    arrayBuffer: jsonBytes('{"action":"stage"}'),
+    rawBody: stuckForever,
+  }))
   const elapsedMs = Date.now() - startedAt
 
-  assert.deepEqual(result, { kind: 'unreadable' })
-  assert.ok(elapsedMs < 2_000, `readBoundedJson took ${elapsedMs}ms to give up on a stuck body`)
-  assert.equal(canceled, true)
+  assert.deepEqual(result, { kind: 'json', value: { action: 'stage' } })
+  assert.ok(elapsedMs < 500, `readBoundedJson took ${elapsedMs}ms; it must not touch the stuck raw.body reader`)
 })
 
-test('readBoundedJson still parses a well-behaved body well within its deadline', async () => {
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode('{"action":"stage"}'))
-      controller.close()
-    },
-  })
-  const result = await readBoundedJson(contextWithBody(body), 8_192, 50)
+// A body read through the fast path either resolves or rejects on its own (there is no separate
+// stream construction step left to hang); a rejection must still land on the documented
+// 'unreadable' outcome rather than throwing out of readBoundedJson.
+test('readBoundedJson resolves to unreadable, not throwing, when the fast-path read itself rejects', async () => {
+  const result = await readBoundedJson(contextWithFastPath({
+    arrayBuffer: async () => { throw new Error('socket stopped') },
+  }))
+  assert.deepEqual(result, { kind: 'unreadable' })
+})
+
+test('readBoundedJson still parses a well-behaved body', async () => {
+  const result = await readBoundedJson(contextWithFastPath({ arrayBuffer: jsonBytes('{"action":"stage"}') }))
+  assert.deepEqual(result, { kind: 'json', value: { action: 'stage' } })
+})
+
+test('readBoundedJson refuses a body whose actual bytes exceed the bound', async () => {
+  const result = await readBoundedJson(
+    contextWithFastPath({ arrayBuffer: jsonBytes(`{"padding":"${'x'.repeat(20)}"}`) }),
+    16,
+  )
+  assert.deepEqual(result, { kind: 'invalid' })
+})
+
+// Mirrors the 'ignores Content-Length claims' contract already covered for form bodies in
+// test/browser-form.test.ts and for /join in test/market-identity-browser.test.ts: a declared
+// Content-Length above the bound must not refuse a request on its own — only the actual byte
+// count of the body once read can. An absent or falsely large declaration is equally unusable
+// as a refusal signal by itself.
+test('readBoundedJson refuses malformed JSON text sent with the correct content type', async () => {
+  const result = await readBoundedJson(contextWithFastPath({ arrayBuffer: jsonBytes('not json') }))
+  assert.deepEqual(result, { kind: 'invalid' })
+})
+
+test('readBoundedJson does not refuse a body on a falsely large declared Content-Length alone — only actual bytes count', async () => {
+  const result = await readBoundedJson(
+    contextWithFastPath({ arrayBuffer: jsonBytes('{"action":"stage"}'), contentLength: '999999' }),
+    8_192,
+  )
   assert.deepEqual(result, { kind: 'json', value: { action: 'stage' } })
 })

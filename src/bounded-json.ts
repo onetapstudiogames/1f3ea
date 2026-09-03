@@ -16,77 +16,57 @@ const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/u
 // doors agree.
 const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u
 
-// 2026-09-03 production incident: with MARKET_CODING_IDENTITY_ENABLED=true, POST /api/register,
-// /api/rotate, and /api/recovery never answered a `{}` or `{"action":"stage"}` body on Vercel's
-// deployed Node runtime — curl gave up at 45s on every attempt. Every other JSON-body door in
-// this codebase reads through Hono's built-in c.req.json()/text(); these three (and /api/pair,
-// through rejectNonEmptyBody) are the only callers that hand-drive the raw body reader below,
-// and CI's app.request() helper builds its Request in-process, so it never exercises the
-// Node-adapter body stream that only exists once a request actually goes over a socket — this
-// gap is why no test caught it. Whatever in that stream construction can fail to ever settle,
-// an await with no deadline turns it into a request that never answers at all, which breaks
-// every door's own documented refusal contract (every failure mode here is supposed to be a
-// prompt, named status). Bound the whole read — not just one chunk — so a stuck stream still
-// resolves to the 'unreadable' outcome (503 storage_unavailable) instead of hanging the caller.
-const READ_TIMEOUT_MS = 4_000
-
-async function drainBoundedBody(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+// 2026-09-03 production incident, root-caused 2026-09-03 on a deployed Vercel preview with a
+// dedicated probe route (issue #39): with MARKET_CODING_IDENTITY_ENABLED=true, POST
+// /api/register, /api/rotate, and /api/recovery never answered a `{}` or `{"action":"stage"}`
+// body on Vercel's deployed Node runtime (Node v24.18.0) — curl gave up at 45s on every attempt.
+// The probe proved the exact mechanism: on that runtime the IncomingMessage arrives already
+// complete (complete=true, readableLength=body bytes, readableFlowing=null, no listeners,
+// readableDidRead=false, no rawBody). In that state, @hono/node-server 2.1.0's fast path
+// (c.req.text() / c.req.json() / c.req.arrayBuffer(), which reads the Node stream with
+// data/end listeners) returns the body in under 1ms — but touching c.req.raw.body, which builds
+// a web ReadableStream through Readable.toWeb(incoming), never delivers a single chunk: every
+// reader.read() on it hangs forever. A local Node server does not reproduce this, so CI's
+// app.request() helper (an in-process Request, never a real socket) cannot catch it either —
+// this gap is why no test caught it originally. Read through the fast path instead of hand-driving
+// the raw stream reader, matching every other JSON-body door in this codebase (which already
+// uses c.req.json()/text() and never hung). A body read through the fast path either resolves or
+// rejects on its own; there is no hang left here to bound with a deadline, so (unlike the
+// short-lived 4s-timeout version of this fix) none is needed.
+//
+// strict UTF-8 decoding is preserved deliberately rather than delegated to c.req.text(): the
+// Fetch `Body.text()` UTF-8 decode is lenient (invalid sequences become U+FFFD) where this door's
+// documented contract is fatal (invalid UTF-8 refuses as 'invalid'). Reading raw bytes via
+// c.req.arrayBuffer() — the same proven fast path — and decoding them ourselves with a fatal
+// TextDecoder keeps that contract exactly.
+//
+// Content-Length is deliberately never trusted to refuse a request on its own (see
+// test/browser-form.test.ts and test/market-identity-browser.test.ts: a falsely large declared
+// Content-Length with a small actual body must still succeed). Only the actual byte count of the
+// body once read can refuse it.
+async function readBoundedBytes(
+  c: Context,
   maximumBytes: number,
-): Promise<{ kind: 'bytes'; bytes: Uint8Array } | { kind: 'invalid' }> {
-  const chunks: Uint8Array[] = []
-  let received = 0
-  while (true) {
-    const result = await reader.read()
-    if (result.done) break
-    received += result.value.byteLength
-    if (received > maximumBytes) {
-      await reader.cancel()
-      return { kind: 'invalid' }
-    }
-    chunks.push(result.value)
+): Promise<{ kind: 'bytes'; bytes: Uint8Array } | { kind: 'invalid' } | { kind: 'unreadable' }> {
+  let buffer: ArrayBuffer
+  try {
+    buffer = await c.req.arrayBuffer()
+  } catch {
+    return { kind: 'unreadable' }
   }
-  const bytes = new Uint8Array(received)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return { kind: 'bytes', bytes }
+  if (buffer.byteLength > maximumBytes) return { kind: 'invalid' }
+  return { kind: 'bytes', bytes: new Uint8Array(buffer) }
 }
 
 /** Reads a bounded JSON object body the same way browser-form.ts bounds form bodies. */
 export async function readBoundedJson(
   c: Context,
   maximumBytes = 8_192,
-  timeoutMs = READ_TIMEOUT_MS,
 ): Promise<BoundedJsonReadResult> {
   const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
   if (contentType !== 'application/json' || !c.req.raw.body) return { kind: 'invalid' }
 
-  const reader = c.req.raw.body.getReader()
-  let settled = false
-  let timer: ReturnType<typeof setTimeout>
-  const timedOut = new Promise<{ kind: 'unreadable' }>(resolve => {
-    timer = setTimeout(() => {
-      if (settled) return
-      // Best-effort only, never awaited: on a runtime where cancel() itself never settles
-      // either, this still lets the door answer on time instead of waiting on cancellation too.
-      reader.cancel().catch(() => {})
-      resolve({ kind: 'unreadable' })
-    }, timeoutMs)
-  })
-
-  let drained: { kind: 'bytes'; bytes: Uint8Array } | { kind: 'invalid' } | { kind: 'unreadable' }
-  try {
-    drained = await Promise.race([drainBoundedBody(reader, maximumBytes), timedOut])
-  } catch {
-    try { await reader.cancel() } catch {}
-    return { kind: 'unreadable' }
-  } finally {
-    settled = true
-    clearTimeout(timer!)
-  }
+  const drained = await readBoundedBytes(c, maximumBytes)
   if (drained.kind !== 'bytes') return drained
 
   try {

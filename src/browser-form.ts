@@ -13,6 +13,14 @@ export async function readBoundedForm(
   return result.kind === 'form' ? result.values : null
 }
 
+// See src/bounded-json.ts for the full root-cause writeup (issue #39, 2026-09-03): on Vercel's
+// deployed Node runtime c.req.raw.body.getReader() never delivers a chunk even once the request
+// body has fully arrived, while c.req.arrayBuffer() (Hono's proven fast path) resolves in under
+// 1ms. Read through that fast path instead of hand-driving the raw stream reader; a read through
+// it either resolves or rejects on its own, so no timeout/deadline is needed here either.
+// Content-Length is deliberately never trusted to refuse a request on its own — see the
+// 'ignores Content-Length claims' tests in test/browser-form.test.ts and
+// test/market-identity-browser.test.ts — only the actual byte count of the body once read can.
 export async function readBoundedFormResult(
   c: Context,
   maximumBytes = 8_192,
@@ -22,33 +30,16 @@ export async function readBoundedFormResult(
     return { kind: 'invalid' }
   }
 
-  const reader = c.req.raw.body.getReader()
-  const chunks: Uint8Array[] = []
-  let received = 0
+  let buffer: ArrayBuffer
   try {
-    while (true) {
-      const result = await reader.read()
-      if (result.done) break
-      received += result.value.byteLength
-      if (received > maximumBytes) {
-        await reader.cancel()
-        return { kind: 'invalid' }
-      }
-      chunks.push(result.value)
-    }
+    buffer = await c.req.arrayBuffer()
   } catch {
-    try { await reader.cancel() } catch {}
     return { kind: 'unreadable' }
   }
+  if (buffer.byteLength > maximumBytes) return { kind: 'invalid' }
 
-  const bytes = new Uint8Array(received)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
   try {
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
     return { kind: 'form', values: new URLSearchParams(decoded) }
   } catch {
     return { kind: 'invalid' }
