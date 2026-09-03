@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import type { Context } from 'hono'
 
-import { jsonOptionalStringField, jsonStringField } from '../src/bounded-json.ts'
+import { jsonOptionalStringField, jsonStringField, readBoundedJson } from '../src/bounded-json.ts'
 
 // A JSON body reaches these validators as decoded UTF-8 text, but `\uXXXX` escapes inside a
 // JSON string are unconstrained: JSON.parse can produce a JS string holding a lone (unpaired)
@@ -38,4 +39,53 @@ test('jsonOptionalStringField still distinguishes absent from present-but-invali
   assert.equal(jsonOptionalStringField({}, 'field'), undefined)
   assert.equal(jsonOptionalStringField({ field: '\uD800' }, 'field'), null)
   assert.equal(jsonOptionalStringField({ field: '' }, 'field'), '')
+})
+
+// ---------------------------------------------------------------------------------------------
+// readBoundedJson: bounded wait, not an unbounded one
+// ---------------------------------------------------------------------------------------------
+
+function contextWithBody(body: ReadableStream<Uint8Array> | null): Context {
+  return {
+    req: {
+      header: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : undefined),
+      raw: { body },
+    },
+  } as unknown as Context
+}
+
+// Regression test for the 2026-09-03 production incident: POST /api/register, /api/rotate, and
+// /api/recovery never answered on Vercel's deployed runtime because the request body reader
+// awaited a chunk that never arrived, with no deadline. This never depends on any particular
+// runtime's stream quirk to prove the fix: a reader whose `pull` never enqueues or closes is a
+// stream that, by construction, never settles on its own — exactly the shape "an await with no
+// timeout" takes — and readBoundedJson must still resolve to 'unreadable' well inside its own
+// configured deadline rather than hang the caller.
+test('readBoundedJson resolves to unreadable instead of hanging when the body stream never settles', async () => {
+  let canceled = false
+  const stuckForever = new ReadableStream<Uint8Array>({
+    // Never enqueues, never closes, never errors — reader.read() on this stream would await
+    // forever with no timeout wrapped around it.
+    pull() {},
+    cancel() { canceled = true },
+  })
+
+  const startedAt = Date.now()
+  const result = await readBoundedJson(contextWithBody(stuckForever), 8_192, 50)
+  const elapsedMs = Date.now() - startedAt
+
+  assert.deepEqual(result, { kind: 'unreadable' })
+  assert.ok(elapsedMs < 2_000, `readBoundedJson took ${elapsedMs}ms to give up on a stuck body`)
+  assert.equal(canceled, true)
+})
+
+test('readBoundedJson still parses a well-behaved body well within its deadline', async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"action":"stage"}'))
+      controller.close()
+    },
+  })
+  const result = await readBoundedJson(contextWithBody(body), 8_192, 50)
+  assert.deepEqual(result, { kind: 'json', value: { action: 'stage' } })
 })

@@ -16,41 +16,81 @@ const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/u
 // doors agree.
 const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u
 
-/** Reads a bounded JSON object body the same way browser-form.ts bounds form bodies. */
-export async function readBoundedJson(
-  c: Context,
-  maximumBytes = 8_192,
-): Promise<BoundedJsonReadResult> {
-  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
-  if (contentType !== 'application/json' || !c.req.raw.body) return { kind: 'invalid' }
+// 2026-09-03 production incident: with MARKET_CODING_IDENTITY_ENABLED=true, POST /api/register,
+// /api/rotate, and /api/recovery never answered a `{}` or `{"action":"stage"}` body on Vercel's
+// deployed Node runtime — curl gave up at 45s on every attempt. Every other JSON-body door in
+// this codebase reads through Hono's built-in c.req.json()/text(); these three (and /api/pair,
+// through rejectNonEmptyBody) are the only callers that hand-drive the raw body reader below,
+// and CI's app.request() helper builds its Request in-process, so it never exercises the
+// Node-adapter body stream that only exists once a request actually goes over a socket — this
+// gap is why no test caught it. Whatever in that stream construction can fail to ever settle,
+// an await with no deadline turns it into a request that never answers at all, which breaks
+// every door's own documented refusal contract (every failure mode here is supposed to be a
+// prompt, named status). Bound the whole read — not just one chunk — so a stuck stream still
+// resolves to the 'unreadable' outcome (503 storage_unavailable) instead of hanging the caller.
+const READ_TIMEOUT_MS = 4_000
 
-  const reader = c.req.raw.body.getReader()
+async function drainBoundedBody(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maximumBytes: number,
+): Promise<{ kind: 'bytes'; bytes: Uint8Array } | { kind: 'invalid' }> {
   const chunks: Uint8Array[] = []
   let received = 0
-  try {
-    while (true) {
-      const result = await reader.read()
-      if (result.done) break
-      received += result.value.byteLength
-      if (received > maximumBytes) {
-        await reader.cancel()
-        return { kind: 'invalid' }
-      }
-      chunks.push(result.value)
+  while (true) {
+    const result = await reader.read()
+    if (result.done) break
+    received += result.value.byteLength
+    if (received > maximumBytes) {
+      await reader.cancel()
+      return { kind: 'invalid' }
     }
-  } catch {
-    try { await reader.cancel() } catch {}
-    return { kind: 'unreadable' }
+    chunks.push(result.value)
   }
-
   const bytes = new Uint8Array(received)
   let offset = 0
   for (const chunk of chunks) {
     bytes.set(chunk, offset)
     offset += chunk.byteLength
   }
+  return { kind: 'bytes', bytes }
+}
+
+/** Reads a bounded JSON object body the same way browser-form.ts bounds form bodies. */
+export async function readBoundedJson(
+  c: Context,
+  maximumBytes = 8_192,
+  timeoutMs = READ_TIMEOUT_MS,
+): Promise<BoundedJsonReadResult> {
+  const contentType = c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+  if (contentType !== 'application/json' || !c.req.raw.body) return { kind: 'invalid' }
+
+  const reader = c.req.raw.body.getReader()
+  let settled = false
+  let timer: ReturnType<typeof setTimeout>
+  const timedOut = new Promise<{ kind: 'unreadable' }>(resolve => {
+    timer = setTimeout(() => {
+      if (settled) return
+      // Best-effort only, never awaited: on a runtime where cancel() itself never settles
+      // either, this still lets the door answer on time instead of waiting on cancellation too.
+      reader.cancel().catch(() => {})
+      resolve({ kind: 'unreadable' })
+    }, timeoutMs)
+  })
+
+  let drained: { kind: 'bytes'; bytes: Uint8Array } | { kind: 'invalid' } | { kind: 'unreadable' }
   try {
-    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    drained = await Promise.race([drainBoundedBody(reader, maximumBytes), timedOut])
+  } catch {
+    try { await reader.cancel() } catch {}
+    return { kind: 'unreadable' }
+  } finally {
+    settled = true
+    clearTimeout(timer!)
+  }
+  if (drained.kind !== 'bytes') return drained
+
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(drained.bytes)
     const parsed: unknown = JSON.parse(decoded)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'invalid' }
     return { kind: 'json', value: parsed as Record<string, unknown> }
