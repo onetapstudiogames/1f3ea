@@ -27,7 +27,7 @@ gate, `MARKET_CODING_IDENTITY_ENABLED`, precisely so the two are never conflated
 | `20260823_direct_payments.sql` | **Not recorded.** | **Not recorded.** Reconcile provider history and rerun the guarded semantic inspection before deciding whether any action is needed. |
 | `20260822_hosted_market_signin.sql` | **Not recorded.** | **Not recorded.** Reachable OAuth or identity routes are insufficient evidence. |
 | `20260827_market_identity.sql` | **Not recorded.** | **Not recorded.** Reachable `/join`, `/recovery`, and `/rotate` pages are insufficient evidence. |
-| `20260902_market_identity_json_doors.sql` | **Not recorded.** | **Not recorded.** `MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTATION_ENABLED` being `true` is not evidence — check `MARKET_CODING_IDENTITY_ENABLED` and the runner postconditions instead. |
+| `20260902_market_identity_json_doors.sql` | **2026-09-03 01:06Z**, runner `market-coding-identity`, fresh preview branch `br-curly-thunder-aw4b3209` (created from production parent `br-plain-moon-awqm279s`; the pinned `br-shy-sea-aw8771mn` was found stale and unusable), endpoint `ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech`, database `neondb`. Runner reported `{"target":"preview","migration":"market-coding-identity","database":"neondb","endpoint":"ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only check confirmed `merchant_pairing_codes` (`id`, `merchant_id`, `code_hash`, `created_at`, `expires_at`, `used_at`, `invalidated_at`) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` constraint including `pair_create`. Rehearsal branch deleted afterward. See "Recorded run evidence: market-coding-identity" below. | **2026-09-03 01:06Z**, runner `market-coding-identity`, production endpoint `ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`, database `neondb`, preceded by labelled snapshot branch `snapshot/pre-coding-identity-20260903-0106` (`br-floral-base-aw54cx5o`). Runner reported `{"target":"production","migration":"market-coding-identity","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only verification confirmed the same columns and constraint; `listings` 18 and `merchants` 23 unchanged. Live smoke with `MARKET_CODING_IDENTITY_ENABLED` still unset: `/api/official` `coding_client_doors` `null`; `POST /api/register` and `POST /api/pair` answer 503 `coding_identity_dormant`; `/join` 200. The flag has **not** been set yet — the four coding-client doors remain dormant until an operator sets it and redeploys. See "Recorded run evidence: market-coding-identity" below. |
 | `20260827_world_payment_finality.sql` | **Not recorded.** | **Not recorded.** Served finality copy and application tests do not prove the production writer fence exists. |
 | `20260828_x402_payment_attempts.sql` | **Not recorded.** | **Not recorded.** Source support for durable attempts does not prove its production table and triggers exist. |
 
@@ -68,6 +68,35 @@ gates the four coding-client doors (`/api/register`, `/api/rotate`, `/api/recove
 `/api/pair`) on the separate `MARKET_CODING_IDENTITY_ENABLED` flag for exactly that reason —
 so run this migration and require its postconditions before setting that flag, never merely
 because the two identity flags are already on.
+
+## Recorded run evidence: market-coding-identity
+
+- **2026-09-03 01:06Z, preview rehearsal.** The pinned preview branch (`br-shy-sea-aw8771mn`,
+  created 2026-08-23) was found stale (17 tables, no market-identity tables) and unusable, so
+  a fresh Neon branch was created from production (parent `br-plain-moon-awqm279s`, branch
+  `br-curly-thunder-aw4b3209`, endpoint `ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech`,
+  database `neondb`).
+  `npm run migrate:preview:market-coding-identity -- --database neondb --endpoint ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech --production-endpoint ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`
+  reported
+  `{"target":"preview","migration":"market-coding-identity","database":"neondb","endpoint":"ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`,
+  exit 0. A read-only check found `merchant_pairing_codes` with columns `id`, `merchant_id`,
+  `code_hash`, `created_at`, `expires_at`, `used_at`, `invalidated_at` and
+  `merchant_identity_rate_limits_attempt_kind_allowed` including `pair_create`. The rehearsal
+  branch was deleted afterwards.
+- **2026-09-03 01:06Z, production.** A labelled snapshot branch
+  `snapshot/pre-coding-identity-20260903-0106` (`br-floral-base-aw54cx5o`) was taken from
+  production first.
+  `npm run migrate:production:market-coding-identity -- --database neondb --endpoint ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`
+  reported
+  `{"target":"production","migration":"market-coding-identity","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`,
+  exit 0. Read-only verification: the same columns and constraint; `listings` 18 and
+  `merchants` 23 unchanged. Live smoke with `MARKET_CODING_IDENTITY_ENABLED` still unset:
+  `/api/official` `coding_client_doors` `null`; `POST /api/register` and `POST /api/pair`
+  answer 503 `coding_identity_dormant`; `/join` 200. The flag has **not** been set yet; the
+  doors remain dormant until an operator sets it and redeploys.
+- **Operator finding.** The pinned preview branch `br-shy-sea-aw8771mn` is stale relative to
+  production (missing the 2026-08-27 and 2026-08-28 migrations) and should be recreated from
+  production or migrated before it is used as evidence for anything.
 
 ## Required target facts
 
