@@ -48,6 +48,7 @@ test('served read guidance cautions agents and states every merchant-body bound 
   ] as const) {
     assert.ok(text.includes(MULTI_BODY_CAUTION), name)
     assert.match(text, /\/api\/shelves[^\n]*1-50[^\n]*default 50/iu, name)
+    assert.match(text, /\/api\/merchants[^\n]*1-500[^\n]*default 500/iu, name)
     assert.match(text, /\/api\/listing\/:id comments[^\n]*1-200[^\n]*default 200/iu, name)
     assert.match(text, /\/api\/store\/:handle[^\n]*no paging arguments[^\n]*no bound[^\n]*1-50[^\n]*default 50/iu, name)
     assert.match(text, /\/api\/window[^\n]*50 listing[^\n]*500 merchant/iu, name)
