@@ -352,6 +352,9 @@ function json(value: unknown): Response {
 
 const rpcFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = input instanceof Request ? input.url : String(input)
+  if (url === `${CITY_ORIGIN}/api/world/resident/city-buyer`) {
+    return json({ resident: { handle: 'city-buyer' } })
+  }
   if (url === `${CITY_ORIGIN}/api/world/offer/501`) {
     assert.ok(harnessState.cityOffer, 'the city offer fixture must be set before world sync')
     return json({ offer: harnessState.cityOffer })
