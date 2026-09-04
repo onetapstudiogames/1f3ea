@@ -242,11 +242,11 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
       return err(c, 403, 'the city seller cannot buy their own thing')
 
     try {
+      await sql`
+        UPDATE world_checkouts SET status = 'expired'
+        WHERE listing_id = ${listing.id} AND status = 'active' AND expires_at <= now()`
       const rows = (await sql`
-        WITH expired_checkouts AS (
-          UPDATE world_checkouts SET status = 'expired'
-          WHERE listing_id = ${listing.id} AND status = 'active' AND expires_at <= now()
-        ), still_live AS (
+        WITH still_live AS (
           SELECT id FROM listings WHERE id = ${listing.id} AND merchant_id <> ${merchant.id}
             AND delivery_kind = 'city_ownership' AND world_state = 'active'
             AND NOT removed AND NOT withdrawn

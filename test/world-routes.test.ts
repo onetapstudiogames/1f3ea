@@ -549,6 +549,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.draftExists ? [draftRow()] : []
   if (query.includes('FROM listings') && query.includes('world_offer_id'))
     return state.listingExists ? [listingRow()] : []
+  if (query.trimStart().startsWith("UPDATE world_checkouts SET status = 'expired'")) return []
   if (query.includes('INSERT INTO world_checkouts')) {
     if (state.checkoutInsertError) throw postgresError(state.checkoutInsertError, 'world checkout insert failed')
     return [{ id: 60, expires_at: state.checkoutExpiresAt }]
@@ -1641,6 +1642,12 @@ test('checkout binds one market buyer to one city resident and closes the race',
   const body = await created.json() as Record<string, unknown>
   assert.equal(body.checkout_id, 60)
   assert.equal(body.city_claim_url, 'https://1f3d9.com/api/world/offer/33/claim')
+  const expirySweep = state.dbCalls.findIndex(call =>
+    call.query.includes("UPDATE world_checkouts SET status = 'expired'"))
+  const checkoutInsert = state.dbCalls.findIndex(call => call.query.includes('INSERT INTO world_checkouts'))
+  assert.ok(expirySweep >= 0)
+  assert.ok(checkoutInsert > expirySweep)
+  assert.equal(state.dbCalls[expirySweep]!.query.includes('INSERT INTO world_checkouts'), false)
 
   state.checkoutInsertError = { code: '23505', constraint: 'world_checkouts_one_active_per_buyer' }
   const raced = await app.request('/api/world/checkout/70', {
