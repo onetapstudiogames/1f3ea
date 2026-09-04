@@ -1367,7 +1367,7 @@ test('closed custody stops a saved shopkeeper x402 world retry before Base work'
   }
 })
 
-test('closed custody keeps a non-shopkeeper saved world x402 retry on its no-pay path', async () => {
+test('closed custody keeps main behavior for a non-shopkeeper saved world x402 retry', async () => {
   reset()
   state.rpcFinalized = false
   const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
@@ -1390,7 +1390,7 @@ test('closed custody keeps a non-shopkeeper saved world x402 retry on its no-pay
     })
     assert.equal(retry.status, 503)
     assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
-    assert.equal(state.rpcCalls, rpcCallsBeforeRetry)
+    assert.equal(state.rpcCalls, rpcCallsBeforeRetry + 3)
     assert.equal(state.facilitatorSettleCalls, 1)
   } finally {
     if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
@@ -1435,6 +1435,36 @@ test('closed custody preserves a saved shopkeeper direct world fee without anoth
     if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
     else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
   }
+})
+
+test('a resumed shopkeeper x402 world fee clears a separately preserved direct fee', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const directWaiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(directWaiting.status, 202)
+  const preservedDirectFee = state.listingFeeAttempt
+  assert.equal(preservedDirectFee?.payment_status, 'payment_pending')
+
+  state.listingFeeAttempt = null
+  const x402Waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(x402Waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  state.listingFeeAttempt = preservedDirectFee
+  state.rpcFinalized = true
+  const retry = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(retry.status, 201)
+  assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
 })
 
 test('a mismatched settled world-listing fee is rejected before Base or facilitator work', async () => {

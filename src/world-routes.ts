@@ -232,21 +232,18 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     const keeperRequest = merchant.id === config.maintainerId
     const seedCandidate = keeperRequest && !paymentHeader && !parsed.fee_tx_hash
     let hasSavedX402 = false; let preservedFee: Awaited<ReturnType<typeof readListingFeeAttempt>> = null
-    try {
+    if (keeperRequest) try {
       hasSavedX402 = await readX402PaymentAttempt(x402OperationKey) != null
-      if (keeperRequest)
-        preservedFee = await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
-    } catch {
-      return c.json({ error: 'world listing payment records are temporarily unavailable', retry: 'retry this exact world listing request later', do_not_pay_again: true }, 503)
-    }
+      preservedFee = await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
+    } catch { return c.json({ error: 'world listing payment records are temporarily unavailable', retry: 'retry this exact world listing request later', do_not_pay_again: true }, 503) }
     const isSeed = seedCandidate && !hasSavedX402 && !preservedFee
-    const unavailable = isSeed ? null : paymentReadinessResponse(c)
-    if (unavailable && preservedFee) return c.json({ error: 'the market cannot finish this recorded world listing fee right now',
-      retry: 'retry this same world listing body later with the same fee_tx_hash', fee_tx_hash: preservedFee.tx_hash,
-      do_not_pay_again: true }, 503)
-    if (unavailable && hasSavedX402) return refuseRecordedX402(
+    const keeperUnavailable = keeperRequest && !isSeed ? paymentReadinessResponse(c) : null
+    if (keeperUnavailable && preservedFee) return c.json({
+      error: 'the market cannot finish this recorded world listing fee right now', retry: 'retry this same world listing body later with the same fee_tx_hash',
+      fee_tx_hash: preservedFee.tx_hash, do_not_pay_again: true }, 503)
+    if (keeperUnavailable && hasSavedX402) return refuseRecordedX402(
       'the market cannot finish this recorded world listing fee right now', 503, retryRecordedX402)
-    if (unavailable) return c.json({ error: 'world listing payments are temporarily unavailable',
+    if (keeperUnavailable) return c.json({ error: 'world listing payments are temporarily unavailable',
       retry: 'retry this same world listing request later and wait for new payment instructions' }, 503)
     let x402Payment: FinalizedX402Payment | null = null
     let x402Attempt: X402PaymentAttempt | null = null
@@ -266,8 +263,13 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
         }, resumedX402.status === 'unclassified' ? 502 : 409)
       }
     }
-    if (!keeperRequest && !x402Payment)
-      preservedFee = await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
+    const unavailable = keeperRequest ? null : paymentReadinessResponse(c)
+    if (unavailable) return x402Payment
+      ? refuseRecordedX402('the market cannot finish this recorded world listing fee right now', 503, retryRecordedX402)
+      : c.json({ error: 'world listing payments are temporarily unavailable',
+        retry: 'retry this same world listing request later and wait for new payment instructions' }, 503)
+    preservedFee = x402Payment ? null : keeperRequest ? preservedFee
+      : await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
     if (x402Payment) {
       const confirmation = await confirmRecordedX402(x402Payment)
       if (confirmation.state === 'unavailable') {

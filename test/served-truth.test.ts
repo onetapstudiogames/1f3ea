@@ -31,31 +31,43 @@ function mcpRequest(method: string, params?: unknown) {
 }
 
 test('every public fee surface states the uncapped logged shopkeeper exception', async () => {
+  const initializeResponse = await mcpRequest('initialize', {})
+  const initializeBody = await initializeResponse.json() as {
+    result: { instructions: string }
+  }
   const toolsResponse = await mcpRequest('tools/list')
   const toolsBody = await toolsResponse.json() as {
     result: { tools: Array<{ name: string; description: string }> }
   }
-  const toolCopy = toolsBody.result.tools
-    .filter(tool => tool.name === 'list_item' || tool.name === 'list_world')
-    .map(tool => tool.description)
-    .join('\n')
-  const surfaces = [
-    await (await app.request('/')).text(),
-    await (await app.request('/llms.txt')).text(),
-    await (await app.request('/terms')).text(),
-    await (await app.request('/window')).text(),
-    await (await app.request('/city-bridge')).text(),
-    read('docs/FRONTDOOR.md'),
-    read('docs/SPEC.md'),
-    read('docs/DECISIONS.md'),
-    toolCopy,
+  const toolsByName = new Map(toolsBody.result.tools.map(tool => [tool.name, tool.description]))
+  const feeRule = 'Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed.'
+  const surfaces: Array<[string, string, string]> = [
+    ['served front door', await (await app.request('/')).text(), feeRule],
+    ['frontdoor mirror', read('src/frontdoor.txt'), feeRule],
+    ['door source mirror', read('src/door.ts'), feeRule],
+    ['official facts', JSON.stringify(await (await app.request('/api/official')).json()),
+      'merchant #1, an AI agent; lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed; every use of power is logged at /api/events — fee-free listings as maintainer_seed, other actions as moderation'],
+    ['README', read('README.md'), feeRule],
+    ['MCP initialize', initializeBody.result.instructions, feeRule],
+    ['/about', await (await app.request('/about')).text(), feeRule],
+    ['/help', await (await app.request('/help')).text(), feeRule],
+    ['/llms.txt', await (await app.request('/llms.txt')).text(), feeRule],
+    ['/terms', await (await app.request('/terms')).text(), 'Creating a listing normally requires a one-time $1 USDC listing fee paid to the market treasury. The shopkeeper lists fee-free without a cap, and every such listing is publicly logged as maintainer_seed.'],
+    ['/window', await (await app.request('/window')).text(), 'Every merchant pays $1 to list except the shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed.'],
+    ['/city-bridge', await (await app.request('/city-bridge')).text(), 'activating it costs the normal $1 USDC listing fee except for the shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed.'],
+    ['front-door docs', read('docs/FRONTDOOR.md'), 'every merchant except the\nshopkeeper pays $1 to activate an ordinary or world listing. The shopkeeper lists\nfee-free without a cap, and every such listing is publicly logged as `maintainer_seed`.'],
+    ['spec', read('docs/SPEC.md'), 'costs the one-time listing fee for every merchant except the\nshopkeeper. The shopkeeper lists fee-free without a cap and each exception is logged as\n`maintainer_seed`'],
+    ['decisions', read('docs/DECISIONS.md'), 'The shopkeeper, the operator\'s own merchant account on the operator\'s own market, creates ordinary and world listings fee-free without a cap. Every fee-free listing remains publicly logged as `maintainer_seed`.'],
+    ['list_item tool', toolsByName.get('list_item') ?? '', 'Create a listing ($1 USDC fee, with no daily listing cap). The shopkeeper lists fee-free without a cap, and every such listing is publicly logged as maintainer_seed.'],
+    ['list_world tool', toolsByName.get('list_world') ?? '', 'Every merchant except the shopkeeper pays the normal $1 USDC listing fee; a direct fee transfer may be larger but must be at least $1. The shopkeeper lists fee-free without a cap, logged as maintainer_seed.'],
   ]
 
-  for (const [index, surface] of surfaces.entries()) {
-    assert.match(surface, /shopkeeper/iu, String(index))
-    assert.match(surface, /without a cap|uncapped/iu, String(index))
-    assert.match(surface, /maintainer_seed/u, String(index))
+  for (const [name, surface, qualifiedSentence] of surfaces) {
+    assert.ok(surface.includes(qualifiedSentence), name)
   }
+
+  const frontDoor = surfaces[0]![1]
+  assert.equal(frontDoor.split(feeRule).length - 1, 3, 'front door introduction, constitution, and HOW TO SELL')
 })
 
 test('official facts and MCP state the bounded city recovery contract', async () => {

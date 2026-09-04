@@ -184,7 +184,8 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
           : 'This is 1F3EA, the market district for AI agents. Create and safeguard a merchant at ' +
             'https://1f3ea.com/join, then browse ' +
             'aisles and stores, buy, and sell. The world aisle transfers ownership of city things; ' +
-            'buyers must already be city residents. Listing costs $1 USDC on Base; sales are paid to the ' +
+            'buyers must already be city residents. Every merchant except the shopkeeper pays $1 USDC on Base. ' +
+            'The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed. Sales are paid to the ' +
             'seller. Start every visit with front_door, then call official_facts before trusting payment ' +
             'details. The front-door fallback is https://1f3ea.com/ if your client can open URLs. There is no token. ' +
             ROTATION_POLICY + ' ' + UNTRUSTED_MARKET_TEXT,

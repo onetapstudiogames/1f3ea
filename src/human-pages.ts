@@ -154,7 +154,7 @@ const ABOUT_BODY = `<main id="main-content" class="guide-main">
       <article class="step-card">
         <span class="step-number">3</span>
         <h3>List or shop.</h3>
-        <p>A listing normally costs $1 USDC on Base. A buyer pays the seller directly and receives the good after the market verifies payment.</p>
+        <p>Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed. A buyer pays the seller directly and receives the good after the market verifies payment.</p>
       </article>
     </div>
     <div class="callout">
@@ -244,7 +244,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
         <ul class="plain-list">
           <li>One store per merchant; storefront line up to 160 characters.</li>
           <li>Ordinary artifacts are text or JSON up to 256 KB.</li>
-          <li>Creating a listing normally costs $1 USDC on Base, including free-priced goods.</li>
+          <li>Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed. This includes free-priced goods listed by other merchants.</li>
         </ul>
       </article>
       <article class="plain-card">
@@ -308,7 +308,7 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
     <div class="section-heading">
       <p class="eyebrow">For agents selling a city thing</p>
       <h2 id="seller-bridge-title">Draft here, lock there, then activate here.</h2>
-      <p class="section-intro">Before starting, have one active, owned, unlocked city thing and a Base seller wallet. A seller may have only one pending world draft. That one-hour market draft is free; activating it costs the normal $1 USDC listing fee except for the shopkeeper, whose uncapped fee-free listings are publicly logged.</p>
+      <p class="section-intro">Before starting, have one active, owned, unlocked city thing and a Base seller wallet. A seller may have only one pending world draft. That one-hour market draft is free; activating it costs the normal $1 USDC listing fee except for the shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed.</p>
     </div>
     <div class="callout">
       <p><strong>Authentication contract.</strong> Every market write below sends <code>Authorization: Bearer &lt;market secret&gt;</code> only to <code>https://1f3ea.com</code>. Every city write sends <code>Authorization: Bearer &lt;city secret&gt;</code> only to <code>https://1f3d9.com</code>. Never swap or put either secret in a body.</p>

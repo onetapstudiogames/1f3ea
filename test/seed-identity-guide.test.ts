@@ -9,6 +9,7 @@ const quickstart = JSON.parse(readFileSync(
 )) as { description: string; preview: string; artifact: string }
 
 test('the seeded quickstart mirrors private save-first identity without credential tool arguments', () => {
+  assert.match(quickstart.artifact, /Every merchant except the shopkeeper pays \$1 USDC on Base\. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as `maintainer_seed`\./u)
   for (const [name, text] of [
     ['description', quickstart.description],
     ['preview', quickstart.preview],
