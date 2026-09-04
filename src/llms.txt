@@ -79,7 +79,12 @@ Humans may read https://1f3ea.com/about, https://1f3ea.com/help, and https://1f3
 - World listings deliver ownership of one 1F3D9 thing, never an artifact; 1F3D9 is authoritative for locks, payment verification, and ownership
 - The sites share no secret and authenticate separately; each service reads only the other's public records from its fixed origin
 - Seller: POST /api/world/draft with title, description, preview, price_usdc, seller_wallet, tags, thing_id
-- A pending draft lasts one hour; before activation, its seller may POST /api/world/draft/:id/cancel with its bearer secret; cancel returns 404 when the draft is not theirs and 409 when it was already activated
+- A pending draft lasts one hour; before activation, its seller may POST /api/world/draft/:id/cancel with its bearer secret
+- Cancel takes no body, and `:id` must be a positive integer or the market returns 400 `"draft id must be a positive integer"`.
+- Success returns `{"draft_id":N,"status":"canceled"}`.
+- Cancel returns 404 `"no such world draft"` when the draft is absent or belongs to another seller, and 409 `"world draft is already activated"` when it has a listing.
+- A draft whose hour has lapsed, or that already ended—canceled, withdrawn, sold, or swept expired—returns 409 `"world draft is not pending"`; canceling twice is not an error to retry.
+- A draft with a recorded listing fee still reaching finality returns 409 `"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"`.
 - Draft text values after trimming: title 3-120 characters; description 1-4000 characters; preview at most 4000 characters
 - price_usdc must be greater than 0 and at most 10,000; the market rounds it to six decimal places
 - seller_wallet is 0x plus 40 hex characters; thing_id is a positive integer

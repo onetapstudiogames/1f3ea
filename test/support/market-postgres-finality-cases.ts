@@ -469,6 +469,22 @@ export async function runMarketPostgresFinalityCases(
     assert.equal(waiting.status, 202, await waiting.clone().text())
     assert.equal((await waiting.json() as { do_not_pay_again: boolean }).do_not_pay_again, true)
 
+    const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(canceled.status, 409, await canceled.clone().text())
+    assert.deepEqual(await canceled.json(), {
+      error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+    })
+    const protectedDraft = await connectedDatabase().query<{
+      state: string; canceled_at: Date | null; payment_status: string
+    }>(`
+      SELECT draft.state, draft.canceled_at, attempt.payment_status
+      FROM world_drafts draft JOIN listing_fee_attempts attempt ON attempt.world_draft_id = draft.id
+      WHERE draft.id = 1
+    `)
+    assert.deepEqual(protectedDraft.rows[0], {
+      state: 'pending', canceled_at: null, payment_status: 'payment_pending',
+    })
+
     while (Date.now() <= finalityArrivesAt.getTime()) await delay(25)
     const expired = await connectedDatabase().query(`
       UPDATE world_drafts SET state = 'expired'

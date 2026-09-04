@@ -36,6 +36,7 @@ function publicDraftStatus(row: WorldDraftRow) {
 
 function draftEnvelope(row: WorldDraftRow) {
   const listingState = row.listing_state === 'stale' ? 'canceled' : row.listing_state ?? null
+  // This read override covers drafts activated before sentinel writes shipped; no backfill was run.
   const expiresAt = row.state === 'active' && listingState === 'active'
     ? ACTIVE_WORLD_DRAFT_EXPIRY
     : row.expires_at
@@ -111,24 +112,36 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
     if (!id) return err(c, 400, 'draft id must be a positive integer')
     const rows = (await sql`
       WITH owned_draft AS (
-        SELECT id, state, listing_id FROM world_drafts
-        WHERE id = ${id} AND merchant_id = ${merchant.id}
-        FOR UPDATE
+        SELECT draft.id, draft.state, draft.listing_id, draft.expires_at,
+          EXISTS (
+            SELECT 1 FROM listing_fee_attempts attempt
+            WHERE attempt.world_draft_id = draft.id
+              AND attempt.fee_request_kind = 'world_listing'
+              AND attempt.payment_status = 'payment_pending'
+          ) AS listing_fee_pending
+        FROM world_drafts draft
+        WHERE draft.id = ${id} AND draft.merchant_id = ${merchant.id}
+        FOR UPDATE OF draft
       ), canceled_draft AS (
         UPDATE world_drafts draft SET state = 'canceled', canceled_at = now(),
           canceled_reason = 'canceled by merchant'
         FROM owned_draft owned
         WHERE draft.id = owned.id AND owned.state = 'pending'
+          AND owned.expires_at > now() AND NOT owned.listing_fee_pending
         RETURNING draft.id
       )
-      SELECT owned.state, owned.listing_id, canceled.id AS canceled_id
+      SELECT owned.state, owned.listing_id, owned.listing_fee_pending,
+        canceled.id AS canceled_id
       FROM owned_draft owned LEFT JOIN canceled_draft canceled ON TRUE`) as {
-        state: WorldDraftRow['state']; listing_id: number | null; canceled_id: number | null
+        state: WorldDraftRow['state']; listing_id: number | null
+        listing_fee_pending: boolean; canceled_id: number | null
       }[]
     const result = rows[0]
     if (!result) return err(c, 404, 'no such world draft')
     if (result.canceled_id) return c.json({ draft_id: id, status: 'canceled' as const })
     if (result.listing_id != null) return err(c, 409, 'world draft is already activated')
+    if (result.listing_fee_pending) return err(c, 409,
+      'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling')
     return err(c, 409, 'world draft is not pending')
   })
 

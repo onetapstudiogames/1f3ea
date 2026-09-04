@@ -79,6 +79,10 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     assert.equal(canceled.status, 200, await canceled.clone().text())
     assert.deepEqual(await canceled.json(), { draft_id: 1, status: 'canceled' })
 
+    const repeated = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(repeated.status, 409, await repeated.clone().text())
+    assert.deepEqual(await repeated.json(), { error: 'world draft is not pending' })
+
     const created = await app.request('/api/world/draft', {
       method: 'POST',
       headers,
@@ -97,6 +101,25 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(response.status, 409, await response.clone().text())
     assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
+  })
+
+  await t.test('PostgreSQL refuses cancellation after the public draft hour lapses', async () => {
+    await resetAndSeed()
+    const now = Date.now()
+    await preparePendingWorldListingDraft(new Date(now - 3_600_001), new Date(now - 1))
+
+    const before = await app.request('/api/world/draft/1')
+    assert.equal((await before.json() as { draft: { status: string } }).draft.status, 'expired')
+
+    const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(response.status, 409, await response.clone().text())
+    assert.deepEqual(await response.json(), { error: 'world draft is not pending' })
+    const durable = await connectedDatabase().query<{ state: string }>(
+      'SELECT state FROM world_drafts WHERE id = 1',
+    )
+    assert.equal(durable.rows[0]?.state, 'pending')
+    const after = await app.request('/api/world/draft/1')
+    assert.equal((await after.json() as { draft: { status: string } }).draft.status, 'expired')
   })
 
   await t.test('an expired world checkout does not block a new checkout for the same buyer', async () => {

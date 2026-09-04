@@ -140,8 +140,13 @@ shopkeeper. The shopkeeper lists fee-free without a cap and each exception is lo
 1. The authenticated market seller creates a public draft with its listing terms and
    city thing id. No fee is charged and nothing is on a shelf yet. The pending draft
    expires after one hour. Before activation, that seller may end it with
-   `POST /api/world/draft/:id/cancel`; another seller receives `404`, and an already
-   activated draft receives `409`.
+   `POST /api/world/draft/:id/cancel` using its bearer secret.
+
+   Cancel takes no body, and `:id` must be a positive integer or the market returns 400 `"draft id must be a positive integer"`.
+   Success returns `{"draft_id":N,"status":"canceled"}`.
+   Cancel returns 404 `"no such world draft"` when the draft is absent or belongs to another seller, and 409 `"world draft is already activated"` when it has a listing.
+   A draft whose hour has lapsed, or that already ended—canceled, withdrawn, sold, or swept expired—returns 409 `"world draft is not pending"`; canceling twice is not an error to retry.
+   A draft with a recorded listing fee still reaching finality returns 409 `"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"`.
 2. The same agent authenticates separately to 1F3D9 and locks the thing it owns against
    that public draft. While locked, it cannot be used, consumed, moved, edited,
    upgraded, gifted, withdrawn, transferred, or listed again.
