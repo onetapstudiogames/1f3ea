@@ -451,7 +451,7 @@ export async function runMarketPostgresFinalityCases(
     harnessState.rpcMethods = []
     const now = Date.now()
     const createdAt = new Date(Math.floor(now / 1_000) * 1_000 - 1_000)
-    const expiresAt = new Date(now + 700)
+    const expiresAt = new Date(now + 3_000)
     const transferBlockTime = new Date(Math.floor(now / 1_000) * 1_000)
     const finalityArrivesAt = new Date(expiresAt.getTime() + 100)
     await preparePendingWorldListingDraft(createdAt, expiresAt)
@@ -468,6 +468,8 @@ export async function runMarketPostgresFinalityCases(
     const waiting = await app.request('/api/world/listing', { method: 'POST', headers, body })
     assert.equal(waiting.status, 202, await waiting.clone().text())
     assert.equal((await waiting.json() as { do_not_pay_again: boolean }).do_not_pay_again, true)
+    const cancelClock = await connectedDatabase().query<{ now: Date }>('SELECT clock_timestamp() AS now')
+    assert.ok((cancelClock.rows[0]?.now.getTime() ?? Number.MAX_SAFE_INTEGER) < expiresAt.getTime())
 
     const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(canceled.status, 409, await canceled.clone().text())
@@ -485,7 +487,12 @@ export async function runMarketPostgresFinalityCases(
       state: 'pending', canceled_at: null, payment_status: 'payment_pending',
     })
 
-    while (Date.now() <= finalityArrivesAt.getTime()) await delay(25)
+    while (true) {
+      const clock = await connectedDatabase().query<{ now: Date }>('SELECT clock_timestamp() AS now')
+      if ((clock.rows[0]?.now.getTime() ?? 0) > expiresAt.getTime()
+          && Date.now() > finalityArrivesAt.getTime()) break
+      await delay(25)
+    }
     const expired = await connectedDatabase().query(`
       UPDATE world_drafts SET state = 'expired'
       WHERE id = 1 AND state = 'pending'
@@ -530,7 +537,7 @@ export async function runMarketPostgresFinalityCases(
     harnessState.rpcMethods = []
     const now = Date.now()
     const createdAt = new Date(Math.floor(now / 1_000) * 1_000 - 1_000)
-    const expiresAt = new Date(now + 700)
+    const expiresAt = new Date(now + 3_000)
     const operationStartedAt = new Date()
     const transferBlockTime = new Date(Math.floor(operationStartedAt.getTime() / 1_000) * 1_000)
     const finalityArrivesAt = new Date(expiresAt.getTime() + 100)
@@ -588,18 +595,52 @@ export async function runMarketPostgresFinalityCases(
       transaction: TX_HASH,
       payerWallet: BUYER_WALLET,
     })
+    const headers = { Authorization: `Bearer ${BUYER_SECRET}`, 'Content-Type': 'application/json' }
+    const cancelClock = await connectedDatabase().query<{ now: Date }>('SELECT clock_timestamp() AS now')
+    assert.ok((cancelClock.rows[0]?.now.getTime() ?? Number.MAX_SAFE_INTEGER) < expiresAt.getTime())
+    const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(canceled.status, 409, await canceled.clone().text())
+    assert.deepEqual(await canceled.json(), {
+      error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+    })
+    const protectedDraft = await connectedDatabase().query<{
+      state: string; canceled_at: Date | null; status: string; listing_id: number | null
+    }>(`
+      SELECT draft.state, draft.canceled_at, attempt.status, fee.listing_id
+      FROM world_drafts draft
+      JOIN x402_payment_attempts attempt
+        ON attempt.operation_key = $1
+      LEFT JOIN fees fee ON fee.x402_payment_operation_key = attempt.operation_key
+      WHERE draft.id = 1
+    `, [operationKey])
+    assert.deepEqual(protectedDraft.rows[0], {
+      state: 'pending', canceled_at: null, status: 'settled', listing_id: null,
+    })
 
-    while (Date.now() <= finalityArrivesAt.getTime()) await delay(25)
+    while (true) {
+      const clock = await connectedDatabase().query<{ now: Date }>('SELECT clock_timestamp() AS now')
+      if ((clock.rows[0]?.now.getTime() ?? 0) > expiresAt.getTime()
+          && Date.now() > finalityArrivesAt.getTime()) break
+      await delay(25)
+    }
     const expired = await connectedDatabase().query(`
       UPDATE world_drafts SET state = 'expired'
       WHERE id = 1 AND state = 'pending'
     `)
     assert.equal(expired.rowCount, 1)
-    const headers = { Authorization: `Bearer ${BUYER_SECRET}`, 'Content-Type': 'application/json' }
     const activated = await app.request('/api/world/listing', {
       method: 'POST', headers, body: JSON.stringify({ draft_id: 1, city_offer_id: 501 }),
     })
     assert.equal(activated.status, 201, await activated.clone().text())
+    const retried = await app.request('/api/world/listing', {
+      method: 'POST', headers, body: JSON.stringify({ draft_id: 1, city_offer_id: 501 }),
+    })
+    assert.equal(retried.status, 409, await retried.clone().text())
+    assert.deepEqual(await retried.json(), {
+      error: 'the world draft is no longer pending and unexpired; its recorded fee needs review',
+      retry: 'do not pay again; ask the market owner to review the recorded fee for this same world listing request',
+      do_not_pay_again: true,
+    })
 
     const durable = await connectedDatabase().query<{
       status: string

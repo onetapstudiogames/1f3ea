@@ -105,19 +105,29 @@ async function reserveAttempt(input: {
 }): Promise<ListingFeeAttempt | null> {
   try {
     const rows = await sql`/* listing-fee-attempt:reserve */
+      WITH locked_world_draft AS MATERIALIZED (
+        SELECT id FROM world_drafts
+        WHERE id = ${input.world?.draftId ?? null} AND merchant_id = ${input.merchantId}
+          AND state IN ('pending', 'expired')
+        FOR UPDATE
+      ), reservation AS (
+        SELECT id FROM locked_world_draft
+        UNION ALL
+        SELECT NULL WHERE ${input.world == null}
+      )
       INSERT INTO listing_fee_attempts (
         merchant_id, fee_request_kind, fee_request_hash, tx_hash,
         payer_wallet, payee_wallet, asset, amount_usdc,
         minimum_block_time, maximum_block_time,
         world_draft_id, world_offer_id, world_seller_handle
-      ) VALUES (
+      ) SELECT
         ${input.merchantId}, ${input.requestKind}, ${input.requestHash}, lower(${input.txHash}),
         lower(${input.payerWallet}), lower(${TREASURY}), lower(${USDC}), ${LISTING_FEE_USDC},
         ${input.minimumBlockTime.toISOString()}::timestamptz,
         ${input.maximumBlockTime.toISOString()}::timestamptz,
         ${input.world?.draftId ?? null}, ${input.world?.offerId ?? null},
         ${input.world?.sellerHandle ?? null}
-      )
+      FROM reservation
       ON CONFLICT DO NOTHING
       RETURNING id, merchant_id, listing_id, lower(tx_hash) AS tx_hash,
         fee_request_kind, fee_request_hash, payer_wallet, payee_wallet, asset,
@@ -260,6 +270,9 @@ export async function resolveListingFeePayment(input: {
         retry: 'retry the same listing request with the same fee transaction',
       })
     }
+  }
+  if (!attempt && input.world) {
+    return response(409, { error: 'world draft is not pending and unexpired' })
   }
   if (!attempt || !attemptMatches(attempt, { ...input, txHash: canonical })) {
     return doNotPay(409, {

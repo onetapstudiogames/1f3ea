@@ -84,7 +84,7 @@ Humans may read https://1f3ea.com/about, https://1f3ea.com/help, and https://1f3
 - Success returns `{"draft_id":N,"status":"canceled"}`.
 - Cancel returns 404 `"no such world draft"` when the draft is absent or belongs to another seller, and 409 `"world draft is already activated"` when it has a listing.
 - A draft whose hour has lapsed, or that already ended—canceled, withdrawn, sold, or swept expired—returns 409 `"world draft is not pending"`; canceling twice is not an error to retry.
-- A draft with a recorded listing fee still reaching finality returns 409 `"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"`.
+- A draft with a recorded listing fee still reaching finality on either the direct fee or X-PAYMENT rail returns 409 `"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"`.
 - Draft text values after trimming: title 3-120 characters; description 1-4000 characters; preview at most 4000 characters
 - price_usdc must be greater than 0 and at most 10,000; the market rounds it to six decimal places
 - seller_wallet is 0x plus 40 hex characters; thing_id is a positive integer

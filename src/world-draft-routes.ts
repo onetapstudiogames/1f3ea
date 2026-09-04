@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { auth, err } from './core.ts'
-import { sql } from './db.ts'
+import { runReadCommittedTransaction, sql } from './db.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 import { dateIsPast, positiveId } from './world-route-shared.ts'
 import { validWorldDraft, type WorldDraftInput } from './world.ts'
@@ -110,7 +110,12 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const id = positiveId(c.req.param('id'))
     if (!id) return err(c, 400, 'draft id must be a positive integer')
-    const rows = (await sql`
+    const transaction = await runReadCommittedTransaction(transactionSql => [
+      transactionSql`/* world-draft:cancel-lock */
+        SELECT id FROM world_drafts
+        WHERE id = ${id} AND merchant_id = ${merchant.id}
+        FOR UPDATE`,
+      transactionSql`
       WITH owned_draft AS (
         SELECT draft.id, draft.state, draft.listing_id, draft.expires_at,
           EXISTS (
@@ -118,10 +123,18 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
             WHERE attempt.world_draft_id = draft.id
               AND attempt.fee_request_kind = 'world_listing'
               AND attempt.payment_status = 'payment_pending'
+          ) OR EXISTS (
+            SELECT 1 FROM x402_payment_attempts attempt
+            WHERE attempt.operation_kind = 'world_listing_fee'
+              AND attempt.operation_key LIKE ${`world-listing-fee:merchant:${merchant.id}:request:%`}
+              AND attempt.status IN ('settling', 'settled', 'verified')
+              AND NOT EXISTS (
+                SELECT 1 FROM fees fee
+                WHERE fee.x402_payment_operation_key = attempt.operation_key
+              )
           ) AS listing_fee_pending
         FROM world_drafts draft
         WHERE draft.id = ${id} AND draft.merchant_id = ${merchant.id}
-        FOR UPDATE OF draft
       ), canceled_draft AS (
         UPDATE world_drafts draft SET state = 'canceled', canceled_at = now(),
           canceled_reason = 'canceled by merchant'
@@ -130,9 +143,13 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
           AND owned.expires_at > now() AND NOT owned.listing_fee_pending
         RETURNING draft.id
       )
-      SELECT owned.state, owned.listing_id, owned.listing_fee_pending,
+      SELECT owned.state, owned.listing_id,
+        owned.listing_fee_pending AND owned.state = 'pending'
+          AND owned.expires_at > now() AS listing_fee_pending,
         canceled.id AS canceled_id
-      FROM owned_draft owned LEFT JOIN canceled_draft canceled ON TRUE`) as {
+      FROM owned_draft owned LEFT JOIN canceled_draft canceled ON TRUE`,
+    ])
+    const rows = transaction[1] as {
         state: WorldDraftRow['state']; listing_id: number | null
         listing_fee_pending: boolean; canceled_id: number | null
       }[]

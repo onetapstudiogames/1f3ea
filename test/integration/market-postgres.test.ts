@@ -1,11 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { runMarketPostgresFinalityCases } from '../support/market-postgres-finality-cases.ts'
 import {
   BUYER_SECRET,
   BUYER_WALLET,
   SELLER_WALLET,
+  TREASURY,
   connectedDatabase,
   harnessState,
   resetAndSeed,
@@ -120,6 +122,101 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     assert.equal(durable.rows[0]?.state, 'pending')
     const after = await app.request('/api/world/draft/1')
     assert.equal((await after.json() as { draft: { status: string } }).draft.status, 'expired')
+  })
+
+  await t.test('a cancel during the city read prevents PostgreSQL from recording a direct fee', async () => {
+    await resetAndSeed()
+    const now = Date.now()
+    await preparePendingWorldListingDraft(new Date(now), new Date(now + 3_600_000))
+    let releaseCityOffer!: () => void
+    harnessState.cityOfferResponseGate = new Promise(resolve => { releaseCityOffer = resolve })
+    const cityOfferReached = new Promise<void>(resolve => { harnessState.cityOfferReached = resolve })
+
+    const listing = app.request('/api/world/listing', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        draft_id: 1, city_offer_id: 501, fee_tx_hash: `0x${'d'.repeat(64)}`,
+      }),
+    })
+    await cityOfferReached
+    const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(canceled.status, 200, await canceled.clone().text())
+    releaseCityOffer()
+
+    const refused = await listing
+    assert.equal(refused.status, 409, await refused.clone().text())
+    assert.deepEqual(await refused.json(), { error: 'world draft is not pending and unexpired' })
+    const attempts = await connectedDatabase().query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM listing_fee_attempts WHERE world_draft_id = 1
+    `)
+    assert.equal(attempts.rows[0]?.count, '0')
+  })
+
+  await t.test('cancel sees a direct fee committed after waiting for its draft lock', async () => {
+    await resetAndSeed()
+    const now = Date.now()
+    await preparePendingWorldListingDraft(new Date(now), new Date(now + 3_600_000))
+    harnessState.chain = {
+      transferBlockTime: new Date(now),
+      finalityArrivesAt: new Date(now + 60_000),
+      amountUnits: 1_000_000n,
+      fromWallet: BUYER_WALLET,
+      toWallet: TREASURY,
+    }
+    await connectedDatabase().query(`
+      CREATE FUNCTION pause_listing_fee_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(4847);
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER pause_listing_fee_insert
+      BEFORE INSERT ON listing_fee_attempts
+      FOR EACH ROW EXECUTE FUNCTION pause_listing_fee_insert();
+    `)
+    const blocker = await connectedDatabase().connect()
+    await blocker.query('BEGIN')
+    await blocker.query('SELECT pg_advisory_xact_lock(4847)')
+    try {
+      const listing = app.request('/api/world/listing', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          draft_id: 1, city_offer_id: 501, fee_tx_hash: `0x${'e'.repeat(64)}`,
+        }),
+      })
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const waiting = await connectedDatabase().query<{ waiting: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE query LIKE '%listing-fee-attempt:reserve%'
+              AND wait_event = 'advisory'
+          ) AS waiting
+        `)
+        if (waiting.rows[0]?.waiting) break
+        if (attempt === 99) assert.fail('fee reservation did not reach the advisory test gate')
+        await delay(10)
+      }
+      const cancel = app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+      await delay(50)
+      await blocker.query('COMMIT')
+
+      await listing
+      const refused = await cancel
+      assert.equal(refused.status, 409, await refused.clone().text())
+      assert.deepEqual(await refused.json(), {
+        error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+      })
+      const durable = await connectedDatabase().query<{ state: string; attempts: string }>(`
+        SELECT draft.state, count(attempt.id)::text AS attempts
+        FROM world_drafts draft
+        LEFT JOIN listing_fee_attempts attempt ON attempt.world_draft_id = draft.id
+        WHERE draft.id = 1
+        GROUP BY draft.state
+      `)
+      assert.deepEqual(durable.rows[0], { state: 'pending', attempts: '1' })
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined)
+      blocker.release()
+    }
   })
 
   await t.test('an expired world checkout does not block a new checkout for the same buyer', async () => {

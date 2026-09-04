@@ -49,9 +49,11 @@ interface WorldRouteConfig {
 }
 
 function x402AttemptFitsDraft(attempt: X402PaymentAttempt, draft: WorldDraftRow): boolean {
-  if (!['pending', 'expired'].includes(draft.state)) return false
   const createdAt = new Date(draft.created_at)
-  const expiresAt = new Date(draft.expires_at)
+  const storedExpiresAt = new Date(draft.expires_at)
+  const expiresAt = storedExpiresAt.getTime() === new Date(ACTIVE_WORLD_DRAFT_EXPIRY).getTime()
+    ? new Date(createdAt.getTime() + 60 * 60 * 1_000)
+    : storedExpiresAt
   const operationStartedAt = new Date(attempt.operation_started_at)
   const blockTime = new Date(attempt.finalized_block_time ?? '')
   if ([createdAt, expiresAt, operationStartedAt, blockTime]

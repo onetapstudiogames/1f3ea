@@ -71,6 +71,8 @@ export const harnessState = {
   },
   rpcMethods: [] as string[],
   cityOffer: null as Record<string, unknown> | null,
+  cityOfferReached: null as (() => void) | null,
+  cityOfferResponseGate: null as Promise<void> | null,
   authorizationNonce: null as string | null,
 }
 
@@ -222,6 +224,8 @@ export function sha256(value: string): string {
 
 export async function resetAndSeed(): Promise<void> {
   harnessState.authorizationNonce = null
+  harnessState.cityOfferReached = null
+  harnessState.cityOfferResponseGate = null
   harnessState.currentBlockNumber = 0x100n
   const client = connectedDatabase()
   await client.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public')
@@ -357,6 +361,8 @@ const rpcFetch = (async (input: string | URL | Request, init?: RequestInit) => {
   }
   if (url === `${CITY_ORIGIN}/api/world/offer/501`) {
     assert.ok(harnessState.cityOffer, 'the city offer fixture must be set before world sync')
+    harnessState.cityOfferReached?.()
+    if (harnessState.cityOfferResponseGate) await harnessState.cityOfferResponseGate
     return json({ offer: harnessState.cityOffer })
   }
   if (url !== RPC_ORIGIN) throw new Error(`unexpected fetch: ${url}`)
