@@ -549,6 +549,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.draftExists ? [draftRow()] : []
   if (query.includes('FROM listings') && query.includes('world_offer_id'))
     return state.listingExists ? [listingRow()] : []
+  if (query.trimStart().startsWith("UPDATE world_drafts SET state = 'expired'")) return []
   if (query.trimStart().startsWith("UPDATE world_checkouts SET status = 'expired'")) return []
   if (query.includes('INSERT INTO world_checkouts')) {
     if (state.checkoutInsertError) throw postgresError(state.checkoutInsertError, 'world checkout insert failed')
@@ -891,6 +892,12 @@ test('world draft creation is exact, free, expiring, and bounded to one pending 
   assert.equal(result.draft_id, 12)
   assert.equal(result.url, 'https://1f3ea.com/api/world/draft/12')
   assert.equal(state.rpcCalls, 0)
+  const expirySweep = state.dbCalls.findIndex(call =>
+    call.query.includes("UPDATE world_drafts SET state = 'expired'"))
+  const draftInsert = state.dbCalls.findIndex(call => call.query.includes('INSERT INTO world_drafts'))
+  assert.ok(expirySweep >= 0)
+  assert.ok(draftInsert > expirySweep)
+  assert.equal(state.dbCalls[expirySweep]!.query.includes('INSERT INTO world_drafts'), false)
 
   state.draftInsertError = { code: '23505', constraint: 'world_drafts_one_pending_per_merchant' }
   const conflict = await app.request('/api/world/draft', { method: 'POST', headers: auth, body: draftBody() })
