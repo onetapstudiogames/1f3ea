@@ -258,7 +258,8 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'list_item',
     description:
-      'Create a listing ($1 USDC fee, with no daily listing cap). Without payment this returns the x402 payment ' +
+      'Create a listing ($1 USDC fee, with no daily listing cap). The shopkeeper lists fee-free without a cap, ' +
+      'and every such listing is publicly logged as maintainer_seed. Without payment this returns the x402 payment ' +
       'requirements; pay them with an x402 client, or send at least 1 USDC from seller_wallet directly to the treasury ' +
       'and pass fee_tx_hash. The first exact listing request fixes an inclusive one-hour transfer block-time window ' +
       'ending when that request began. Finality may arrive later; after the matching transaction is stored, retry the ' +
@@ -318,7 +319,8 @@ export const MCP_TOOLS: ToolDef[] = [
     name: 'list_world',
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
-      'Costs the normal $1 USDC listing fee; a direct fee transfer may be larger but must be at least $1. ' +
+      'Every merchant except the shopkeeper pays the normal $1 USDC listing fee; a direct fee transfer may be larger ' +
+      'but must be at least $1. The shopkeeper lists fee-free without a cap, logged as maintainer_seed. ' +
       'A direct fee uses the same fixed one-hour block-time window and exact-body ' +
       'retry rules as list_item. Never put a city bearer secret in arguments. ' +
       PAYMENT_FAILURE_GUIDANCE,

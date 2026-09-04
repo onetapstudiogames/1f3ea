@@ -125,9 +125,9 @@ function listingSummary(id: number, handle: string, listing: ListingBody, row: E
 
 export function registerArtifactListingRoutes(
   app: Hono,
-  config: { domain: string; maintainerId: number; seedCap: number },
+  config: { domain: string; maintainerId: number },
 ) {
-  const { domain: DOMAIN, maintainerId: MAINTAINER_ID, seedCap: SEED_CAP } = config
+  const { domain: DOMAIN, maintainerId: MAINTAINER_ID } = config
 
 app.post('/api/listing', async c => {
   const requestStartedAt = new Date()
@@ -135,8 +135,9 @@ app.post('/api/listing', async c => {
   if (!m) return err(c, 401, 'bad or missing bearer secret')
   const v = validListing(await c.req.json().catch(() => null))
   if (typeof v === 'string') return err(c, 400, v)
-  const unavailable = paymentReadinessResponse(c)
-  if (unavailable) return unavailable
+  const paymentHeader = c.req.header('x-payment')
+  const keeperRequest = m.id === MAINTAINER_ID
+  const seedCandidate = keeperRequest && !paymentHeader && !v.fee_tx_hash
 
   const hash = dupHash(v.title, v.artifact)
   const feeRequestHash = sha256(JSON.stringify({
@@ -152,7 +153,6 @@ app.post('/api/listing', async c => {
     tags: v.tags,
     aisle: v.aisle,
   }))
-  const paymentHeader = c.req.header('x-payment')
   const x402Operation = {
     operationKey: `listing-fee:artifact:${m.id}:${feeRequestHash}`,
     operationKind: 'listing_fee' as const,
@@ -161,7 +161,39 @@ app.post('/api/listing', async c => {
   const x402Requirements = requirements(
     TREASURY, LISTING_FEE_USDC, `${DOMAIN}/api/listing`, '1F3EA listing fee',
   )
-  const preservedFee = await readListingFeeAttempt(m.id, 'artifact_listing', feeRequestHash)
+  let hasSavedX402 = false
+  let preservedFee: Awaited<ReturnType<typeof readListingFeeAttempt>> = null
+  if (keeperRequest) {
+    try {
+      const [savedX402, savedDirectFee] = await Promise.all([
+        readX402PaymentAttempt(x402Operation.operationKey),
+        readListingFeeAttempt(m.id, 'artifact_listing', feeRequestHash),
+      ])
+      hasSavedX402 = savedX402 != null
+      preservedFee = savedDirectFee
+    } catch {
+      return c.json({
+        error: 'listing payment records are temporarily unavailable',
+        retry: 'retry this exact listing request later',
+        do_not_pay_again: true,
+      }, 503)
+    }
+  }
+  // The maintainer may stock the shelves fee-free — uncapped, public (constitution §7).
+  const isSeed = seedCandidate && !hasSavedX402 && !preservedFee
+  if (!isSeed) {
+    const unavailable = paymentReadinessResponse(c)
+    if (unavailable && preservedFee) return c.json({
+      error: 'the market cannot finish this recorded listing fee right now',
+      retry: 'retry this same listing body later with the same fee_tx_hash',
+      fee_tx_hash: preservedFee.tx_hash,
+      do_not_pay_again: true,
+    }, 503)
+    if (unavailable) return unavailable
+  }
+  if (!keeperRequest) {
+    preservedFee = await readListingFeeAttempt(m.id, 'artifact_listing', feeRequestHash)
+  }
   if (!preservedFee && paymentHeader && v.fee_tx_hash) {
     return err(c, 400,
       'choose exactly one listing fee method: X-PAYMENT or fee_tx_hash; neither fee was processed')
@@ -174,9 +206,11 @@ app.post('/api/listing', async c => {
       do_not_pay_again: true,
     }, 409)
   }
-  let x402Payment = await resumeX402PaymentForTerms(
-    x402Operation.operationKey, x402Operation.operationKind, x402Requirements,
-  )
+  let x402Payment = isSeed
+    ? null
+    : await resumeX402PaymentForTerms(
+        x402Operation.operationKey, x402Operation.operationKind, x402Requirements,
+      )
   if (x402Payment && v.fee_tx_hash) {
     return x402NoPayResponse(
       c,
@@ -292,10 +326,6 @@ app.post('/api/listing', async c => {
     }
     return err(c, 409, `a near-identical listing exists: ${dup[0]!.id}. Make something new.`)
   }
-
-  // The maintainer may stock the opening shelves fee-free — capped, public (constitution §7).
-  const isSeed = !x402Payment && m.id === MAINTAINER_ID &&
-    Number(((await sql`SELECT count(*)::int AS n FROM listings WHERE merchant_id = ${m.id}`) as { n: number }[])[0]!.n) < SEED_CAP
 
   let feeTx: string | null = x402Payment?.transaction ?? null
   let responseHeader: string | null = null

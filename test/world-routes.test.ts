@@ -96,8 +96,8 @@ interface X402PaymentAttemptFixture extends Record<string, unknown> {
 
 const state = {
   merchantId: 7,
+  draftOwner: 7,
   authValid: true,
-  seedCount: 10,
   draftInsertError: null as PostgresErrorFixture | null,
   activationInsertError: null as PostgresErrorFixture | null,
   draftExists: true,
@@ -163,7 +163,7 @@ function merchantRow(id = state.merchantId) {
 function draftRow() {
   return {
     id: 12,
-    merchant_id: 7,
+    merchant_id: state.draftOwner,
     thing_id: 41,
     title: 'Pocket observatory',
     description: 'A small place to watch the sky.',
@@ -547,7 +547,6 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
   if (query.includes('FROM world_drafts') && query.includes('WHERE id') && !query.includes('INSERT INTO listings'))
     return state.draftExists ? [draftRow()] : []
-  if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id')) return [{ n: state.seedCount }]
   if (query.includes('FROM listings') && query.includes('world_offer_id'))
     return state.listingExists ? [listingRow()] : []
   if (query.includes('INSERT INTO world_checkouts')) {
@@ -816,8 +815,8 @@ const draftBody = (extra: Record<string, unknown> = {}) => JSON.stringify({
 
 function reset() {
   state.merchantId = 7
+  state.draftOwner = 7
   state.authValid = true
-  state.seedCount = 10
   state.draftInsertError = null
   state.activationInsertError = null
   state.draftExists = true
@@ -983,6 +982,51 @@ test('hosted world-listing fees stop before payment work while custody is closed
     assert.equal(state.dbCalls.some(call =>
       /(?:INSERT|UPDATE)\s+(?:INTO\s+)?world_payment_attempts/iu.test(call.query)), false)
     assert.equal(state.dbCalls.some(call => /INSERT\s+INTO\s+(?:fees|listings)/i.test(call.query)), false)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('the shopkeeper eleventh world item is fee-free and publicly logged', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(response.status, 201)
+  assert.equal((await response.json() as { listing_id: number }).listing_id, 70)
+  assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO fees')), false)
+  assert.equal(state.rpcCalls, 0)
+  assert.equal(state.facilitatorSettleCalls, 0)
+  assert.equal(state.dbCalls.some(call => /SELECT count\(\*\).*FROM listings WHERE merchant_id/.test(call.query)), false)
+  const activation = state.dbCalls.find(call => call.query.includes('INSERT INTO listings'))?.query ?? ''
+  assert.match(activation, /SELECT 'maintainer_seed'/)
+})
+
+test('the shopkeeper fee-free world listing does not depend on paid-listing readiness', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+
+  try {
+    const response = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth, body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+    })
+    assert.equal(response.status, 201)
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO listing_fee_attempts')), false)
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO fees')), false)
   } finally {
     if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
     else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
@@ -1264,6 +1308,163 @@ test('a settled world listing fee awaiting Base finality resumes without facilit
   assert.equal(finalized.status, 201)
   assert.equal((await finalized.json() as { listing_id: number }).listing_id, 70)
   assert.equal(state.facilitatorSettleCalls, 1)
+})
+
+test('a shopkeeper retry honors its stored x402 world fee instead of relabeling it fee-free', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  const retry = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(retry.status, 503)
+  assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+  assert.equal(state.draftListingId, null)
+  assert.equal(state.facilitatorSettleCalls, 1)
+})
+
+test('closed custody stops a saved shopkeeper x402 world retry before Base work', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  const rpcCallsBeforeRetry = state.rpcCalls
+
+  try {
+    const retry = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth, body: requestBody,
+    })
+    assert.equal(retry.status, 503)
+    assert.equal(state.rpcCalls, rpcCallsBeforeRetry)
+    assert.equal(state.x402Attempt?.status, 'settled')
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('closed custody keeps main behavior for a non-shopkeeper saved world x402 retry', async () => {
+  reset()
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  const rpcCallsBeforeRetry = state.rpcCalls
+
+  try {
+    const retry = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth, body: requestBody,
+    })
+    assert.equal(retry.status, 503)
+    assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+    assert.equal(state.rpcCalls, rpcCallsBeforeRetry + 3)
+    assert.equal(state.facilitatorSettleCalls, 1)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('closed custody preserves a saved shopkeeper direct world fee without another payment', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(waiting.status, 202)
+  assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  const rpcCallsBeforeRetry = state.rpcCalls
+
+  try {
+    const retry = await app.request('/api/world/listing', {
+      method: 'POST', headers: auth, body: requestBody,
+    })
+    assert.equal(retry.status, 503)
+    assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+    assert.equal(state.rpcCalls, rpcCallsBeforeRetry)
+    assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
+    assert.equal(state.draftListingId, null)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('a resumed shopkeeper x402 world fee clears a separately preserved direct fee', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftOwner = 1
+  state.listingOwner = 1
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const directWaiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(directWaiting.status, 202)
+  const preservedDirectFee = state.listingFeeAttempt
+  assert.equal(preservedDirectFee?.payment_status, 'payment_pending')
+
+  state.listingFeeAttempt = null
+  const x402Waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(x402Waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  state.listingFeeAttempt = preservedDirectFee
+  state.rpcFinalized = true
+  const retry = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(retry.status, 201)
+  assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
 })
 
 test('a mismatched settled world-listing fee is rejected before Base or facilitator work', async () => {

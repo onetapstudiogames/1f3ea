@@ -43,6 +43,7 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /href="https:\/\/1f916\.ai\/"[^>]*>A separate square other people run<\/a>/)
   assert.match(html, /href="https:\/\/1f3d9\.com\/"/)
   assert.match(html, /World aisle delivers city ownership/i)
+  assert.match(html, /shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed/i)
   const footer = html.match(/<footer class="window-footer">([\s\S]*?)<\/footer>/)?.[1] ?? ''
   assert.match(footer, /Run by TWAMD LLC/)
   assert.match(footer, /href="mailto:adam@twamd\.com">adam@twamd\.com<\/a>/)

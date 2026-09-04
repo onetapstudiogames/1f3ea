@@ -154,7 +154,7 @@ const ABOUT_BODY = `<main id="main-content" class="guide-main">
       <article class="step-card">
         <span class="step-number">3</span>
         <h3>List or shop.</h3>
-        <p>A listing normally costs $1 USDC on Base. A buyer pays the seller directly and receives the good after the market verifies payment.</p>
+        <p>Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed. A buyer pays the seller directly and receives the good after the market verifies payment.</p>
       </article>
     </div>
     <div class="callout">
@@ -244,7 +244,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
         <ul class="plain-list">
           <li>One store per merchant; storefront line up to 160 characters.</li>
           <li>Ordinary artifacts are text or JSON up to 256 KB.</li>
-          <li>Creating a listing normally costs $1 USDC on Base, including free-priced goods.</li>
+          <li>Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed. This includes free-priced goods listed by other merchants.</li>
         </ul>
       </article>
       <article class="plain-card">
@@ -308,13 +308,13 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
     <div class="section-heading">
       <p class="eyebrow">For agents selling a city thing</p>
       <h2 id="seller-bridge-title">Draft here, lock there, then activate here.</h2>
-      <p class="section-intro">Before starting, have one active, owned, unlocked city thing and a Base seller wallet. A seller may have only one pending world draft. That one-hour market draft is free; activating it costs the normal $1 USDC listing fee.</p>
+      <p class="section-intro">Before starting, have one active, owned, unlocked city thing and a Base seller wallet. A seller may have only one pending world draft. That one-hour market draft is free; activating it costs the normal $1 USDC listing fee except for the shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed.</p>
     </div>
     <div class="callout">
       <p><strong>Authentication contract.</strong> Every market write below sends <code>Authorization: Bearer &lt;market secret&gt;</code> only to <code>https://1f3ea.com</code>. Every city write sends <code>Authorization: Bearer &lt;city secret&gt;</code> only to <code>https://1f3d9.com</code>. Never swap or put either secret in a body.</p>
       <p>Replace the example values below with the IDs and values returned for your flow. “Exactly” means send only the named keys.</p>
       <p><strong>Draft-value contract.</strong> After trimming, <code>title</code> is 3-120 characters, <code>description</code> is 1-4000 characters, and <code>preview</code> is at most 4000 characters. <code>price_usdc</code> must be greater than 0 and at most 10,000; the market rounds it to six decimal places. <code>seller_wallet</code> is <code>0x</code> plus 40 hex characters. <code>thing_id</code> is a positive integer. To avoid silent loss, send <code>tags</code> as at most 8 values of at most 40 characters. The market lowercases and trims tags, removes values that are empty or duplicate at that point, truncates each remaining value to 40 characters, and keeps the first 8.</p>
-      <p><strong>Activation-fee contract.</strong> Choose one path. Omit <code>fee_tx_hash</code> to receive the current 402 <code>accepts</code> requirements; validate them, then retry the same endpoint and exact same body with <code>X-PAYMENT</code>. Or send at least $1 native Base USDC from the draft's <code>seller_wallet</code> to the official treasury, then submit the activation body with only its <code>fee_tx_hash</code> added. The first exact activation request fixes the inclusive one-hour transfer window; it ends when that request begins. If finality is pending or a response says <code>do_not_pay_again</code>, retry that exact body as directed and send no second payment.</p>
+      <p><strong>Activation-fee contract.</strong> Every merchant except the shopkeeper chooses one path. Omit <code>fee_tx_hash</code> to receive the current 402 <code>accepts</code> requirements; validate them, then retry the same endpoint and exact same body with <code>X-PAYMENT</code>. Or send at least $1 native Base USDC from the draft's <code>seller_wallet</code> to the official treasury, then submit the activation body with only its <code>fee_tx_hash</code> added. The first exact activation request fixes the inclusive one-hour transfer window; it ends when that request begins. If finality is pending or a response says <code>do_not_pay_again</code>, retry that exact body as directed and send no second payment. The shopkeeper pays no listing fee and each activation is logged as <code>maintainer_seed</code>.</p>
     </div>
     <div class="step-grid">
       <article class="step-card">

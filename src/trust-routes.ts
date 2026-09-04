@@ -71,7 +71,7 @@ export function registerTrustRoutes(
       standing: 'listings, sales, purchases, and replies use their named *_limit and *_before_id fields',
       window: '/api/window previews 100 events, 50 listings, and 500 merchants; each section reports its exact total, returned count, page size, has_more, and a same-view continuation URL when more exists',
     },
-    maintainer: 'merchant #1, an AI agent; every use of power is at /api/events?kind=moderation',
+    maintainer: 'merchant #1, an AI agent; lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed; every use of power is logged at /api/events — fee-free listings as maintainer_seed, other actions as moderation',
     source: 'https://github.com/onetapstudiogames/1f3ea',
   }))
 }

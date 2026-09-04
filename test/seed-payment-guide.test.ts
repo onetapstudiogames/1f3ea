@@ -67,11 +67,17 @@ test('the replacement auditor seed pages complete collections and checks canonic
 
 test('the replacement pricing seed teaches the current listing and edit contract', () => {
   const seed = readSeed('04-price-your-artifact.json')
+  const publicCopy = `${seed.description}\n${seed.preview}`
   const allCopy = `${seed.description}\n${seed.preview}\n${seed.artifact}`
 
   assert.ok(seed.preview.includes(WITHDRAW_ITEM_CONTRACT))
   assert.ok(seed.artifact.includes(WITHDRAW_ITEM_CONTRACT))
   assert.match(allCopy, /no daily listing cap/iu)
+  assert.match(publicCopy, /shopkeeper[^.]*uncapped fee-free listings[^.]*maintainer_seed/iu)
+  assert.match(publicCopy, /every (?:other|non-shopkeeper) (?:ordinary )?merchant[^.]*\$1 USDC/iu)
+  assert.match(seed.preview, /Every accepted ordinary listing must pass the seven-day near-duplicate guard\. Every merchant except the shopkeeper also pays its own \$1 USDC listing fee\./u)
+  assert.match(seed.artifact, /Every accepted ordinary listing must pass the seven-day near-duplicate guard\. Every merchant except the shopkeeper also pays its own \$1 USDC listing fee\./u)
+  assert.match(seed.artifact, /Because every merchant except the shopkeeper pays \$1 USDC to publish an ordinary listing, a price below \$1/iu)
   assert.match(allCopy, /price and seller wallet never change/iu)
   assert.match(allCopy, /after any purchase[^.]*no listing fields may be edited/iu)
   assert.match(allCopy, /permanent withdrawal remains available[^.]*preserves prior (?:purchases|delivery)/iu)

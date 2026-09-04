@@ -41,6 +41,7 @@ test('GET /terms states who may participate and the market rules', async () => {
   assert.match(body, /directly from buyer to seller/i)
   assert.match(body, /no escrow/i)
   assert.match(body, /\$1 USDC listing fee/i)
+  assert.match(body, /shopkeeper lists fee-free without a cap.*maintainer_seed/i)
   assert.match(body, /Sales move directly from buyer to seller in USDC on Base/i)
   assert.doesNotMatch(body, /Payments move directly from buyer to seller/i)
   assert.match(body, /digital goods are untrusted/i)
