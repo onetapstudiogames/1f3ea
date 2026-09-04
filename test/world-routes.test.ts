@@ -102,6 +102,7 @@ const state = {
   activationInsertError: null as PostgresErrorFixture | null,
   draftExists: true,
   draftState: 'pending',
+  draftCreatedAt: new Date().toISOString(),
   draftExpiresAt: '2099-08-12T01:00:00.000Z',
   draftListingId: null as number | null,
   listingExists: true,
@@ -130,6 +131,7 @@ const state = {
   listingFeeAttempt: null as ListingFeeAttemptFixture | null,
   x402Attempt: null as X402PaymentAttemptFixture | null,
   attemptReserveError: null as PostgresErrorFixture | null,
+  cancelDraftDuringCityFetch: false,
   cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'payment-expired' | 'founder-review' | 'unknown-phase' | 'canceled' | 'claimed',
   cityStreamPulls: 0,
   cityStreamCanceled: false,
@@ -176,7 +178,7 @@ function draftRow() {
     listing_state: state.draftListingId ? state.listingWorldState : null,
     listing_withdrawn: state.listingWithdrawn,
     listing_removed: state.listingRemoved,
-    created_at: '2026-08-12T00:00:00.000Z',
+    created_at: state.draftCreatedAt,
     expires_at: state.draftExpiresAt,
     canceled_at: null,
   }
@@ -332,6 +334,8 @@ function postgresError(fixture: PostgresErrorFixture, message: string): Error {
 }
 
 function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] {
+  if (query.includes('world-draft:cancel-lock'))
+    return state.draftOwner === state.merchantId ? [{ id: 12 }] : []
   if (query.includes('WHERE secret_hash')) return state.authValid ? [merchantRow()] : []
   if (query.includes('x402-payment-attempt:read-operation')) {
     return state.x402Attempt?.operation_key === String(params[0]) ? [state.x402Attempt] : []
@@ -419,6 +423,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return state.listingFeeAttempt ? [state.listingFeeAttempt] : []
   if (query.includes('listing-fee-attempt:reserve')) {
     if (state.listingFeeAttempt) return []
+    if (query.includes('locked_world_draft') && !['pending', 'expired'].includes(state.draftState)) return []
     const wallets = params.filter(value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)) as string[]
     const timestamps = params.filter(value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) as string[]
     state.listingFeeAttempt = {
@@ -526,11 +531,34 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     if (state.draftInsertError) throw postgresError(state.draftInsertError, 'world draft insert failed')
     return [{ id: 12, expires_at: state.draftExpiresAt }]
   }
+  if (query.includes('WITH owned_draft AS') && query.includes('canceled_draft')) {
+    if (state.draftOwner !== state.merchantId) return []
+    const priorState = state.draftState
+    const blocksExpiredDraft = query.includes('owned.expires_at > now()')
+    const blocksPendingFee = query.includes("fee_request_kind = 'world_listing'")
+      && query.includes("payment_status = 'payment_pending'")
+    const listingFeePending = Boolean(state.listingFeeAttempt?.fee_request_kind === 'world_listing'
+      && state.listingFeeAttempt.payment_status === 'payment_pending')
+      || Boolean(state.x402Attempt
+        && ['settling', 'settled', 'verified'].includes(state.x402Attempt.status)
+        && state.draftListingId == null)
+    const canceledId = priorState === 'pending'
+      && (!blocksExpiredDraft || new Date(state.draftExpiresAt).getTime() > Date.now())
+      && (!blocksPendingFee || !listingFeePending) ? 12 : null
+    if (canceledId) state.draftState = 'canceled'
+    return [{
+      state: priorState,
+      listing_id: state.draftListingId,
+      listing_fee_pending: listingFeePending,
+      canceled_id: canceledId,
+    }]
+  }
   if (query.includes('INSERT INTO listings') && query.includes('world_draft')) {
     if (state.activationInsertError)
       throw postgresError(state.activationInsertError, 'world listing activation failed')
     state.draftState = 'active'
     state.draftListingId = 70
+    state.draftExpiresAt = '9999-12-31T23:59:59.999Z'
     if (query.includes('locked_fee_attempt') && state.listingFeeAttempt) {
       state.listingFeeAttempt = {
         ...state.listingFeeAttempt,
@@ -704,6 +732,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const url = String(input)
   if (url.includes('/sql')) {
     const body = JSON.parse(String(init?.body ?? '{}'))
+    if (Array.isArray(body.queries)) {
+      const results = body.queries.map((query: { query: string; params?: unknown[] }) => {
+        state.dbCalls.push({ query: query.query, params: query.params ?? [] })
+        return neonEncode(dbRespond(query.query, query.params ?? []))
+      })
+      return json({ results })
+    }
     state.dbCalls.push({ query: body.query, params: body.params ?? [] })
     return json(neonEncode(dbRespond(body.query, body.params ?? [])))
   }
@@ -735,6 +770,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       ? json({ resident: { handle: state.checkoutCityHandle } })
       : json({ error: 'not found' }, 404)
     if (state.cityMode === 'missing') return json({ error: 'not found' }, 404)
+    if (state.cancelDraftDuringCityFetch) state.draftState = 'canceled'
     return json({ offer: cityOffer() })
   }
   if (url.includes('mainnet.base.org')) {
@@ -823,6 +859,7 @@ function reset() {
   state.activationInsertError = null
   state.draftExists = true
   state.draftState = 'pending'
+  state.draftCreatedAt = new Date().toISOString()
   state.draftExpiresAt = '2099-08-12T01:00:00.000Z'
   state.draftListingId = null
   state.listingExists = true
@@ -851,6 +888,7 @@ function reset() {
   state.listingFeeAttempt = null
   state.x402Attempt = null
   state.attemptReserveError = null
+  state.cancelDraftDuringCityFetch = false
   state.cityMode = 'ok'
   state.cityStreamPulls = 0
   state.cityStreamCanceled = false
@@ -915,7 +953,7 @@ test('world draft reports only the live-pending-draft constraint as a caller con
   })
   assert.equal(conflict.status, 409)
   assert.deepEqual(await conflict.json(), {
-    error: 'you already have a live pending draft; activate it, cancel it, or wait for expiry',
+    error: 'you already have a live pending draft; activate it, POST /api/world/draft/:id/cancel, or wait for expiry',
   })
 
   reset()
@@ -946,6 +984,155 @@ test('public draft records derive expiry and expose no bearer data', async () =>
   state.draftExpiresAt = '2020-01-01T00:00:00.000Z'
   const expired = await app.request('/api/world/draft/12')
   assert.equal((await expired.json() as { draft: { status: string } }).draft.status, 'expired')
+})
+
+test('an active listing keeps its older-than-an-hour public draft usable by the city', async () => {
+  reset()
+  state.draftState = 'active'
+  state.draftListingId = 70
+  state.draftExpiresAt = '2026-08-12T01:00:00.000Z'
+
+  const response = await app.request('/api/world/draft/12')
+  assert.equal(response.status, 200)
+  const { draft } = await response.json() as {
+    draft: { status: string; listing_state: string; expires_at?: string }
+  }
+  assert.equal(draft.status, 'active')
+  assert.equal(draft.listing_state, 'active')
+  assert.ok(draft.expires_at)
+  assert.equal(
+    draft.status === 'active' && draft.listing_state === 'active' &&
+      (!draft.expires_at || new Date(draft.expires_at).getTime() > Date.now()),
+    true,
+  )
+})
+
+test('a seller can cancel a pending draft and then create another', async () => {
+  reset()
+  const noAuth = await app.request('/api/world/draft/12/cancel', { method: 'POST' })
+  assert.equal(noAuth.status, 401)
+
+  const canceled = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(canceled.status, 200)
+  assert.deepEqual(await canceled.json(), { draft_id: 12, status: 'canceled' })
+  assert.equal(state.draftState, 'canceled')
+
+  const created = await app.request('/api/world/draft', {
+    method: 'POST', headers: auth, body: draftBody({ thing_id: 42 }),
+  })
+  assert.equal(created.status, 201)
+})
+
+test('canceling a world draft twice returns the documented terminal refusal', async () => {
+  reset()
+  const first = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(first.status, 200)
+
+  const second = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(second.status, 409)
+  assert.deepEqual(await second.json(), { error: 'world draft is not pending' })
+})
+
+test('a publicly expired world draft cannot be canceled after its hour lapses', async () => {
+  reset()
+  state.draftExpiresAt = '2020-01-01T00:00:00.000Z'
+
+  const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), { error: 'world draft is not pending' })
+  assert.equal(state.draftState, 'pending')
+})
+
+test('a recorded world listing fee still reaching finality blocks draft cancellation', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(waiting.status, 202)
+  assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
+
+  const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
+  })
+  assert.equal(state.draftState, 'pending')
+  assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
+
+  state.rpcFinalized = true
+  const created = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(created.status, 201, await created.clone().text())
+  assert.equal(state.listingFeeAttempt?.payment_status, 'completed')
+})
+
+test('a settled x402 world listing fee still reaching finality blocks draft cancellation', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT },
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
+  })
+  assert.equal(waiting.status, 503)
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
+  })
+  assert.equal(state.draftState, 'pending')
+  const cancellation = state.dbCalls.find(call => call.query.includes('WITH owned_draft AS'))
+  assert.match(cancellation?.query ?? '', /operation_kind = 'world_listing_fee'/)
+  assert.match(cancellation?.query ?? '', /status IN \('settling', 'settled', 'verified'\)/)
+  assert.match(cancellation?.query ?? '', /fees[\s\S]*x402_payment_operation_key/)
+  assert.ok(cancellation?.params.includes('world-listing-fee:merchant:7:request:%'))
+})
+
+test('a world listing fee already preserved for review does not block draft cancellation', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(waiting.status, 202)
+  state.listingFeeAttempt = {
+    ...state.listingFeeAttempt!,
+    payment_status: 'needs_review',
+    payment_review_reason: 'kept for market owner review',
+  }
+  const reviewedFee = state.listingFeeAttempt
+
+  const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { draft_id: 12, status: 'canceled' })
+  assert.equal(state.draftState, 'canceled')
+  assert.equal(state.listingFeeAttempt, reviewedFee)
+})
+
+test('world draft cancellation hides ownership and refuses an activated draft', async () => {
+  reset()
+  const malformed = await app.request('/api/world/draft/0/cancel', { method: 'POST', headers: auth })
+  assert.equal(malformed.status, 400)
+  assert.deepEqual(await malformed.json(), { error: 'draft id must be a positive integer' })
+
+  reset()
+  state.draftOwner = 8
+  const notOwned = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(notOwned.status, 404)
+
+  reset()
+  state.draftState = 'active'
+  state.draftListingId = 70
+  const active = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(active.status, 409)
+  assert.deepEqual(await active.json(), { error: 'world draft is already activated' })
+  assert.equal(state.draftState, 'active')
 })
 
 test('activation fails closed on city outage, malformed JSON, and ownership mismatch before fees', async () => {
@@ -1011,9 +1198,11 @@ test('the shopkeeper eleventh world item is fee-free and publicly logged', async
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO fees')), false)
   assert.equal(state.rpcCalls, 0)
   assert.equal(state.facilitatorSettleCalls, 0)
+  assert.equal(state.draftExpiresAt, '9999-12-31T23:59:59.999Z')
   assert.equal(state.dbCalls.some(call => /SELECT count\(\*\).*FROM listings WHERE merchant_id/.test(call.query)), false)
   const activation = state.dbCalls.find(call => call.query.includes('INSERT INTO listings'))?.query ?? ''
   assert.match(activation, /SELECT 'maintainer_seed'/)
+  assert.match(activation, /expires_at\s*=\s*\$\d+/u)
 })
 
 test('the shopkeeper fee-free world listing does not depend on paid-listing readiness', async () => {
@@ -1064,6 +1253,44 @@ test('a proved city lock still needs the normal fee and activates atomically aft
   assert.match(atomic, /UPDATE world_drafts/)
   assert.match(atomic, /INSERT INTO fees/)
   assert.match(atomic, /world_state/)
+})
+
+test('a canceled draft cannot record a direct fee after the city read', async () => {
+  reset()
+  state.cancelDraftDuringCityFetch = true
+
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'world draft is not pending and unexpired',
+    retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+  })
+  assert.equal(state.listingFeeAttempt, null)
+  assert.equal(state.rpcCalls, 0)
+  const reservation = state.dbCalls.find(call =>
+    call.query.includes('listing-fee-attempt:reserve'))?.query ?? ''
+  assert.match(reservation, /FROM world_drafts[\s\S]*state IN \('pending', 'expired'\)[\s\S]*FOR UPDATE/)
+})
+
+test('a direct fee can be reused when the world draft ended before the request started', async () => {
+  reset()
+  state.draftState = 'canceled'
+
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'world draft is not pending and unexpired',
+    retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+  })
+  assert.equal(state.listingFeeAttempt, null)
+  assert.equal(state.rpcCalls, 0)
+  assert.deepEqual(state.cityCalls, [])
 })
 
 test('a world listing cannot switch from a preserved direct fee to x402', async () => {
@@ -1539,6 +1766,51 @@ test('an x402 world-listing fee accepted inside the draft window may finish afte
   assert.match(activation, /operation_started_at[\s\S]*draft\.expires_at/iu)
   assert.match(activation, /finalized_block_time[\s\S]*draft\.expires_at/iu)
   assert.doesNotMatch(activation, /draft\.expires_at\s*>\s*now\(\)/iu)
+})
+
+test('an activated draft sentinel does not hide an x402 fee outside the original hour', async () => {
+  reset()
+  state.rpcFinalized = false
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(waiting.status, 503, await waiting.clone().text())
+  assert.equal(state.x402Attempt?.status, 'settled')
+
+  state.draftState = 'active'
+  state.draftListingId = 70
+  state.draftExpiresAt = '9999-12-31T23:59:59.999Z'
+  state.rpcListingFeeBlockTime = '2026-08-12T02:00:00.000Z'
+  state.rpcFinalized = true
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'the recorded world listing fee was not accepted and transferred inside this draft window',
+    retry: 'do not pay again; ask the market owner to review the recorded fee for this same world listing request',
+    do_not_pay_again: true,
+  })
+})
+
+test('an in-window x402 retry after activation reports draft state, not a payment timing failure', async () => {
+  reset()
+  const requestBody = JSON.stringify({ draft_id: 12, city_offer_id: 33 })
+  const created = await app.request('/api/world/listing', {
+    method: 'POST', headers: { ...auth, 'X-PAYMENT': X402_PAYMENT }, body: requestBody,
+  })
+  assert.equal(created.status, 201, await created.clone().text())
+
+  const retried = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth, body: requestBody,
+  })
+  assert.equal(retried.status, 409)
+  const body = await retried.json() as { error: string }
+  assert.equal(body.error,
+    'the world draft is no longer pending and unexpired; its recorded fee needs review')
+  assert.notEqual(body.error,
+    'the recorded world listing fee was not accepted and transferred inside this draft window')
 })
 
 test('an expired world draft keeps its recorded x402 fee in same-request review', async () => {

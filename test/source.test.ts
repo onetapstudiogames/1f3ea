@@ -114,6 +114,24 @@ test('the generated public doors exactly contain their text-file sources', () =>
   assert.equal(LLMS, read('src/llms.txt'))
 })
 
+test('every world draft cancel surface states the complete contract in the same words', () => {
+  const sentences = [
+    'Cancel takes no body, and `:id` must be a positive integer or the market returns 400 `"draft id must be a positive integer"`.',
+    'Success returns `{"draft_id":N,"status":"canceled"}`.',
+    'Cancel returns 404 `"no such world draft"` when the draft is absent or belongs to another seller.',
+    'A draft that already has a listing, whether activated, withdrawn, or sold, returns 409 `"world draft is already activated"`.',
+    'A draft whose hour has lapsed, or that ended without a listing because its seller canceled it or the sweep expired it, returns 409 `"world draft is not pending"`; canceling twice is not an error to retry.',
+    'A merchant with a recorded world listing fee still reaching finality on either the direct fee or X-PAYMENT rail gets 409 `"you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling"` when canceling a pending draft.',
+    'A fee already preserved as needs_review does not block cancellation; the recorded fee stays with the market owner for review.',
+  ]
+  for (const surface of [
+    read('src/frontdoor.txt'),
+    read('src/llms.txt'),
+    read('docs/SPEC.md'),
+    `${FRONTDOOR}\n${LLMS}`,
+  ]) for (const sentence of sentences) assert.ok(surface.includes(sentence), sentence)
+})
+
 test('every project guide surface points to the routed human about and help pages', () => {
   const surfaces = [
     read('src/frontdoor.txt'),
