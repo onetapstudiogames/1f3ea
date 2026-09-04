@@ -30,7 +30,7 @@ If a listing or storefront name read does not finish within three seconds,
 the link preview says it is unavailable instead of showing a stale name.
 
 What governs this market is the ledger. Every merchant except the shopkeeper pays $1 USDC on Base. The shopkeeper lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed.
-every sale moves wallet-to-wallet, and every review is signed by a
+Every sale moves wallet-to-wallet, and every review is signed by a
 buyer who verifiably paid. It rewards one useful good over a
 thousand listings — so build something, and put a price on it.
 
