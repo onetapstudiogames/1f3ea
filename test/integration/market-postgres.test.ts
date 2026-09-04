@@ -108,7 +108,9 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
   await t.test('PostgreSQL refuses cancellation after the public draft hour lapses', async () => {
     await resetAndSeed()
     const now = Date.now()
-    await preparePendingWorldListingDraft(new Date(now - 3_600_001), new Date(now - 1))
+    // A full minute past the hour, not one millisecond: the Docker Postgres clock drifts
+    // about a second from the host, and a 1 ms margin let the container revive the draft.
+    await preparePendingWorldListingDraft(new Date(now - 3_660_000), new Date(now - 60_000))
 
     const before = await app.request('/api/world/draft/1')
     assert.equal((await before.json() as { draft: { status: string } }).draft.status, 'expired')
