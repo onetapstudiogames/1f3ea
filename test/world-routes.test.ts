@@ -1049,7 +1049,7 @@ test('a recorded world listing fee still reaching finality blocks draft cancella
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 409)
   assert.deepEqual(await response.json(), {
-    error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+    error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
   })
   assert.equal(state.draftState, 'pending')
   assert.equal(state.listingFeeAttempt?.payment_status, 'payment_pending')
@@ -1076,7 +1076,7 @@ test('a settled x402 world listing fee still reaching finality blocks draft canc
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 409)
   assert.deepEqual(await response.json(), {
-    error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+    error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
   })
   assert.equal(state.draftState, 'pending')
   const cancellation = state.dbCalls.find(call => call.query.includes('WITH owned_draft AS'))
@@ -1084,6 +1084,28 @@ test('a settled x402 world listing fee still reaching finality blocks draft canc
   assert.match(cancellation?.query ?? '', /status IN \('settling', 'settled', 'verified'\)/)
   assert.match(cancellation?.query ?? '', /fees[\s\S]*x402_payment_operation_key/)
   assert.ok(cancellation?.params.includes('world-listing-fee:merchant:7:request:%'))
+})
+
+test('a world listing fee already preserved for review does not block draft cancellation', async () => {
+  reset()
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(waiting.status, 202)
+  state.listingFeeAttempt = {
+    ...state.listingFeeAttempt!,
+    payment_status: 'needs_review',
+    payment_review_reason: 'kept for market owner review',
+  }
+  const reviewedFee = state.listingFeeAttempt
+
+  const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { draft_id: 12, status: 'canceled' })
+  assert.equal(state.draftState, 'canceled')
+  assert.equal(state.listingFeeAttempt, reviewedFee)
 })
 
 test('world draft cancellation hides ownership and refuses an activated draft', async () => {
@@ -1235,12 +1257,33 @@ test('a canceled draft cannot record a direct fee after the city read', async ()
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), { error: 'world draft is not pending and unexpired' })
+  assert.deepEqual(await response.json(), {
+    error: 'world draft is not pending and unexpired',
+    retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+  })
   assert.equal(state.listingFeeAttempt, null)
   assert.equal(state.rpcCalls, 0)
   const reservation = state.dbCalls.find(call =>
     call.query.includes('listing-fee-attempt:reserve'))?.query ?? ''
   assert.match(reservation, /FROM world_drafts[\s\S]*state IN \('pending', 'expired'\)[\s\S]*FOR UPDATE/)
+})
+
+test('a direct fee can be reused when the world draft ended before the request started', async () => {
+  reset()
+  state.draftState = 'canceled'
+
+  const response = await app.request('/api/world/listing', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
+  })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), {
+    error: 'world draft is not pending and unexpired',
+    retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+  })
+  assert.equal(state.listingFeeAttempt, null)
+  assert.equal(state.rpcCalls, 0)
+  assert.deepEqual(state.cityCalls, [])
 })
 
 test('a world listing cannot switch from a preserved direct fee to x402', async () => {

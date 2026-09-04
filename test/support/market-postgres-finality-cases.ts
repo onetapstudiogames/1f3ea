@@ -474,7 +474,7 @@ export async function runMarketPostgresFinalityCases(
     const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(canceled.status, 409, await canceled.clone().text())
     assert.deepEqual(await canceled.json(), {
-      error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+      error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
     })
     const protectedDraft = await connectedDatabase().query<{
       state: string; canceled_at: Date | null; payment_status: string
@@ -601,7 +601,7 @@ export async function runMarketPostgresFinalityCases(
     const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(canceled.status, 409, await canceled.clone().text())
     assert.deepEqual(await canceled.json(), {
-      error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+      error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
     })
     const protectedDraft = await connectedDatabase().query<{
       state: string; canceled_at: Date | null; status: string; listing_id: number | null

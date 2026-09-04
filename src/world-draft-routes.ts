@@ -158,7 +158,7 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
     if (result.canceled_id) return c.json({ draft_id: id, status: 'canceled' as const })
     if (result.listing_id != null) return err(c, 409, 'world draft is already activated')
     if (result.listing_fee_pending) return err(c, 409,
-      'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling')
+      'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling')
     return err(c, 409, 'world draft is not pending')
   })
 

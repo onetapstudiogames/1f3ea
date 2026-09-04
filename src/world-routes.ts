@@ -239,7 +239,10 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
               409,
               reviewRecordedX402,
             )
-          : err(c, 409, 'world draft is not pending and unexpired')
+          : c.json({
+              error: 'world draft is not pending and unexpired',
+              retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+            }, 409)
       }
       const reviewed = await reviewListingFeePayment(
         preservedFee.id,

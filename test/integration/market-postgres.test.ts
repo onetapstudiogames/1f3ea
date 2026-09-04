@@ -105,6 +105,20 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
   })
 
+  for (const state of ['withdrawn', 'sold'] as const) {
+    await t.test(`canceling a ${state} draft is refused as already activated`, async () => {
+      await resetAndSeed()
+      await connectedDatabase().query(
+        'UPDATE world_drafts SET merchant_id = 2, state = $1 WHERE id = 1',
+        [state],
+      )
+
+      const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+      assert.equal(response.status, 409, await response.clone().text())
+      assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
+    })
+  }
+
   await t.test('PostgreSQL refuses cancellation after the public draft hour lapses', async () => {
     await resetAndSeed()
     const now = Date.now()
@@ -147,7 +161,10 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
     const refused = await listing
     assert.equal(refused.status, 409, await refused.clone().text())
-    assert.deepEqual(await refused.json(), { error: 'world draft is not pending and unexpired' })
+    assert.deepEqual(await refused.json(), {
+      error: 'world draft is not pending and unexpired',
+      retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+    })
     const attempts = await connectedDatabase().query<{ count: string }>(`
       SELECT count(*)::text AS count FROM listing_fee_attempts WHERE world_draft_id = 1
     `)
@@ -205,7 +222,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
       const refused = await cancel
       assert.equal(refused.status, 409, await refused.clone().text())
       assert.deepEqual(await refused.json(), {
-        error: 'this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling',
+        error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
       })
       const durable = await connectedDatabase().query<{ state: string; attempts: string }>(`
         SELECT draft.state, count(attempt.id)::text AS attempts

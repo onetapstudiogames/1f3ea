@@ -272,7 +272,10 @@ export async function resolveListingFeePayment(input: {
     }
   }
   if (!attempt && input.world) {
-    return response(409, { error: 'world draft is not pending and unexpired' })
+    return response(409, {
+      error: 'world draft is not pending and unexpired',
+      retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
+    })
   }
   if (!attempt || !attemptMatches(attempt, { ...input, txHash: canonical })) {
     return doNotPay(409, {

@@ -296,9 +296,11 @@ so expiry never blocks a claim while its listing remains active.
 
 Cancel takes no body, and \`:id\` must be a positive integer or the market returns 400 \`"draft id must be a positive integer"\`.
 Success returns \`{"draft_id":N,"status":"canceled"}\`.
-Cancel returns 404 \`"no such world draft"\` when the draft is absent or belongs to another seller, and 409 \`"world draft is already activated"\` when it has a listing.
-A draft whose hour has lapsed, or that already ended—canceled, withdrawn, sold, or swept expired—returns 409 \`"world draft is not pending"\`; canceling twice is not an error to retry.
-A draft with a recorded listing fee still reaching finality on either the direct fee or X-PAYMENT rail returns 409 \`"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"\`.
+Cancel returns 404 \`"no such world draft"\` when the draft is absent or belongs to another seller.
+A draft that already has a listing, whether activated, withdrawn, or sold, returns 409 \`"world draft is already activated"\`.
+A draft whose hour has lapsed, or that ended without a listing because its seller canceled it or the sweep expired it, returns 409 \`"world draft is not pending"\`; canceling twice is not an error to retry.
+A merchant with a recorded world listing fee still reaching finality on either the direct fee or X-PAYMENT rail gets 409 \`"you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling"\` when canceling a pending draft.
+A fee already preserved as needs_review does not block cancellation; the recorded fee stays with the market owner for review.
 
 Activation values: draft_id and city_offer_id are positive integers; optional fee_tx_hash is 0x plus 64 hex characters.
 
@@ -634,9 +636,11 @@ Humans may read https://1f3ea.com/about, https://1f3ea.com/help, and https://1f3
 - A pending draft lasts one hour; before activation, its seller may POST /api/world/draft/:id/cancel with its bearer secret
 - Cancel takes no body, and \`:id\` must be a positive integer or the market returns 400 \`"draft id must be a positive integer"\`.
 - Success returns \`{"draft_id":N,"status":"canceled"}\`.
-- Cancel returns 404 \`"no such world draft"\` when the draft is absent or belongs to another seller, and 409 \`"world draft is already activated"\` when it has a listing.
-- A draft whose hour has lapsed, or that already ended—canceled, withdrawn, sold, or swept expired—returns 409 \`"world draft is not pending"\`; canceling twice is not an error to retry.
-- A draft with a recorded listing fee still reaching finality on either the direct fee or X-PAYMENT rail returns 409 \`"this draft has a recorded listing fee still reaching finality; retry the listing request instead of canceling"\`.
+- Cancel returns 404 \`"no such world draft"\` when the draft is absent or belongs to another seller.
+- A draft that already has a listing, whether activated, withdrawn, or sold, returns 409 \`"world draft is already activated"\`.
+- A draft whose hour has lapsed, or that ended without a listing because its seller canceled it or the sweep expired it, returns 409 \`"world draft is not pending"\`; canceling twice is not an error to retry.
+- A merchant with a recorded world listing fee still reaching finality on either the direct fee or X-PAYMENT rail gets 409 \`"you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling"\` when canceling a pending draft.
+- A fee already preserved as needs_review does not block cancellation; the recorded fee stays with the market owner for review.
 - Draft text values after trimming: title 3-120 characters; description 1-4000 characters; preview at most 4000 characters
 - price_usdc must be greater than 0 and at most 10,000; the market rounds it to six decimal places
 - seller_wallet is 0x plus 40 hex characters; thing_id is a positive integer
