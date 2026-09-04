@@ -118,20 +118,17 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     const parsed = validWorldDraft(await c.req.json().catch(() => null))
     if (typeof parsed === 'string') return err(c, 400, parsed)
     try {
+      await sql`
+        UPDATE world_drafts SET state = 'expired'
+        WHERE merchant_id = ${merchant.id} AND state = 'pending' AND expires_at <= now()`
       const rows = (await sql`
-        WITH expired_drafts AS (
-          UPDATE world_drafts SET state = 'expired'
-          WHERE merchant_id = ${merchant.id} AND state = 'pending' AND expires_at <= now()
-        ), new_draft AS (
-          INSERT INTO world_drafts (
-            merchant_id, thing_id, title, description, preview, price_usdc, seller_wallet, tags
-          ) VALUES (
-            ${merchant.id}, ${parsed.thing_id}, ${parsed.title}, ${parsed.description}, ${parsed.preview},
-            ${parsed.price_usdc}, ${parsed.seller_wallet}, ${parsed.tags}
-          )
-          RETURNING id, expires_at
+        INSERT INTO world_drafts (
+          merchant_id, thing_id, title, description, preview, price_usdc, seller_wallet, tags
+        ) VALUES (
+          ${merchant.id}, ${parsed.thing_id}, ${parsed.title}, ${parsed.description}, ${parsed.preview},
+          ${parsed.price_usdc}, ${parsed.seller_wallet}, ${parsed.tags}
         )
-        SELECT id, expires_at FROM new_draft`) as { id: number; expires_at: string }[]
+        RETURNING id, expires_at`) as { id: number; expires_at: string }[]
       const draft = rows[0]!
       return c.json({
         draft_id: Number(draft.id),

@@ -4,9 +4,11 @@ import assert from 'node:assert/strict'
 import { runMarketPostgresFinalityCases } from '../support/market-postgres-finality-cases.ts'
 import {
   BUYER_SECRET,
+  BUYER_WALLET,
   SELLER_WALLET,
   connectedDatabase,
   harnessState,
+  preparePendingWorldListingDraft,
   resetAndSeed,
   startMarketPostgresHarness,
 } from '../support/market-postgres-harness.ts'
@@ -48,6 +50,53 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     Authorization: `Bearer ${BUYER_SECRET}`,
     'Content-Type': 'application/json',
   }
+  const draftBody = JSON.stringify({
+    title: 'Fresh city compass',
+    description: 'A new public promise for a city-owned thing.',
+    preview: 'A careful compass.',
+    price_usdc: 2,
+    seller_wallet: BUYER_WALLET,
+    tags: ['world'],
+    thing_id: 78,
+  })
+
+  await t.test('an expired world draft does not block a new draft for the same seller', async () => {
+    await resetAndSeed()
+    const expiresAt = new Date(Date.now() - 60_000)
+    await preparePendingWorldListingDraft(
+      new Date(expiresAt.getTime() - 3_600_000),
+      expiresAt,
+    )
+
+    const created = await app.request('/api/world/draft', {
+      method: 'POST', headers, body: draftBody,
+    })
+    assert.equal(created.status, 201, await created.clone().text())
+    const body = await created.json() as { draft_id: number }
+    assert.notEqual(body.draft_id, 1)
+
+    const oldDraft = await connectedDatabase().query<{ state: string }>(
+      'SELECT state FROM world_drafts WHERE id = 1',
+    )
+    assert.equal(oldDraft.rows[0]?.state, 'expired')
+  })
+
+  await t.test('an unexpired world draft still blocks a new draft for the same seller', async () => {
+    await resetAndSeed()
+    const createdAt = new Date()
+    await preparePendingWorldListingDraft(
+      createdAt,
+      new Date(createdAt.getTime() + 3_600_000),
+    )
+
+    const conflict = await app.request('/api/world/draft', {
+      method: 'POST', headers, body: draftBody,
+    })
+    assert.equal(conflict.status, 409, await conflict.clone().text())
+    assert.deepEqual(await conflict.json(), {
+      error: 'you already have a live pending draft; activate it, cancel it, or wait for expiry',
+    })
+  })
 
   await t.test('an expired world checkout does not block a new checkout for the same buyer', async () => {
     await resetAndSeed()
