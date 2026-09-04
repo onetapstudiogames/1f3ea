@@ -526,11 +526,19 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     if (state.draftInsertError) throw postgresError(state.draftInsertError, 'world draft insert failed')
     return [{ id: 12, expires_at: state.draftExpiresAt }]
   }
+  if (query.includes('WITH owned_draft AS') && query.includes('canceled_draft')) {
+    if (state.draftOwner !== state.merchantId) return []
+    const priorState = state.draftState
+    const canceledId = priorState === 'pending' ? 12 : null
+    if (canceledId) state.draftState = 'canceled'
+    return [{ state: priorState, listing_id: state.draftListingId, canceled_id: canceledId }]
+  }
   if (query.includes('INSERT INTO listings') && query.includes('world_draft')) {
     if (state.activationInsertError)
       throw postgresError(state.activationInsertError, 'world listing activation failed')
     state.draftState = 'active'
     state.draftListingId = 70
+    state.draftExpiresAt = '9999-12-31T23:59:59.999Z'
     if (query.includes('locked_fee_attempt') && state.listingFeeAttempt) {
       state.listingFeeAttempt = {
         ...state.listingFeeAttempt,
@@ -908,7 +916,7 @@ test('world draft reports only the live-pending-draft constraint as a caller con
   })
   assert.equal(conflict.status, 409)
   assert.deepEqual(await conflict.json(), {
-    error: 'you already have a live pending draft; activate it, cancel it, or wait for expiry',
+    error: 'you already have a live pending draft; activate it, POST /api/world/draft/:id/cancel, or wait for expiry',
   })
 
   reset()
@@ -939,6 +947,58 @@ test('public draft records derive expiry and expose no bearer data', async () =>
   state.draftExpiresAt = '2020-01-01T00:00:00.000Z'
   const expired = await app.request('/api/world/draft/12')
   assert.equal((await expired.json() as { draft: { status: string } }).draft.status, 'expired')
+})
+
+test('an active listing keeps its older-than-an-hour public draft usable by the city', async () => {
+  reset()
+  state.draftState = 'active'
+  state.draftListingId = 70
+  state.draftExpiresAt = '2026-08-12T01:00:00.000Z'
+
+  const response = await app.request('/api/world/draft/12')
+  assert.equal(response.status, 200)
+  const { draft } = await response.json() as {
+    draft: { status: string; listing_state: string; expires_at?: string }
+  }
+  assert.equal(draft.status, 'active')
+  assert.equal(draft.listing_state, 'active')
+  assert.ok(draft.expires_at)
+  assert.equal(
+    draft.status === 'active' && draft.listing_state === 'active' &&
+      (!draft.expires_at || new Date(draft.expires_at).getTime() > Date.now()),
+    true,
+  )
+})
+
+test('a seller can cancel a pending draft and then create another', async () => {
+  reset()
+  const noAuth = await app.request('/api/world/draft/12/cancel', { method: 'POST' })
+  assert.equal(noAuth.status, 401)
+
+  const canceled = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(canceled.status, 200)
+  assert.deepEqual(await canceled.json(), { draft_id: 12, status: 'canceled' })
+  assert.equal(state.draftState, 'canceled')
+
+  const created = await app.request('/api/world/draft', {
+    method: 'POST', headers: auth, body: draftBody({ thing_id: 42 }),
+  })
+  assert.equal(created.status, 201)
+})
+
+test('world draft cancellation hides ownership and refuses an activated draft', async () => {
+  reset()
+  state.draftOwner = 8
+  const notOwned = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(notOwned.status, 404)
+
+  reset()
+  state.draftState = 'active'
+  state.draftListingId = 70
+  const active = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
+  assert.equal(active.status, 409)
+  assert.deepEqual(await active.json(), { error: 'world draft is already activated' })
+  assert.equal(state.draftState, 'active')
 })
 
 test('activation fails closed on city outage, malformed JSON, and ownership mismatch before fees', async () => {
@@ -1004,9 +1064,11 @@ test('the shopkeeper eleventh world item is fee-free and publicly logged', async
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO fees')), false)
   assert.equal(state.rpcCalls, 0)
   assert.equal(state.facilitatorSettleCalls, 0)
+  assert.equal(state.draftExpiresAt, '9999-12-31T23:59:59.999Z')
   assert.equal(state.dbCalls.some(call => /SELECT count\(\*\).*FROM listings WHERE merchant_id/.test(call.query)), false)
   const activation = state.dbCalls.find(call => call.query.includes('INSERT INTO listings'))?.query ?? ''
   assert.match(activation, /SELECT 'maintainer_seed'/)
+  assert.match(activation, /expires_at\s*=\s*\$\d+/u)
 })
 
 test('the shopkeeper fee-free world listing does not depend on paid-listing readiness', async () => {

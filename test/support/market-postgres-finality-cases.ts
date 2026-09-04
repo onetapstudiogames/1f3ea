@@ -505,8 +505,8 @@ export async function runMarketPostgresFinalityCases(
     assert.ok((durable.rows[0]?.maximum_block_time.getTime() ?? Number.MAX_SAFE_INTEGER)
       <= expiresAt.getTime())
     assert.equal(durable.rows[0]?.finalized_block_time.getTime(), transferBlockTime.getTime())
-    assert.ok((durable.rows[0]?.finalized_at.getTime() ?? 0)
-      > (durable.rows[0]?.draft_expires_at.getTime() ?? Number.MAX_SAFE_INTEGER))
+    assert.ok((durable.rows[0]?.finalized_at.getTime() ?? 0) > expiresAt.getTime())
+    assert.equal(durable.rows[0]?.draft_expires_at.toISOString(), '9999-12-31T23:59:59.999Z')
   })
 
   await t.test('x402 world-listing finality may arrive after its real PostgreSQL draft window', async () => {
@@ -615,8 +615,8 @@ export async function runMarketPostgresFinalityCases(
     assert.ok((durable.rows[0]?.operation_started_at.getTime() ?? Number.MAX_SAFE_INTEGER)
       <= expiresAt.getTime())
     assert.equal(durable.rows[0]?.finalized_block_time.getTime(), transferBlockTime.getTime())
-    assert.ok((durable.rows[0]?.finalized_at.getTime() ?? 0)
-      > (durable.rows[0]?.draft_expires_at.getTime() ?? Number.MAX_SAFE_INTEGER))
+    assert.ok((durable.rows[0]?.finalized_at.getTime() ?? 0) > expiresAt.getTime())
+    assert.equal(durable.rows[0]?.draft_expires_at.toISOString(), '9999-12-31T23:59:59.999Z')
   })
 
   await t.test('strict custody migration rejects receipt-only old direct and world writes', async () => {

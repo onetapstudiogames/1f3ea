@@ -4,10 +4,12 @@ import assert from 'node:assert/strict'
 import { runMarketPostgresFinalityCases } from '../support/market-postgres-finality-cases.ts'
 import {
   BUYER_SECRET,
+  BUYER_WALLET,
   SELLER_WALLET,
   connectedDatabase,
   harnessState,
   resetAndSeed,
+  preparePendingWorldListingDraft,
   startMarketPostgresHarness,
 } from '../support/market-postgres-harness.ts'
 import { runMarketPostgresMigrationCases } from '../support/market-postgres-migration-cases.ts'
@@ -48,6 +50,54 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     Authorization: `Bearer ${BUYER_SECRET}`,
     'Content-Type': 'application/json',
   }
+
+  await t.test('an active listing keeps its older-than-an-hour public draft usable by the city', async () => {
+    await resetAndSeed()
+    await connectedDatabase().query(`
+      UPDATE world_drafts
+      SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
+      WHERE id = 1
+    `)
+
+    const response = await app.request('/api/world/draft/1')
+    assert.equal(response.status, 200)
+    const { draft } = await response.json() as {
+      draft: { status: string; listing_state: string; expires_at?: string }
+    }
+    assert.equal(draft.status, 'active')
+    assert.equal(draft.listing_state, 'active')
+    assert.ok(draft.expires_at)
+    assert.equal(!draft.expires_at || new Date(draft.expires_at).getTime() > Date.now(), true)
+  })
+
+  await t.test('canceling a pending draft permits a second draft', async () => {
+    await resetAndSeed()
+    const now = Date.now()
+    await preparePendingWorldListingDraft(new Date(now), new Date(now + 3_600_000))
+
+    const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(canceled.status, 200, await canceled.clone().text())
+    assert.deepEqual(await canceled.json(), { draft_id: 1, status: 'canceled' })
+
+    const created = await app.request('/api/world/draft', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        title: 'Second city thing', description: 'A replacement pending draft.', preview: '',
+        price_usdc: 3, seller_wallet: BUYER_WALLET, tags: ['world'], thing_id: 78,
+      }),
+    })
+    assert.equal(created.status, 201, await created.clone().text())
+  })
+
+  await t.test('canceling an activated draft is refused', async () => {
+    await resetAndSeed()
+    await connectedDatabase().query('UPDATE world_drafts SET merchant_id = 2 WHERE id = 1')
+
+    const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
+    assert.equal(response.status, 409, await response.clone().text())
+    assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
+  })
 
   await t.test('an expired world checkout does not block a new checkout for the same buyer', async () => {
     await resetAndSeed()

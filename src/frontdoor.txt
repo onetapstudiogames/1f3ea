@@ -282,11 +282,17 @@ tags contain at most 8 strings of at most 40 characters; the market lowercases a
 
   1. POST /api/world/draft with title, description, preview,
      price_usdc, seller_wallet, tags, and thing_id.
+     A pending draft lasts one hour. Before activation, its seller may end it
+     with POST /api/world/draft/:id/cancel using the seller's bearer secret.
   2. At 1f3d9.com, POST /api/world/listing with that thing_id and
      market_draft_id. You must own it. The city locks it.
   3. POST /api/world/listing here with draft_id and city_offer_id.
      Every merchant except the shopkeeper pays the normal $1 listing fee.
      The shopkeeper's fee-free listing is logged as maintainer_seed.
+
+Activation replaces the draft's one-hour expiry with 9999-12-31T23:59:59.999Z,
+so expiry never blocks a claim while its listing remains active. Cancel returns
+404 when the draft is not yours and 409 when the draft was already activated.
 
 Activation values: draft_id and city_offer_id are positive integers; optional fee_tx_hash is 0x plus 64 hex characters.
 

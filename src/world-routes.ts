@@ -19,8 +19,6 @@ import {
   cityOfferUrl,
   fetchCityOffer,
   validWorldActivation,
-  validWorldDraft,
-  type WorldDraftInput,
 } from './world.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 import {
@@ -35,67 +33,19 @@ import {
   type X402PaymentAttempt,
 } from './x402-payment-attempts.ts'
 import { registerWorldCheckoutRoutes } from './world-checkout-routes.ts'
-import { dateIsPast, positiveId, upstreamStatus } from './world-route-shared.ts'
+import { dateIsPast, upstreamStatus } from './world-route-shared.ts'
+import {
+  ACTIVE_WORLD_DRAFT_EXPIRY,
+  readWorldDraft,
+  registerWorldDraftRoutes,
+  type WorldDraftRow,
+} from './world-draft-routes.ts'
 
 export { requireValidWorldReceipt } from './world-payment-sync.ts'
 
 interface WorldRouteConfig {
   marketOrigin: string
   maintainerId: number
-}
-
-interface WorldDraftRow extends WorldDraftInput {
-  id: number
-  merchant_id: number
-  state: 'pending' | 'active' | 'withdrawn' | 'sold' | 'expired' | 'canceled'
-  listing_id: number | null
-  listing_state: string | null
-  listing_withdrawn?: boolean
-  listing_removed?: boolean
-  created_at: string
-  expires_at: string
-  canceled_at: string | null
-}
-
-function publicDraftStatus(row: WorldDraftRow) {
-  if (row.state === 'pending' && dateIsPast(row.expires_at)) return 'expired' as const
-  if (row.listing_state === 'sold') return 'sold' as const
-  if (row.listing_removed || row.state === 'canceled') return 'canceled' as const
-  if (row.state === 'withdrawn') return 'withdrawn' as const
-  if (row.listing_state === 'canceled' || row.listing_state === 'stale') return 'canceled' as const
-  if (row.listing_withdrawn) return 'withdrawn' as const
-  return row.state
-}
-
-function draftEnvelope(row: WorldDraftRow) {
-  const listingState = row.listing_state === 'stale' ? 'canceled' : row.listing_state ?? null
-  return {
-    id: Number(row.id),
-    status: publicDraftStatus(row),
-    delivery_kind: 'city_ownership' as const,
-    world_asset: { type: 'thing' as const, id: Number(row.thing_id) },
-    title: row.title,
-    description: row.description,
-    preview: row.preview,
-    price_usdc: Number(row.price_usdc),
-    seller_wallet: row.seller_wallet,
-    listing_id: row.listing_id == null ? null : Number(row.listing_id),
-    listing_state: listingState,
-    expires_at: row.expires_at,
-    created_at: row.created_at,
-  }
-}
-
-async function readDraft(id: number): Promise<WorldDraftRow | null> {
-  const rows = (await sql`
-    SELECT d.id, d.merchant_id, d.thing_id, d.title, d.description, d.preview,
-      d.price_usdc::float8 AS price_usdc, d.seller_wallet, d.tags, d.state,
-      d.listing_id, d.created_at, d.expires_at, d.canceled_at,
-      l.world_state AS listing_state, l.withdrawn AS listing_withdrawn,
-      l.removed AS listing_removed
-    FROM world_drafts d LEFT JOIN listings l ON l.id = d.listing_id
-    WHERE d.id = ${id}`) as WorldDraftRow[]
-  return rows[0] ?? null
 }
 
 function x402AttemptFitsDraft(attempt: X402PaymentAttempt, draft: WorldDraftRow): boolean {
@@ -112,49 +62,7 @@ function x402AttemptFitsDraft(attempt: X402PaymentAttempt, draft: WorldDraftRow)
     && blockTime <= expiresAt
 }
 export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
-  app.post('/api/world/draft', async c => {
-    const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
-    const parsed = validWorldDraft(await c.req.json().catch(() => null))
-    if (typeof parsed === 'string') return err(c, 400, parsed)
-    try {
-      const rows = (await sql`
-        WITH expired_drafts AS (
-          UPDATE world_drafts SET state = 'expired'
-          WHERE merchant_id = ${merchant.id} AND state = 'pending' AND expires_at <= now()
-        ), new_draft AS (
-          INSERT INTO world_drafts (
-            merchant_id, thing_id, title, description, preview, price_usdc, seller_wallet, tags
-          ) VALUES (
-            ${merchant.id}, ${parsed.thing_id}, ${parsed.title}, ${parsed.description}, ${parsed.preview},
-            ${parsed.price_usdc}, ${parsed.seller_wallet}, ${parsed.tags}
-          )
-          RETURNING id, expires_at
-        )
-        SELECT id, expires_at FROM new_draft`) as { id: number; expires_at: string }[]
-      const draft = rows[0]!
-      return c.json({
-        draft_id: Number(draft.id),
-        url: `${config.marketOrigin}/api/world/draft/${draft.id}`,
-        expires_at: draft.expires_at,
-        next: 'Authenticate separately to the city and POST its world listing route with this public draft id.',
-      }, 201)
-    } catch (error) {
-      const details = postgresErrorDetails(error)
-      if (details.code === '23505' && details.constraint === 'world_drafts_one_pending_per_merchant')
-        return err(c, 409, 'you already have a live pending draft; activate it, cancel it, or wait for expiry')
-      throw error
-    }
-  })
-
-  app.get('/api/world/draft/:id', async c => {
-    const id = positiveId(c.req.param('id'))
-    if (!id) return err(c, 400, 'draft id must be a positive integer')
-    const draft = await readDraft(id)
-    if (!draft) return err(c, 404, 'no such world draft')
-    c.header('Cache-Control', 'public, max-age=5, s-maxage=10')
-    return c.json({ draft: draftEnvelope(draft) })
-  })
+  registerWorldDraftRoutes(app, config)
 
   app.post('/api/world/listing', async c => {
     const requestStartedAt = new Date()
@@ -162,7 +70,7 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const parsed = validWorldActivation(await c.req.json().catch(() => null))
     if (typeof parsed === 'string') return err(c, 400, parsed)
-    const draft = await readDraft(parsed.draft_id)
+    const draft = await readWorldDraft(parsed.draft_id)
     if (!draft) return err(c, 404, 'no such world draft')
     if (draft.merchant_id !== merchant.id) return err(c, 403, 'only the market merchant that made this draft may list it')
     const feeRequestHash = sha256(JSON.stringify({
@@ -571,7 +479,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             FROM locked_world_draft
             RETURNING id, title, price_usdc, world_draft_id
           ), activated_world_draft AS (
-            UPDATE world_drafts draft SET state = 'active', listing_id = listing.id
+            UPDATE world_drafts draft SET state = 'active', listing_id = listing.id,
+              expires_at = ${ACTIVE_WORLD_DRAFT_EXPIRY}
             FROM new_listing listing WHERE draft.id = listing.world_draft_id
           ), completed_attempt AS (
             UPDATE listing_fee_attempts attempt SET
@@ -643,7 +552,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             FROM locked_world_draft
             RETURNING id, title, price_usdc, world_draft_id
           ), activated_world_draft AS (
-            UPDATE world_drafts d SET state = 'active', listing_id = l.id
+            UPDATE world_drafts d SET state = 'active', listing_id = l.id,
+              expires_at = ${ACTIVE_WORLD_DRAFT_EXPIRY}
             FROM new_listing l WHERE d.id = l.world_draft_id
           ), new_fee AS (
             INSERT INTO fees (merchant_id, listing_id, amount_usdc, tx_hash,
@@ -676,7 +586,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
             FROM locked_world_draft
             RETURNING id, title, price_usdc, world_draft_id
           ), activated_world_draft AS (
-            UPDATE world_drafts d SET state = 'active', listing_id = l.id
+            UPDATE world_drafts d SET state = 'active', listing_id = l.id,
+              expires_at = ${ACTIVE_WORLD_DRAFT_EXPIRY}
             FROM new_listing l WHERE d.id = l.world_draft_id
           ), new_event AS (
             INSERT INTO events (kind, actor, detail)
