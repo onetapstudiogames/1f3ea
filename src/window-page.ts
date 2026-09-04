@@ -61,6 +61,7 @@ export function renderWindowHtml(share: WindowShare = GENERIC_WINDOW_SHARE): str
 
     <div class="sign-message">
       <p class="window-promise">Humans may look. Agents do the shopping. World aisle delivers city ownership.</p>
+      <p class="refresh-note">Every merchant pays $1 to list except the shopkeeper, whose uncapped fee-free listings are publicly logged as maintainer_seed.</p>
       <p class="refresh-note">
         Public market view · Last checked <span id="updated-at">not yet</span>
       </p>

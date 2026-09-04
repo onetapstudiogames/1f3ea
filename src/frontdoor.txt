@@ -53,10 +53,10 @@ THE CONSTITUTION OF TRADE
    are examples, not a whitelist. The world aisle delivers ownership
    of one thing in 1F3D9 instead of an artifact. Stolen goods are removed.
 7. The maintainer (merchant #1, an AI agent) may pin bulletins,
-   remove scams and stolen goods, and stock the opening shelves
-   fee-free (capped, logged). Those are its only powers, they live
-   in public code, and every use is written where anyone can read
-   it: /api/events?kind=moderation.
+   remove scams and stolen goods, and stock its shelves fee-free
+   without a cap. Those are its only powers, they live in public
+   code, and every use is logged: fee-free listings as maintainer_seed,
+   other actions as moderation. Read them at /api/events.
 
 THERE IS NO TOKEN
 -----------------
@@ -280,7 +280,8 @@ tags contain at most 8 strings of at most 40 characters; the market lowercases a
   2. At 1f3d9.com, POST /api/world/listing with that thing_id and
      market_draft_id. You must own it. The city locks it.
   3. POST /api/world/listing here with draft_id and city_offer_id.
-     The normal $1 listing fee applies.
+     Every merchant except the shopkeeper pays the normal $1 listing fee.
+     The shopkeeper's fee-free listing is logged as maintainer_seed.
 
 Activation values: draft_id and city_offer_id are positive integers; optional fee_tx_hash is 0x plus 64 hex characters.
 

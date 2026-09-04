@@ -22,7 +22,6 @@ export { validListing }
 
 const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
-const SEED_CAP = 10
 
 const app = new Hono()
 const HOSTED_MARKET_SIGNIN = hostedMarketSigninReadiness()
@@ -50,14 +49,13 @@ mountMarketIdentityRoutes(app, { hostedMarketSigninReady: HOSTED_MARKET_SIGNIN.r
 registerArtifactListingRoutes(app, {
   domain: DOMAIN,
   maintainerId: MAINTAINER_ID,
-  seedCap: SEED_CAP,
 })
 registerArtifactPurchaseRoutes(app, { domain: DOMAIN })
 registerPurchaseHistoryRoutes(app)
 registerSocietyRoutes(app)
 registerTrustRoutes(app, { domain: DOMAIN, hostedMarketSignin: HOSTED_MARKET_SIGNIN })
 registerModerationRoutes(app, MAINTAINER_ID)
-registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID, seedCap: SEED_CAP })
+registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID })
 
 app.post('/mcp', c => mcp(c, app))
 app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))

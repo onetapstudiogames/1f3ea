@@ -152,7 +152,6 @@ const state = {
   priorPurchase: false,
   duplicateId: null as number | null,
   duplicateWithdrawn: false,
-  seedCount: 10,
   nextListingId: 42,
   voteInsertErrorCode: null as string | null,
   voteInsertErrorConstraint: null as string | null,
@@ -472,8 +471,6 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     if (state.duplicateWithdrawn && /NOT\s+(?:l\.)?withdrawn/i.test(query)) return []
     return [{ id: state.duplicateId }]
   }
-  if (query.includes('SELECT count(*)::int AS n FROM listings WHERE merchant_id'))
-    return [{ n: state.seedCount }]
   if (query.includes('x402-payment-attempt:read-operation')) {
     const operationKey = String(params[0])
     const attempt = state.x402Attempts.find(candidate => candidate.operation_key === operationKey)
@@ -1122,7 +1119,6 @@ function reset() {
   state.priorPurchase = false
   state.duplicateId = null
   state.duplicateWithdrawn = false
-  state.seedCount = 10
   state.nextListingId = 42
   state.voteInsertErrorCode = null
   state.voteInsertErrorConstraint = null
@@ -1332,7 +1328,7 @@ test('hosted paid listing, buy, and direct-claim routes stop before payment work
     assert.equal(claim.status, 503)
 
     assert.equal(state.calls.some(call => /facilitator|mainnet\.base/i.test(call.url)), false)
-    assert.equal(sqlCalls().some(call => call.query?.includes('listing_fee_attempts')), false)
+    assert.equal(sqlCalls().some(call => call.query?.includes('INSERT INTO listing_fee_attempts')), false)
     assert.equal(sqlCalls().some(call => call.query?.includes('direct-payment-attempt:')), false)
     assert.equal(inserted('fees'), 0)
     assert.equal(inserted('purchases'), 0)
@@ -2396,6 +2392,93 @@ test('a lost successful listing response replays the listing tied to its stored 
   assert.ok(duplicateLookup < 0 || completedLookup < duplicateLookup)
 })
 
+test('a shopkeeper retry honors its stored x402 listing payment instead of relabeling it fee-free', async () => {
+  reset()
+  state.merchantId = 1
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  const first = await app.request('/api/listing', {
+    method: 'POST', headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) }, body: listingBody(),
+  })
+  assert.equal(first.status, 201)
+  const created = await first.json() as { listing_id: number }
+  state.duplicateId = created.listing_id
+  state.calls = []
+
+  const replay = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(),
+  })
+  assert.equal(replay.status, 200)
+  assert.equal((await replay.json() as { listing_id: number }).listing_id, created.listing_id)
+  assert.equal(inserted('listings'), 0)
+})
+
+test('closed custody stops a saved shopkeeper x402 retry before Base work', async () => {
+  reset()
+  state.merchantId = 1
+  state.facilitatorVerify = true
+  state.facilitatorSettle = true
+  state.rpcFinalized = false
+  const first = await app.request('/api/listing', {
+    method: 'POST', headers: { ...authed, 'X-PAYMENT': x402Header(TREASURY, 1) }, body: listingBody(),
+  })
+  assert.equal(first.status, 503)
+  assert.equal(state.x402Attempts[0]?.status, 'settled')
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  state.calls = []
+
+  try {
+    const retry = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody() })
+    assert.equal(retry.status, 503)
+    assert.equal(state.calls.some(call => call.url.includes('mainnet.base.org')), false)
+    assert.equal(state.x402Attempts[0]?.status, 'settled')
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('closed custody preserves a saved shopkeeper direct fee without another payment', async () => {
+  reset()
+  state.merchantId = 1
+  state.rpcFinalized = false
+  const waiting = await app.request('/api/listing', {
+    method: 'POST', headers: authed, body: listingBody(TX1),
+  })
+  assert.equal(waiting.status, 202)
+  assert.equal(state.feeAttempts[0]?.payment_status, 'payment_pending')
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+  state.calls = []
+
+  try {
+    const retry = await app.request('/api/listing', {
+      method: 'POST', headers: authed, body: listingBody(TX1),
+    })
+    assert.equal(retry.status, 503)
+    assert.equal((await retry.json() as { do_not_pay_again?: boolean }).do_not_pay_again, true)
+    assert.equal(state.calls.some(call => call.url.includes('mainnet.base.org')), false)
+    assert.equal(state.feeAttempts[0]?.payment_status, 'payment_pending')
+    assert.equal(inserted('listings'), 0)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
 test('listing write failures after x402 custody always return an exact no-pay retry', async () => {
   const originalConsoleError = console.error
   console.error = () => undefined
@@ -2784,23 +2867,51 @@ test('a recent copycat is rejected before payment', async () => {
   assert.equal(inserted('listings'), 0)
 })
 
-test('the shopkeeper tenth opening item is fee-free and publicly logged', async () => {
+test('the shopkeeper eleventh item is fee-free and publicly logged', async () => {
   reset()
   state.merchantId = 1
-  state.seedCount = 9
   const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody() })
   assert.equal(res.status, 201)
   assert.equal(inserted('fees'), 0)
+  assert.equal(hasSql(/SELECT count\(\*\).*FROM listings WHERE merchant_id/), false)
   const eventCall = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
   assert.match(eventCall?.query ?? '', /SELECT 'maintainer_seed'/)
 })
 
-test('the shopkeeper eleventh item requires the normal fee', async () => {
+test('the shopkeeper fee-free listing does not depend on paid-listing readiness', async () => {
   reset()
   state.merchantId = 1
-  state.seedCount = 10
+  const previousEnvironment = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    PAYMENT_CUSTODY_READY: process.env.PAYMENT_CUSTODY_READY,
+  }
+  process.env.VERCEL_ENV = 'production'
+  delete process.env.PAYMENT_CUSTODY_READY
+
+  try {
+    const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody() })
+    assert.equal(res.status, 201)
+    assert.equal(inserted('fees'), 0)
+    assert.equal(sqlCalls().some(call => call.query?.includes('INSERT INTO listing_fee_attempts')), false)
+  } finally {
+    if (previousEnvironment.VERCEL_ENV == null) delete process.env.VERCEL_ENV
+    else process.env.VERCEL_ENV = previousEnvironment.VERCEL_ENV
+    if (previousEnvironment.PAYMENT_CUSTODY_READY == null) delete process.env.PAYMENT_CUSTODY_READY
+    else process.env.PAYMENT_CUSTODY_READY = previousEnvironment.PAYMENT_CUSTODY_READY
+  }
+})
+
+test('another merchant fee-free attempt keeps the normal fee refusal', async () => {
+  reset()
   const res = await app.request('/api/listing', { method: 'POST', headers: authed, body: listingBody() })
   assert.equal(res.status, 402)
+  assert.equal((await res.json() as { error: string }).error,
+    `listing costs $1 USDC — pay via x402 (X-PAYMENT header) or include fee_tx_hash ` +
+    `Pay exactly 1.000000 USDC on Base using contract ${USDC} to ${TREASURY}. ` +
+    'Keep X-PAYMENT at or under 16000 bytes. Verify with official_facts through the connector or this current 402 response; ' +
+    '/api/official if your client can open URLs. Never copy a recipient from wallet history; ' +
+    'zero-value lookalike transfers can poison wallet history.')
+  assert.equal(inserted('listings'), 0)
 })
 
 test('store line update requires auth and rejects unsafe lines', async () => {

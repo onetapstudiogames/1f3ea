@@ -30,6 +30,34 @@ function mcpRequest(method: string, params?: unknown) {
   })
 }
 
+test('every public fee surface states the uncapped logged shopkeeper exception', async () => {
+  const toolsResponse = await mcpRequest('tools/list')
+  const toolsBody = await toolsResponse.json() as {
+    result: { tools: Array<{ name: string; description: string }> }
+  }
+  const toolCopy = toolsBody.result.tools
+    .filter(tool => tool.name === 'list_item' || tool.name === 'list_world')
+    .map(tool => tool.description)
+    .join('\n')
+  const surfaces = [
+    await (await app.request('/')).text(),
+    await (await app.request('/llms.txt')).text(),
+    await (await app.request('/terms')).text(),
+    await (await app.request('/window')).text(),
+    await (await app.request('/city-bridge')).text(),
+    read('docs/FRONTDOOR.md'),
+    read('docs/SPEC.md'),
+    read('docs/DECISIONS.md'),
+    toolCopy,
+  ]
+
+  for (const [index, surface] of surfaces.entries()) {
+    assert.match(surface, /shopkeeper/iu, String(index))
+    assert.match(surface, /without a cap|uncapped/iu, String(index))
+    assert.match(surface, /maintainer_seed/u, String(index))
+  }
+})
+
 test('official facts and MCP state the bounded city recovery contract', async () => {
   const officialResponse = await app.request('/api/official')
   assert.equal(officialResponse.status, 200)

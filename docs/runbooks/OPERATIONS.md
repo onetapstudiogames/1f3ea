@@ -80,12 +80,11 @@ Do not close the tracking issue on a source-only claim.
 
 No live action was executed by this PR. The owner must approve publication and later
 withdrawal separately. Merchant #1, handle `1f3ea-keeper`, is the seller. The read-only
-2026-09-01 check found exactly eight keeper listings, so the existing capped first-ten
-opening-stock path can publish these two replacements without a fee. This is the existing
-keeper path, not a new exception. Stop if an authenticated `GET /api/me` no longer returns
-handle `1f3ea-keeper` and `listings_total: 8` before the first command. After the first
-publish, require `listings_total: 9` before the second. If either count differs, do not add
-a payment or bypass; return to the owner for a new approved plan.
+2026-09-01 check found exactly eight keeper listings. The shopkeeper's uncapped,
+publicly logged fee-free path can publish these replacements without a fee. Stop if an
+authenticated `GET /api/me` no longer returns handle `1f3ea-keeper` before the first
+command. Do not add a payment or bypass if the identity differs; return to the owner for
+a new approved plan.
 
 The exact replacement listing text is the unchanged JSON content of these files. Every
 `title`, `description`, `preview`, `artifact`, `price_usdc`, and `tags` byte comes from the
@@ -94,13 +93,13 @@ named file; the command adds only the keeper's already-public seller wallet:
 - Listing #1 replacement: `seed/01-1f3ea-mcp-quickstart.json`, SHA-256
   `CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B`.
 - Listing #4 replacement: `seed/04-price-your-artifact.json`, SHA-256
-  `689E95F589E79D3C1C7ABCD1908FDCD4C7A005D6FB0E61D18FDE5008DF9CB0B0`.
+  `9142408B361ABC694C671934CD52A8B59FBF054D4EA03D9A17CEE6EAE7950A79`.
 
 Before approval, the operator's approved operating-system vault adapter must load the
 keeper key directly into the process-local PowerShell 7 variable `$KeeperToken` as a
 `SecureString`. Do not use a plaintext environment variable and never paste the key into
 this file, a transcript, or a command. Each command below verifies the credential type,
-reviewed file hash, authenticated keeper identity and expected listing count, original
+reviewed file hash, authenticated keeper identity, original
 listing owner and state, and the already-public keeper wallet before it sends one write.
 It stops without publishing when any check differs. Run it from the repository root at
 the approved review commit.
@@ -108,13 +107,13 @@ the approved review commit.
 One command for listing #1's replacement:
 
 ```powershell
-& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/01-1f3ea-mcp-quickstart.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne 'CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper' -or [int]$me.listings_total -ne 8) { throw 'Keeper identity or listing count changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/1').listing; if ([int]$original.id -ne 1 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #1 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
+& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/01-1f3ea-mcp-quickstart.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne 'CDBFDAF6645490BE7C436C8A958C949F21110DDC3B290A9B18B97962E28CB12B') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper') { throw 'Keeper identity changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/1').listing; if ([int]$original.id -ne 1 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #1 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
 ```
 
 One command for listing #4's replacement:
 
 ```powershell
-& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/04-price-your-artifact.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne '689E95F589E79D3C1C7ABCD1908FDCD4C7A005D6FB0E61D18FDE5008DF9CB0B0') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper' -or [int]$me.listings_total -ne 9) { throw 'Keeper identity or listing count changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/4').listing; if ([int]$original.id -ne 4 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #4 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
+& { if ($null -eq $KeeperToken -or $KeeperToken.GetType().FullName -ne 'System.Security.SecureString') { throw 'KeeperToken must be a SecureString loaded by the approved vault adapter.' }; $seedPath = 'seed/04-price-your-artifact.json'; if ((Get-FileHash -Algorithm SHA256 -LiteralPath $seedPath).Hash -ne '9142408B361ABC694C671934CD52A8B59FBF054D4EA03D9A17CEE6EAE7950A79') { throw 'Seed file hash mismatch.' }; $me = Invoke-RestMethod -Uri 'https://1f3ea.com/api/me' -Authentication Bearer -Token $KeeperToken; if ($me.handle -ne '1f3ea-keeper') { throw 'Keeper identity changed; stop.' }; $original = (Invoke-RestMethod -Uri 'https://1f3ea.com/api/listing/4').listing; if ([int]$original.id -ne 4 -or $original.merchant -ne '1f3ea-keeper' -or $original.state -ne 'live' -or $original.seller_wallet -ne '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd') { throw 'Original listing #4 no longer matches the approved keeper listing.' }; $body = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json; $body | Add-Member -NotePropertyName seller_wallet -NotePropertyValue $original.seller_wallet; Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress -Depth 5) }
 ```
 
 Record each returned replacement ID. Read it back publicly and compare its public fields

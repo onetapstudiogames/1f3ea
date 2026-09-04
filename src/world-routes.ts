@@ -42,7 +42,6 @@ export { requireValidWorldReceipt } from './world-payment-sync.ts'
 interface WorldRouteConfig {
   marketOrigin: string
   maintainerId: number
-  seedCap: number
 }
 
 interface WorldDraftRow extends WorldDraftInput {
@@ -230,9 +229,28 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
       }
     }
     const paymentHeader = c.req.header('x-payment')
+    const keeperRequest = merchant.id === config.maintainerId
+    const seedCandidate = keeperRequest && !paymentHeader && !parsed.fee_tx_hash
+    let hasSavedX402 = false; let preservedFee: Awaited<ReturnType<typeof readListingFeeAttempt>> = null
+    try {
+      hasSavedX402 = await readX402PaymentAttempt(x402OperationKey) != null
+      if (keeperRequest)
+        preservedFee = await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
+    } catch {
+      return c.json({ error: 'world listing payment records are temporarily unavailable', retry: 'retry this exact world listing request later', do_not_pay_again: true }, 503)
+    }
+    const isSeed = seedCandidate && !hasSavedX402 && !preservedFee
+    const unavailable = isSeed ? null : paymentReadinessResponse(c)
+    if (unavailable && preservedFee) return c.json({ error: 'the market cannot finish this recorded world listing fee right now',
+      retry: 'retry this same world listing body later with the same fee_tx_hash', fee_tx_hash: preservedFee.tx_hash,
+      do_not_pay_again: true }, 503)
+    if (unavailable && hasSavedX402) return refuseRecordedX402(
+      'the market cannot finish this recorded world listing fee right now', 503, retryRecordedX402)
+    if (unavailable) return c.json({ error: 'world listing payments are temporarily unavailable',
+      retry: 'retry this same world listing request later and wait for new payment instructions' }, 503)
     let x402Payment: FinalizedX402Payment | null = null
     let x402Attempt: X402PaymentAttempt | null = null
-    const resumedX402 = await resumeX402PaymentForTerms(
+    const resumedX402 = isSeed ? null : await resumeX402PaymentForTerms(
       x402OperationKey, 'world_listing_fee', feeRequirements,
     )
     if (resumedX402) {
@@ -248,22 +266,8 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
         }, resumedX402.status === 'unclassified' ? 502 : 409)
       }
     }
-    const unavailable = paymentReadinessResponse(c)
-    if (unavailable) {
-      return x402Payment
-        ? refuseRecordedX402(
-            'the market cannot finish this recorded world listing fee right now',
-            503,
-            retryRecordedX402,
-          )
-        : c.json({
-            error: 'world listing payments are temporarily unavailable',
-            retry: 'retry this same world listing request later and wait for new payment instructions',
-          }, 503)
-    }
-    const preservedFee = x402Payment
-      ? null
-      : await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
+    if (!keeperRequest && !x402Payment)
+      preservedFee = await readListingFeeAttempt(merchant.id, 'world_listing', feeRequestHash)
     if (x402Payment) {
       const confirmation = await confirmRecordedX402(x402Payment)
       if (confirmation.state === 'unavailable') {
@@ -420,12 +424,6 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
       directFee = resolved
     }
 
-    let isSeed = false
-    if (!x402Payment) {
-      const countRows = (await sql`
-        SELECT count(*)::int AS n FROM listings WHERE merchant_id = ${merchant.id}`) as { n: number }[]
-      isSeed = merchant.id === config.maintainerId && Number(countRows[0]!.n) < config.seedCap
-    }
     let feeTx: string | null = null
     let responseHeader: string | null = null
     if (!isSeed) {
