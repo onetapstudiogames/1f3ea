@@ -15,6 +15,7 @@ const TREASURY = process.env.TREASURY_ADDRESS
 const TX = '0x' + '31'.repeat(32)
 const X402_NONCE = '0x' + '42'.repeat(32)
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const CROSS_SECOND_BOUNDARY_DELAY_MS = 1_100
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 const AUTHORIZATION_USED_TOPIC = '0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5'
 const X402_PAYMENT = Buffer.from(JSON.stringify({
@@ -147,6 +148,7 @@ const state = {
   rpcReceiptMissing: false,
   rpcFinalized: true,
   rpcCanonical: true,
+  rpcBlockResponseDelayMs: 0,
   rpcListingFeeBlockTime: null as string | null,
   rpcWorldAmountUnits: 2_000_000n,
   facilitatorUnavailable: false,
@@ -815,17 +817,24 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         ? { number: state.rpcFinalized ? '0x100' : '0xff' }
         : { hash: state.rpcCanonical ? blockHash : '0x' + 'cc'.repeat(32), number: '0x100' },
     })
-    if (body.method === 'eth_getBlockByHash') return json({
-      jsonrpc: '2.0', id: body.id,
-      result: {
-        hash: blockHash,
-        number: '0x100',
-        timestamp: '0x' + Math.floor(
-          new Date(worldClaim ? state.cityBlockTime : state.rpcListingFeeBlockTime ?? Date.now())
-            .getTime() / 1000,
-        ).toString(16),
-      },
-    })
+    if (body.method === 'eth_getBlockByHash') {
+      if (state.rpcBlockResponseDelayMs > 0) await delay(state.rpcBlockResponseDelayMs)
+      const blockTime = worldClaim
+        ? state.cityBlockTime
+        : state.rpcListingFeeBlockTime
+          ?? state.listingFeeAttempt?.maximum_block_time
+          ?? Date.now()
+      return json({
+        jsonrpc: '2.0', id: body.id,
+        result: {
+          hash: blockHash,
+          number: '0x100',
+          timestamp: '0x' + Math.floor(
+            new Date(blockTime).getTime() / 1000,
+          ).toString(16),
+        },
+      })
+    }
   }
   if (url.includes('/verify')) {
     if (state.facilitatorUnavailable) return new Response('facilitator unavailable', { status: 503 })
@@ -904,6 +913,7 @@ function reset() {
   state.rpcReceiptMissing = false
   state.rpcFinalized = true
   state.rpcCanonical = true
+  state.rpcBlockResponseDelayMs = 0
   state.rpcListingFeeBlockTime = null
   state.rpcWorldAmountUnits = 2_000_000n
   state.facilitatorUnavailable = false
@@ -1241,11 +1251,12 @@ test('a proved city lock still needs the normal fee and activates atomically aft
   assert.equal(state.x402Attempt, null)
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO listings')), false)
 
+  state.rpcBlockResponseDelayMs = CROSS_SECOND_BOUNDARY_DELAY_MS
   const activated = await app.request('/api/world/listing', {
     method: 'POST', headers: auth,
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
-  assert.equal(activated.status, 201)
+  assert.equal(activated.status, 201, await activated.clone().text())
   const body = await activated.json() as Record<string, unknown>
   assert.equal(body.listing_id, 70)
   assert.equal(body.delivery_kind, 'city_ownership')
