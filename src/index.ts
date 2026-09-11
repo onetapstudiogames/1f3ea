@@ -7,6 +7,7 @@ import { registerCollectionRoutes } from './collection-routes.ts'
 import { registerDoorRoutes } from './door-routes.ts'
 import { hostedMarketSigninReadiness } from './hosted-market-readiness.ts'
 import { mountMarketIdentityRoutes } from './market-identity-routes.ts'
+import { unexpectedMarketFailure } from './market-failure.ts'
 import {
   configureMarketOAuthMerchantResolver,
   mountMarketOAuthRoutes,
@@ -33,6 +34,41 @@ const missingShelf = () => ({
   front_door: `${DOMAIN.replace(/\/+$/u, '')}/`,
 })
 
+function acceptedQuality(accept: string, mediaType: string): number {
+  const [wantedType, wantedSubtype] = mediaType.toLowerCase().split('/')
+  let best = { specificity: -1, quality: 0 }
+  for (const rawRange of accept.split(',')) {
+    const [rawMedia = '', ...parameters] = rawRange.trim().split(';')
+    const [rangeType, rangeSubtype] = rawMedia.trim().toLowerCase().split('/')
+    if (!rangeType || !rangeSubtype) continue
+    const specificity = rangeType === wantedType && rangeSubtype === wantedSubtype
+      ? 2
+      : rangeType === wantedType && rangeSubtype === '*'
+        ? 1
+        : rangeType === '*' && rangeSubtype === '*'
+          ? 0
+          : -1
+    if (specificity < 0) continue
+    const qualityMatch = parameters
+      .map(parameter => /^\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\s*$/iu.exec(parameter))
+      .find(match => match !== null)
+    const quality = qualityMatch ? Number(qualityMatch[1]) : 1
+    if (specificity > best.specificity || (specificity === best.specificity && quality > best.quality)) {
+      best = { specificity, quality }
+    }
+  }
+  return best.quality
+}
+
+function acceptsHtml(accept: string | undefined): boolean {
+  if (!accept) return false
+  const htmlQuality = Math.max(
+    acceptedQuality(accept, 'text/html'),
+    acceptedQuality(accept, 'application/xhtml+xml'),
+  )
+  return htmlQuality > 0 && htmlQuality > acceptedQuality(accept, 'application/json')
+}
+
 const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
 app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
 app.use('*', async (c, next) => {
@@ -45,11 +81,14 @@ app.use('*', async (c, next) => {
 })
 if (HOSTED_MARKET_SIGNIN.ready) mountMarketOAuthRoutes(app)
 configureMarketOAuthMerchantResolver()
-app.onError((error, c) => {
-  console.error(error)
-  return c.json({ error: 'internal market failure; retry later' }, 500)
+app.onError(unexpectedMarketFailure)
+app.notFound(c => {
+  c.header('Vary', 'Accept')
+  if (acceptsHtml(c.req.header('accept'))) {
+    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page not found · 1F3EA</title></head><body><main><h1>Page not found</h1><p>That market address does not exist.</p><p><a href="/">Read the market front door</a> or <a href="/window">watch the shop window</a>.</p></main></body></html>`, 404)
+  }
+  return c.json(missingShelf(), 404)
 })
-app.notFound(c => c.json(missingShelf(), 404))
 
 registerDoorRoutes(app)
 registerCollectionRoutes(app)

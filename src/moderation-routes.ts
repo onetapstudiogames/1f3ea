@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 
-import { auth, err, type Merchant } from './core.ts'
+import { auth, authRequired, err, type Merchant } from './core.ts'
 import { logEvent, sql } from './db.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
 
@@ -13,7 +13,7 @@ function exactFields(value: unknown, fields: readonly string[]): value is Record
 export function registerModerationRoutes(app: Hono, maintainerId: number): void {
   async function maintainerOnly(c: Context): Promise<Merchant | Response> {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     if (merchant.id !== maintainerId)
       return err(c, 403, 'maintainer only — and every use is logged publicly')
     return merchant
@@ -55,7 +55,7 @@ export function registerModerationRoutes(app: Hono, maintainerId: number): void 
         ) FROM removed_listing
       )
       SELECT id FROM removed_listing`
-    if (!rows.length) return err(c, 404, 'no such listing that has not already been removed')
+    if (!rows.length) return err(c, 404, `listing_id ${id} was not found or was already removed. Read GET /api/listing/${id} before retrying.`)
     return c.json({ ok: true })
   })
 
@@ -71,7 +71,7 @@ export function registerModerationRoutes(app: Hono, maintainerId: number): void 
     const rows = await sql`
       UPDATE listings SET pinned = ${pinned}
       WHERE id = ${id} AND NOT removed AND NOT withdrawn RETURNING id`
-    if (!rows.length) return err(c, 404, 'no such live listing')
+    if (!rows.length) return err(c, 404, `listing_id ${id} was not found or is not live. Read GET /api/listing/${id} before retrying.`)
     await logEvent('moderation', merchant.handle, { action: pinned ? 'pin' : 'unpin', listing_id: id })
     return c.json({ ok: true })
   })

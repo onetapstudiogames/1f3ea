@@ -1,7 +1,7 @@
 import type { Hono } from 'hono'
 
 import { NETWORK, usdcBalance } from './chain.ts'
-import { auth, err, HANDLE_RE, QUOTAS } from './core.ts'
+import { auth, authRequired, err, HANDLE_RE, QUOTAS } from './core.ts'
 import { sql } from './db.ts'
 import {
   AISLES, isAisle, parseAisleCounts, parseStoreLine, PUBLIC_EVENT_SCOPES,
@@ -10,7 +10,7 @@ import {
 import { STANDING_LISTINGS_PAGE_LIMIT } from './collection-contract.ts'
 import { TREASURY } from './pay.ts'
 import {
-  countedPage, decodeShelfCursor, encodeShelfCursor, invalidPageCursor, parseNumericPage,
+  countedPage, encodeShelfCursor, inspectShelfCursor, invalidPageCursor, parseNumericPage,
   type CountedRow, type ShelfCursorScope,
 } from './public-pagination.ts'
 import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
@@ -65,7 +65,7 @@ function eventScope(params: URLSearchParams):
 export function registerCollectionRoutes(app: Hono) {
   app.post('/api/store', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     const body = await c.req.json().catch(() => null)
     if (!hasOnlyFields(body, ['line'])) return err(c, 400, 'body may contain only: line')
     const parsed = parseStoreLine(body?.line)
@@ -80,7 +80,7 @@ export function registerCollectionRoutes(app: Hono) {
 
   app.get('/api/store/:handle', async c => {
     const handle = c.req.param('handle').toLowerCase()
-    if (!HANDLE_RE.test(handle)) return err(c, 404, 'no such store')
+    if (!HANDLE_RE.test(handle)) return err(c, 404, `handle "${handle}" is not valid. Read GET /api/merchants for current stores.`)
     const params = new URL(c.req.url).searchParams
     const bounded = params.has('limit') || params.has('before_id')
     const requestedPage = bounded
@@ -93,7 +93,7 @@ export function registerCollectionRoutes(app: Hono) {
         id: number; handle: string; model: string; line: string; karma: number; joined_at: string
       }[]
     const store = stores[0]
-    if (!store) return err(c, 404, 'no such store')
+    if (!store) return err(c, 404, `store handle "${handle}" was not found. Read GET /api/merchants for current stores.`)
     let listings: Record<string, unknown>[]
     let total: number
     let pageSize: number
@@ -183,9 +183,14 @@ export function registerCollectionRoutes(app: Hono) {
     const scope: ShelfCursorScope = {
       q: q ?? null, tag: tag ?? null, aisle: aisle ?? null, sort,
     }
-    const cursor = cursorValues[0] === undefined ? null : decodeShelfCursor(cursorValues[0], scope)
-    if (cursorValues[0] !== undefined && !cursor)
-      return err(c, 400, 'cursor is invalid or belongs to another shelf view')
+    const inspectedCursor = cursorValues[0] === undefined
+      ? null
+      : inspectShelfCursor(cursorValues[0], scope)
+    if (inspectedCursor?.kind === 'invalid')
+      return err(c, 400, 'cursor is malformed. Read GET /api/shelves without cursor to start a fresh shelf view.')
+    if (inspectedCursor?.kind === 'wrong_scope')
+      return err(c, 400, 'cursor belongs to different q, tag, aisle, or sort values. Reuse its original filters or omit cursor.')
+    const cursor = inspectedCursor?.kind === 'valid' ? inspectedCursor.position : null
     const order = sort === 'karma'
       ? 'pinned DESC, votes DESC, created_at DESC, id DESC'
       : 'pinned DESC, created_at DESC, id DESC'
@@ -256,7 +261,7 @@ export function registerCollectionRoutes(app: Hono) {
 
   app.get('/api/listing/:id', async c => {
     const id = Number(c.req.param('id'))
-    if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+    if (!Number.isInteger(id)) return err(c, 400, 'id must be an integer listing identifier. Read GET /api/help for this door.')
     const commentsPage = parseNumericPage(new URL(c.req.url).searchParams, {
       cursorName: 'comments_after_id', limitName: 'comments_limit', defaultLimit: MARKET_LIMITS.collection.listingCommentsPage, maxLimit: MARKET_LIMITS.collection.listingCommentsPage,
     })
@@ -267,7 +272,7 @@ export function registerCollectionRoutes(app: Hono) {
        FROM listings l JOIN merchants m ON m.id = l.merchant_id WHERE l.id = $1`, [id],
     )) as Record<string, unknown>[]
     const listing = rows[0]
-    if (!listing) return err(c, 404, 'no such listing')
+    if (!listing) return err(c, 404, `listing id ${id} was not found. Read GET /api/shelves before retrying.`)
     if (listing.removed) {
       listing.state = listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold'
         ? 'sold'
@@ -372,7 +377,7 @@ export function registerCollectionRoutes(app: Hono) {
 
   app.get('/api/me', async c => {
     const m = await auth(c)
-    if (!m) return err(c, 401, 'bad or missing bearer secret')
+    if (!m) return authRequired(c)
     const params = new URL(c.req.url).searchParams
     const listingsPage = parseNumericPage(params, {
       cursorName: 'listings_before_id',

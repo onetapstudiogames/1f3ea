@@ -34,6 +34,26 @@ const WITHDRAW_ITEM_CONTRACT = 'Withdrawing is permanent and idempotent. Send on
 const WINDOW_EVENT_KINDS = new Set([
   ...DOOR_EVENT_KINDS, 'listing_edit', 'withdrawal', 'moderation',
 ])
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function assertInternalFailure(body: unknown): void {
+  const failure = body as Record<string, unknown>
+  assert.match(String(failure.error), /could not complete this request.*request_id/iu)
+  assert.equal(failure.error_class, 'market_fault')
+  assert.equal(failure.error_name, 'Error')
+  assert.match(String(failure.request_id), REQUEST_ID)
+}
+
+async function assertDailyRateLimit(response: Response, quota: RegExp): Promise<void> {
+  assert.equal(response.status, 429)
+  const retryAfter = Number(response.headers.get('retry-after'))
+  assert.ok(Number.isInteger(retryAfter) && retryAfter >= 1 && retryAfter <= 86_400)
+  const body = await response.json() as Record<string, unknown>
+  assert.match(String(body.error), quota)
+  assert.equal(body.retry_after_seconds, retryAfter)
+  assert.equal(body.reason, 'rate_limited')
+  assert.match(String(body.request_id), REQUEST_ID)
+}
 
 interface PurchaseIntentRow {
   id: number
@@ -1251,8 +1271,7 @@ test('flagging requires a signed-in merchant and attributes the public event', a
     method: 'POST', headers: authed,
     body: JSON.stringify({ target_type: 'listing', target_id: 1, reason: 'copied good' }),
   })
-  assert.equal(limited.status, 429)
-  assert.match((await limited.json() as { error: string }).error, /20 combined comments and flags per UTC day/iu)
+  await assertDailyRateLimit(limited, /20 combined comments and flags per UTC day/iu)
   assert.equal(inserted('events'), 0)
 })
 
@@ -1268,7 +1287,7 @@ test('voting reports an unrelated unique violation as internal', async () => {
       method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await res.json())
   } finally {
     console.error = originalConsoleError
   }
@@ -1285,32 +1304,33 @@ test('voting reports a non-conflict database failure as internal', async () => {
       method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await res.json())
   } finally {
     console.error = originalConsoleError
   }
 })
 
 test('every market action route returns a caller-facing cause when it refuses a request', async () => {
+  const authRequired = /already have a merchant.*saved key.*If you do not have a merchant.*open \/join/isu
   const cases = [
     ['register', '/api/register', 'POST', { handle: 'x' }, /private merchant identity.*unavailable/iu],
     ['rotate key', '/api/rotate', 'POST', {}, /private merchant identity.*unavailable/iu],
-    ['set store', '/api/store', 'POST', {}, /bad or missing bearer secret/iu],
-    ['list item', '/api/listing', 'POST', {}, /bad or missing bearer secret/iu],
-    ['edit item', '/api/listing/1', 'PATCH', {}, /bad or missing bearer secret/iu],
-    ['withdraw item', '/api/listing/1/withdraw', 'POST', {}, /bad or missing bearer secret/iu],
-    ['create purchase intent', '/api/purchase-intent/1', 'POST', {}, /open \/join first/iu],
-    ['buy item', '/api/buy/1', 'POST', {}, /open \/join first/iu],
-    ['claim purchase', '/api/claim/1', 'POST', {}, /open \/join first/iu],
-    ['comment', '/api/comment', 'POST', {}, /bad or missing bearer secret/iu],
-    ['vote', '/api/vote', 'POST', {}, /bad or missing bearer secret/iu],
-    ['flag', '/api/flag', 'POST', {}, /bad or missing bearer secret/iu],
-    ['remove listing', '/api/mod/remove', 'POST', {}, /bad or missing bearer secret/iu],
-    ['pin listing', '/api/mod/pin', 'POST', {}, /bad or missing bearer secret/iu],
-    ['draft world item', '/api/world/draft', 'POST', {}, /bad or missing bearer secret/iu],
-    ['list world item', '/api/world/listing', 'POST', {}, /bad or missing bearer secret/iu],
-    ['checkout world item', '/api/world/checkout/1', 'POST', {}, /register in the market first/iu],
-    ['sync world item', '/api/world/sync/1', 'POST', {}, /bad or missing bearer secret/iu],
+    ['set store', '/api/store', 'POST', {}, authRequired],
+    ['list item', '/api/listing', 'POST', {}, authRequired],
+    ['edit item', '/api/listing/1', 'PATCH', {}, authRequired],
+    ['withdraw item', '/api/listing/1/withdraw', 'POST', {}, authRequired],
+    ['create purchase intent', '/api/purchase-intent/1', 'POST', {}, authRequired],
+    ['buy item', '/api/buy/1', 'POST', {}, authRequired],
+    ['claim purchase', '/api/claim/1', 'POST', {}, authRequired],
+    ['comment', '/api/comment', 'POST', {}, authRequired],
+    ['vote', '/api/vote', 'POST', {}, authRequired],
+    ['flag', '/api/flag', 'POST', {}, authRequired],
+    ['remove listing', '/api/mod/remove', 'POST', {}, authRequired],
+    ['pin listing', '/api/mod/pin', 'POST', {}, authRequired],
+    ['draft world item', '/api/world/draft', 'POST', {}, authRequired],
+    ['list world item', '/api/world/listing', 'POST', {}, authRequired],
+    ['checkout world item', '/api/world/checkout/1', 'POST', {}, authRequired],
+    ['sync world item', '/api/world/sync/1', 'POST', {}, authRequired],
   ] as const
 
   for (const [verb, path, method, body, cause] of cases) {
@@ -1415,7 +1435,7 @@ test('withdrawing a listing that does not exist returns 404', async () => {
   state.listingExists = false
   const res = await app.request('/api/listing/999/withdraw', { method: 'POST', headers: authed })
   assert.equal(res.status, 404)
-  assert.match(((await res.json()) as { error: string }).error, /no such listing/i)
+  assert.match(((await res.json()) as { error: string }).error, /listing id 999.*not found.*GET \/api\/shelves/i)
   assert.equal(inserted('events'), 0)
 })
 
@@ -1809,7 +1829,7 @@ test('listing edits distinguish a non-owner from a missing listing', async () =>
     method: 'PATCH', headers: authed, body: JSON.stringify({ title: 'Edited title' }),
   })
   assert.equal(missing.status, 404)
-  assert.match(((await missing.json()) as { error: string }).error, /no such listing/i)
+  assert.match(((await missing.json()) as { error: string }).error, /listing id 999.*not found.*GET \/api\/shelves/i)
   assert.equal(inserted('events'), 0)
 })
 
@@ -2274,7 +2294,7 @@ test('a purchase database outage is not misreported as a reused payment', async 
   try {
     const res = await app.request('/api/buy/1', { method: 'POST', headers: authed })
     assert.equal(res.status, 500)
-    assert.deepEqual(await res.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await res.json())
   } finally {
     console.error = originalConsoleError
   }
@@ -2286,7 +2306,7 @@ test('buy distinguishes purchase replay, used payment proof, and unrelated uniqu
     { constraint: 'purchases_tx_hash_key', status: 409, reason: /transaction hash was already used/i },
     { constraint: 'purchases_tx_hash_lower_unique', status: 409, reason: /transaction hash was already used/i },
     { constraint: 'payment_uses_pkey', status: 409, reason: /transaction hash was already used/i },
-    { constraint: 'purchases_pkey', status: 500, reason: /^internal market failure; retry later$/i },
+    { constraint: 'purchases_pkey', status: 500, reason: /could not complete this request.*request_id/i },
   ]
   const originalConsoleError = console.error
   console.error = () => undefined
@@ -3304,6 +3324,17 @@ test('shelf pages are exact at 50 and expose a scope-bound continuation past 50'
       const wrongScope = await app.request('/api/shelves?aisle=services&sort=karma&cursor=' +
         encodeURIComponent(body.next_cursor))
       assert.equal(wrongScope.status, 400)
+      assert.match(
+        (await wrongScope.json() as { error: string }).error,
+        /cursor belongs to different q, tag, aisle, or sort values.*original filters or omit cursor/iu,
+      )
+
+      const malformed = await app.request('/api/shelves?cursor=not%2Bbase64')
+      assert.equal(malformed.status, 400)
+      assert.match(
+        (await malformed.json() as { error: string }).error,
+        /cursor is malformed.*GET \/api\/shelves without cursor/iu,
+      )
     }
   }
 })
@@ -4052,15 +4083,19 @@ test('missing HTTP routes give connector-first front-door recovery', async () =>
   assert.match(body.error ?? '', /front_door[\s\S]*GET \/[\s\S]*if your client can open URLs/iu)
 })
 
-test('comment limits remain after the listing limit is removed', async () => {
-  reset()
-  state.commentQuotaLeft = false
-  const res = await app.request('/api/comment', {
-    method: 'POST', headers: authed,
-    body: JSON.stringify({ listing_id: 1, parent_id: null, body: 'hello' }),
-  })
-  assert.equal(res.status, 429)
-  assert.match(((await res.json()) as { error: string }).error, /20 combined comments and flags/)
+test('comment and vote limits state exact seconds after the listing limit is removed', async () => {
+  for (const [path, body, quota] of [
+    ['/api/comment', { listing_id: 1, parent_id: null, body: 'hello' }, /20 combined comments and flags/],
+    ['/api/vote', { listing_id: 1 }, /50 votes per UTC day/],
+  ] as const) {
+    reset()
+    state.commentQuotaLeft = false
+    state.listingOwner = 8
+    const response = await app.request(path, {
+      method: 'POST', headers: authed, body: JSON.stringify(body),
+    })
+    await assertDailyRateLimit(response, quota)
+  }
 })
 
 test('quota spending resets both stale daily counters before incrementing one', async () => {

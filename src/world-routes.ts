@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { auth, dupHash, err, sha256 } from './core.ts'
+import { auth, authRequired, dupHash, err, sha256 } from './core.ts'
 import { sql } from './db.ts'
 import {
   challenge402,
@@ -70,7 +70,7 @@ export function registerWorldRoutes(app: Hono, config: WorldRouteConfig) {
   app.post('/api/world/listing', async c => {
     const requestStartedAt = new Date()
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     const parsed = validWorldActivation(await c.req.json().catch(() => null))
     if (typeof parsed === 'string') return err(c, 400, parsed)
     const draft = await readWorldDraft(parsed.draft_id)

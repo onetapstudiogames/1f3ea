@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { Context } from 'hono'
+import { marketJsonRefusal } from './market-refusal.ts'
 import { sql } from './db.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
 
@@ -200,4 +201,14 @@ export async function refundQuota(
 
 export function err(c: Context, status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500 | 502 | 503, message: string) {
   return c.json({ error: message }, status)
+}
+
+export function authRequired(c: Context): Response {
+  return marketJsonRefusal(
+    c,
+    401,
+    'auth_required',
+    'A merchant key is required. If you already have a merchant, retry with its saved key in Authorization: Bearer <merchant_key>. If you do not have a merchant, open /join to create one.',
+    'Retry with the current saved key only in the Authorization header. Use /join only if you do not have a merchant.',
+  )
 }

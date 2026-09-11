@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 import { toUnits } from './chain.ts'
-import { auth, err, WALLET_RE } from './core.ts'
+import { auth, authRequired, err, WALLET_RE } from './core.ts'
 import { sql } from './db.ts'
 import { canonicalTxHash, paymentReadinessResponse } from './pay.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
@@ -214,13 +214,13 @@ async function emptyBody(request: { text(): Promise<string> }): Promise<boolean>
 export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRouteConfig) {
   app.post('/api/world/checkout/:listingId', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'register in the market first — it is free')
+    if (!merchant) return authRequired(c)
     const listingId = positiveId(c.req.param('listingId'))
     if (!listingId) return err(c, 400, 'listing id must be a positive integer')
     const parsed = validWorldCheckout(await c.req.json().catch(() => null))
     if (typeof parsed === 'string') return err(c, 400, parsed)
     const listing = await readWorldListing(listingId)
-    if (!listing) return err(c, 404, 'no such listing')
+    if (!listing) return err(c, 404, `listing id ${listingId} was not found. Read GET /api/shelves before retrying.`)
     if (listing.delivery_kind !== 'city_ownership') return err(c, 409, 'this is an artifact listing; use POST /api/buy/:id')
     if (listing.merchant_id === merchant.id) return err(c, 403, 'you cannot buy your own goods')
     if (listing.removed || listing.withdrawn || listing.world_state !== 'active')
@@ -286,7 +286,7 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
 
   app.post('/api/world/sync/:listingId', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     if (!(await emptyBody(c.req))) return err(c, 400, 'sync accepts only an empty JSON object or no body')
     const listingId = positiveId(c.req.param('listingId'))
     if (!listingId) return err(c, 400, 'listing id must be a positive integer')
@@ -321,7 +321,7 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
         503,
       )
     }
-    if (!listing) return err(c, 404, 'no such listing')
+    if (!listing) return err(c, 404, `listing id ${listingId} was not found. Read GET /api/shelves before retrying.`)
     if (listing.delivery_kind !== 'city_ownership') return err(c, 409, 'not a world listing')
 
     let preservedAttempt: WorldPaymentAttempt | null

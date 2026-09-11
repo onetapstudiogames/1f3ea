@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Context, Hono } from 'hono'
 import { sql } from './db.ts'
-import { auth, err, WALLET_RE, type Merchant } from './core.ts'
+import { auth, authRequired, err, WALLET_RE, type Merchant } from './core.ts'
 import { NETWORK, USDC, type FinalityEvidence } from './chain.ts'
 import {
   canonicalTxHash,
@@ -21,6 +21,7 @@ import {
 import type { DirectPaymentAttempt } from './direct-payment-attempts.ts'
 import { resolveDirectPaymentClaim, reviewDirectPaymentClaim } from './direct-payment-claim.ts'
 import { postgresErrorDetails, postgresUniqueConstraint } from './postgres-error.ts'
+import { safeMarketErrorName, safePostgresErrorCode } from './market-failure.ts'
 import { x402CustodyFailureResponse, x402NoPayResponse } from './x402-route-response.ts'
 
 const PURCHASE_TX_CONSTRAINTS: readonly string[] = [
@@ -102,12 +103,12 @@ function parseDirectClaimBody(input: unknown): DirectClaimBody | string {
 async function getPurchaseListing(
   c: Context, m: Merchant, id: number, allowTerminal: boolean,
 ): Promise<BuyableListing | Response> {
-  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+  if (!Number.isInteger(id)) return err(c, 400, 'id must be an integer listing identifier. Read GET /api/help for this door.')
   const rows = (await sql`
     SELECT id, merchant_id, title, price_usdc::float8 AS price_usdc, seller_wallet, delivery_kind,
       removed, removed_at, withdrawn, withdrawn_at, created_at, clock_timestamp() AS checked_at
     FROM listings WHERE id = ${id}`) as BuyableListing[]
-  if (!rows[0]) return err(c, 404, 'no such listing')
+  if (!rows[0]) return err(c, 404, `listing id ${id} was not found. Read GET /api/shelves before retrying.`)
   if (rows[0].merchant_id === m.id) return err(c, 403, 'you cannot buy your own goods (constitution §5)')
   if (rows[0].delivery_kind === 'city_ownership')
     return err(c, 409, `world checkout is required for city ownership — POST /api/world/checkout/${id}`)
@@ -464,7 +465,7 @@ export function registerArtifactPurchaseRoutes(app: Hono, config: { domain: stri
 app.post('/api/purchase-intent/:id', async c => {
   const requestStartedAt = new Date()
   const merchant = await auth(c)
-  if (!merchant) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
+  if (!merchant) return authRequired(c)
   const listing = await getBuyable(c, merchant, Number(c.req.param('id')))
   if (listing instanceof Response) return listing
   if (listing.price_usdc === 0) return err(c, 409, 'this listing is free; use POST /api/buy/:id')
@@ -482,7 +483,7 @@ app.post('/api/purchase-intent/:id', async c => {
 app.post('/api/buy/:id', async c => {
   const requestStartedAt = new Date()
   const m = await auth(c)
-  if (!m) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
+  if (!m) return authRequired(c)
   const l = await getPurchaseListing(c, m, Number(c.req.param('id')), true)
   if (l instanceof Response) return l
   const terminalResponse = () => l.removed
@@ -515,8 +516,8 @@ app.post('/api/buy/:id', async c => {
       originalProof = stored != null && stored.proof_digest === x402ProofDigest(header)
     } catch (error) {
       console.error('x402 saved purchase payment record could not be read', {
-        error_class: error instanceof Error ? error.name : typeof error,
-        postgres_code: postgresErrorDetails(error).code,
+        error_class: safeMarketErrorName(error),
+        postgres_code: safePostgresErrorCode(error),
         listing_id: l.id,
       })
       return x402NoPayResponse(
@@ -606,7 +607,7 @@ app.post('/api/buy/:id', async c => {
 app.post('/api/claim/:id', async c => {
   const requestStartedAt = new Date()
   const m = await auth(c)
-  if (!m) return err(c, 401, 'open /join first to create a merchant, then send its saved key as a bearer credential')
+  if (!m) return authRequired(c)
   const l = await getClaimable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
   if (l.price_usdc === 0) {

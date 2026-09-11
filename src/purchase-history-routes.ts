@@ -1,7 +1,7 @@
 import type { Hono } from 'hono'
 
 import { PURCHASE_HISTORY_PAGE_LIMIT } from './collection-contract.ts'
-import { auth, err } from './core.ts'
+import { auth, authRequired, err } from './core.ts'
 import { sql } from './db.ts'
 import {
   countedPage,
@@ -14,7 +14,7 @@ import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
 export function registerPurchaseHistoryRoutes(app: Hono): void {
   app.get('/api/purchases', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     const requestedPage = parseNumericPage(new URL(c.req.url).searchParams, {
       cursorName: 'before_id',
       defaultLimit: PURCHASE_HISTORY_PAGE_LIMIT,

@@ -123,27 +123,41 @@ export function encodeShelfCursor(scope: ShelfCursorScope, position: ShelfCursor
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
 }
 
-export function decodeShelfCursor(cursor: string, scope: ShelfCursorScope): ShelfCursorPosition | null {
-  if (!cursor || cursor.length > MAX_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/.test(cursor)) return null
+export type ShelfCursorInspection =
+  | { kind: 'valid'; position: ShelfCursorPosition }
+  | { kind: 'invalid' }
+  | { kind: 'wrong_scope' }
+
+export function inspectShelfCursor(cursor: string, scope: ShelfCursorScope): ShelfCursorInspection {
+  if (!cursor || cursor.length > MAX_CURSOR_LENGTH || !/^[A-Za-z0-9_-]+$/.test(cursor)) return { kind: 'invalid' }
   let payload: unknown
   try {
     const decoded = Buffer.from(cursor, 'base64url')
-    if (decoded.toString('base64url') !== cursor) return null
+    if (decoded.toString('base64url') !== cursor) return { kind: 'invalid' }
     payload = JSON.parse(decoded.toString('utf8'))
   } catch {
-    return null
+    return { kind: 'invalid' }
   }
-  if (!Array.isArray(payload) || payload.length !== 9) return null
+  if (!Array.isArray(payload) || payload.length !== 9) return { kind: 'invalid' }
   const [version, q, tag, aisle, sort, pinned, votes, createdAt, id] = payload
-  if (version !== SHELF_CURSOR_VERSION || q !== scope.q || tag !== scope.tag || aisle !== scope.aisle || sort !== scope.sort)
-    return null
+  if (version !== SHELF_CURSOR_VERSION) return { kind: 'invalid' }
+  if ((q !== null && typeof q !== 'string') || (tag !== null && typeof tag !== 'string') ||
+      (aisle !== null && typeof aisle !== 'string') || (sort !== 'new' && sort !== 'karma'))
+    return { kind: 'invalid' }
   if (typeof pinned !== 'boolean' || typeof createdAt !== 'string' ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(createdAt) ||
       !Number.isFinite(Date.parse(createdAt)) || !Number.isInteger(id) || id < 1 || id > POSTGRES_INTEGER_MAX)
-    return null
-  if (scope.sort === 'karma') {
+    return { kind: 'invalid' }
+  if (sort === 'karma') {
     if (!Number.isInteger(votes) || Number(votes) < -POSTGRES_INTEGER_MAX - 1 || Number(votes) > POSTGRES_INTEGER_MAX)
-      return null
-  } else if (votes !== null) return null
-  return { pinned, votes: scope.sort === 'karma' ? Number(votes) : null, createdAt, id }
+      return { kind: 'invalid' }
+  } else if (votes !== null) return { kind: 'invalid' }
+  if (q !== scope.q || tag !== scope.tag || aisle !== scope.aisle || sort !== scope.sort)
+    return { kind: 'wrong_scope' }
+  return { kind: 'valid', position: { pinned, votes: sort === 'karma' ? Number(votes) : null, createdAt, id } }
+}
+
+export function decodeShelfCursor(cursor: string, scope: ShelfCursorScope): ShelfCursorPosition | null {
+  const inspected = inspectShelfCursor(cursor, scope)
+  return inspected.kind === 'valid' ? inspected.position : null
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   decodeShelfCursor,
+  inspectShelfCursor,
   encodeShelfCursor,
   finalizePage,
   parseNumericPage,
@@ -61,6 +62,8 @@ test('shelf cursors round-trip their composite order and are bound to the comple
   })
   assert.equal(decodeShelfCursor(encoded, { ...scope, q: 'different' }), null)
   assert.equal(decodeShelfCursor(encoded, { ...scope, sort: 'new' }), null)
+  assert.equal(inspectShelfCursor(encoded, { ...scope, q: 'different' }).kind, 'wrong_scope')
+  assert.equal(inspectShelfCursor('not+base64', scope).kind, 'invalid')
 
   for (const malformed of [
     '', 'not+base64', Buffer.from('[0]').toString('base64url'),
