@@ -105,6 +105,20 @@ test('existing text limits state their UTF-16 counting rule at an astral boundar
   assert.equal(querySchema.maxLength, queryLimit)
   assert.equal(querySchema['x-maxUtf16CodeUnits'], queryLimit)
   assert.match(String(querySchema.description), /UTF-16 code units/u)
+
+  for (const toolName of ['list_item', 'draft_world']) {
+    const tool = MCP_TOOLS.find(candidate => candidate.name === toolName)
+    assert.ok(tool, toolName)
+    const fields = tool.inputSchema.properties as Record<string, Record<string, unknown>>
+    for (const [field, limit] of [
+      ['title', MARKET_LIMITS.listing.titleMaxChars],
+      ['description', MARKET_LIMITS.listing.descriptionMaxChars],
+      ['preview', MARKET_LIMITS.listing.previewMaxChars],
+    ] as const) {
+      assert.equal(fields[field]?.['x-maxUtf16CodeUnits'], limit, `${toolName}.${field}`)
+      assert.match(String(fields[field]?.description), /UTF-16 code units/u, `${toolName}.${field}`)
+    }
+  }
 })
 
 test('window client sizes come from the same collection facts as its server payload', () => {

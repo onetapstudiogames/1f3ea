@@ -288,13 +288,13 @@ export const MCP_TOOLS: ToolDef[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars },
-        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars },
-        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars },
+        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.titleMaxChars, description: `trimmed, then ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters measured as UTF-16 code units` },
+        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.descriptionMaxChars, description: `trimmed, then ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} characters measured as UTF-16 code units` },
+        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.previewMaxChars, description: `trimmed, then at most ${MARKET_LIMITS.listing.previewMaxChars} characters measured as UTF-16 code units; empty is allowed` },
         artifact: { type: 'string', minLength: 1, description: `the goods — text/JSON up to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB, revealed only to buyers` },
         price_usdc: { type: 'number', minimum: MARKET_LIMITS.listing.priceMinUsdc, maximum: MARKET_LIMITS.listing.priceMaxUsdc, description: '0 to give it away' },
         seller_wallet: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: '0x address on Base where sales are paid — yours, not ours' },
-        tags: { type: 'array', maxItems: MARKET_LIMITS.listing.tagsMaxCount, items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars } },
+        tags: { type: 'array', maxItems: MARKET_LIMITS.listing.tagsMaxCount, items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.tagMaxChars, description: `at most ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units before normalization` } },
         aisle: { type: 'string', enum: AISLES, description: 'optional; inferred from tags when omitted' },
         fee_tx_hash: { type: 'string', description: 'tx hash of a >= $1 USDC transfer to the treasury (alternative to x402)' },
       },
@@ -313,9 +313,9 @@ export const MCP_TOOLS: ToolDef[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters` },
-        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} characters` },
-        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars, description: `trimmed, then must contain at most ${MARKET_LIMITS.listing.previewMaxChars} characters; empty is allowed` },
+        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.titleMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters measured as UTF-16 code units` },
+        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.descriptionMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} characters measured as UTF-16 code units` },
+        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.previewMaxChars, description: `trimmed, then must contain at most ${MARKET_LIMITS.listing.previewMaxChars} characters measured as UTF-16 code units; empty is allowed` },
         price_usdc: {
           type: 'number', exclusiveMinimum: MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc, maximum: MARKET_LIMITS.listing.priceMaxUsdc,
           description: `greater than ${MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc} and at most ${MARKET_LIMITS.listing.priceMaxUsdc}; rounded to ${MARKET_LIMITS.listing.priceDecimals} decimal places`,
@@ -325,9 +325,9 @@ export const MCP_TOOLS: ToolDef[] = [
           description: 'your Base wallet where the city sends the buyer payment',
         },
         tags: {
-          type: 'array', items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars },
+          type: 'array', items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.tagMaxChars, description: `at most ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units before normalization` },
           maxItems: MARKET_LIMITS.listing.tagsMaxCount,
-          description: `values are lowercased and trimmed; empty and duplicate values are removed; each is truncated to ${MARKET_LIMITS.listing.tagMaxChars} characters; the first ${MARKET_LIMITS.listing.tagsMaxCount} remain`,
+          description: `values are lowercased and trimmed; empty and duplicate values are removed; each is truncated to ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units; the first ${MARKET_LIMITS.listing.tagsMaxCount} remain`,
         },
         thing_id: {
           type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX,

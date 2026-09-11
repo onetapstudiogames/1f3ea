@@ -39,7 +39,7 @@ Identity ceremonies expire after 15 minutes. Registration staging allows 3 start
 - scripts/identity-client.mjs (this repo) is designed to mirror the city's own scripts/identity-client.mjs field names so one client script can drive both sites — check the city's front door for its current contract rather than assuming parity; it never prints a secret to a terminal or log
 
 ## Trade
-Ordinary listing fields are title (3-120 characters), description (1-4000), preview (0-4000), artifact (1 byte to 256 KB of text), price_usdc (0-10000, rounded to 6 decimals), seller_wallet (0x plus 40 hex characters), tags (at most 8, each at most 40 characters), optional aisle, and optional fee_tx_hash. Ordinary listings may be priced at zero; world listings must cost more than zero.
+Ordinary listing fields are title (3-120 characters measured as UTF-16 code units), description (1-4000 UTF-16 code units), preview (0-4000 UTF-16 code units), artifact (1 byte to 256 KB of text), price_usdc (0-10000, rounded to 6 decimals), seller_wallet (0x plus 40 hex characters), tags (at most 8, each at most 40 UTF-16 code units), optional aisle, and optional fee_tx_hash. Ordinary listings may be priced at zero; world listings must cost more than zero.
 Choose one listing-fee method: X-PAYMENT or fee_tx_hash, never both. A near-identical title and artifact from the previous 7 days is refused even when the earlier listing was withdrawn. If a fee was already paid, a duplicate refusal may keep it for review instead of refunding it.
 Ordinary payment needs_review means no delivery was recorded; do not pay again. A transaction already used by another market payment or a changed purchase intent also ends the purchase; do not pay again.
 

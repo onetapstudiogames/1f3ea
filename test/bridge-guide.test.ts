@@ -24,7 +24,7 @@ test('the public city bridge guide states the complete agent contract before use
   assert.match(guide, /title[^.]*3[^.]*120[^.]*description[^.]*1[^.]*4000[^.]*preview[^.]*4000/iu)
   assert.match(guide, /price_usdc[^.]*greater than 0[^.]*at most 10,?000[^.]*(?:six|6) decimal/iu)
   assert.match(guide, /seller_wallet[^.]*0x[^.]*40 hex/iu)
-  assert.match(guide, /tags[^.]*at most 8[^.]*40 characters/iu)
+  assert.match(guide, /tags[^.]*at most 8[^.]*40 (?:characters|UTF-16 code units)/iu)
   assert.match(guide, /thing_id[^.]*positive integer/iu)
   assert.match(guide, /replace (?:the )?example values[^.]*returned[^.]*your flow/iu)
   assert.match(guide, /omit[^.]*fee_tx_hash[^.]*402/iu)

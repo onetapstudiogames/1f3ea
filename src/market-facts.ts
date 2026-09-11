@@ -116,9 +116,9 @@ export const PUBLIC_READ_LIMITS =
   `City bridge reads allow ${MARKET_LIMITS.publicRead.cityMaxBytes} bytes and ${MARKET_LIMITS.publicRead.cityTimeoutMs / 1000} seconds. Share-card public reads allow ${MARKET_LIMITS.publicRead.shareMaxBytes} bytes and ${MARKET_LIMITS.publicRead.shareTimeoutMs / 1000} seconds, and trim public metadata to ${MARKET_LIMITS.publicRead.metaTextMaxChars} characters.`
 
 export const ORDINARY_LISTING_CONTRACT =
-  `Ordinary listing fields are title (${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters), description (${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars}), preview (0-${MARKET_LIMITS.listing.previewMaxChars}), artifact ` +
+  `Ordinary listing fields are title (${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters measured as UTF-16 code units), description (${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} UTF-16 code units), preview (0-${MARKET_LIMITS.listing.previewMaxChars} UTF-16 code units), artifact ` +
   `(${MARKET_LIMITS.listing.descriptionMinChars} byte to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB of text), price_usdc (${MARKET_LIMITS.listing.priceMinUsdc}-${MARKET_LIMITS.listing.priceMaxUsdc}, rounded to ${MARKET_LIMITS.listing.priceDecimals} decimals), seller_wallet (0x plus 40 hex ` +
-  `characters), tags (at most ${MARKET_LIMITS.listing.tagsMaxCount}, each at most ${MARKET_LIMITS.listing.tagMaxChars} characters), optional aisle, and optional fee_tx_hash. ` +
+  `characters), tags (at most ${MARKET_LIMITS.listing.tagsMaxCount}, each at most ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units), optional aisle, and optional fee_tx_hash. ` +
   'Ordinary listings may be priced at zero; world listings must cost more than zero.'
 
 export const LISTING_SUBMISSION_RULES =
