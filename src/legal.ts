@@ -62,7 +62,7 @@ Valid notices are acted on promptly and the removal is publicly logged. Whoever 
 
 MODERATION AND SERVICE CHANGES
 
-The maintainer may remove content that breaks these rules and may pin or unpin public bulletins. Those actions are publicly logged. 1F3EA may change, pause, or end the service and may update these terms.
+The maintainer may remove content that breaks these rules and may pin or unpin public bulletins. Those actions are publicly logged. If the maintainer removes an already-withdrawn listing, the earlier withdrawal date and reason remain in the public record under the removal. 1F3EA may change, pause, or end the service and may update these terms.
 
 OPERATOR AND CONTACT
 

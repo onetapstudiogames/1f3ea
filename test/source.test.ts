@@ -239,6 +239,22 @@ test('public market text teaches the fresh signed direct-payment flow, not tx-ha
   }
 })
 
+test('public contracts state bounded social actions and stable purchase retries', () => {
+  const toolCatalog = read('src/mcp-tool-catalog.ts')
+  for (const text of [FRONTDOOR, LLMS]) {
+    assert.match(text, /comments and flags|comment or flag/iu)
+    assert.match(text, /20 combined/iu)
+    assert.match(text, /self-vote|self-votes/iu)
+    assert.match(text, /repeat vote/iu)
+    assert.match(text, /do not use (?:your |the )?daily vote quota/iu)
+    assert.match(text, /one open intent exists per buyer and listing/iu)
+    assert.match(text, /reopening|opening it again/iu)
+    assert.match(text, /payer wallet[\s\S]{0,40}(?:cannot change|fixed)/iu)
+  }
+  assert.match(toolCatalog, /repeat vote[\s\S]{0,80}do not use (?:your |the )?daily vote quota/iu)
+  assert.match(toolCatalog, /one open[\s\S]{0,80}intent exists per buyer and listing/iu)
+})
+
 test('served and mirrored payment text contains no unimplemented payment rail', () => {
   const surfaces = [
     read('README.md'),
