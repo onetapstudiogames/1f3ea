@@ -1,4 +1,6 @@
-export const DIRECT_PURCHASE_INTENT_TTL_MS = 10 * 60 * 1000
+import { MARKET_LIMITS } from './market-facts.ts'
+
+export const DIRECT_PURCHASE_INTENT_TTL_MS = MARKET_LIMITS.purchase.directIntentMinutes * 60 * 1000
 
 export interface DirectPurchaseIntent {
   readonly id: number

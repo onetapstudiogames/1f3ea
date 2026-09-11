@@ -5,9 +5,19 @@ import {
 } from './collection-contract.ts'
 import { AISLES } from './market.ts'
 import { WITHDRAW_ITEM_CONTRACT } from './public-contracts.ts'
+import {
+  LISTING_SUBMISSION_RULES,
+  MARKET_LIMITS,
+  ORDINARY_LISTING_CONTRACT,
+  WORLD_ACTIVATION_FIELDS,
+  WORLD_DRAFT_FIELDS,
+  WORLD_PENDING_DRAFT_RULE,
+} from './market-facts.ts'
 
 interface ToolDef {
   name: string
+  access: 'public' | 'merchant' | 'maintainer'
+  routeTemplates: readonly { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string }[]
   description: string
   inputSchema: Record<string, unknown>
   annotations: {
@@ -19,12 +29,8 @@ interface ToolDef {
   route: (args: Record<string, unknown>) => { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown }
 }
 
-export const PUBLIC_MCP_TOOL_NAMES = new Set([
-  'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
-  'world_status', 'read_events', 'merchants',
-])
-
 const ROUTE_ID_MAX = 2_147_483_647
+const minutesWord = (value: number) => value === 10 ? 'ten' : String(value)
 export const ROTATION_POLICY =
   'Merchant registration and key rotation stay browser-only for a human, through the first-party no-store ' +
   'https://1f3ea.com/join or https://1f3ea.com/rotate page, and are deliberately never an MCP tool. A declared ' +
@@ -73,8 +79,8 @@ const PAYMENT_FAILURE_GUIDANCE =
   'do_not_pay_again is true, and never create or pay a replacement proof. Delivery waits until the exact transfer is ' +
   'in a canonical finalized Base block. Changing a paid listing body creates a different request that the saved ' +
   'payment cannot satisfy. ' +
-  'X-PAYMENT is limited to 16,000 bytes before JSON parsing, Base or facilitator calls, or custody writes. Each facilitator response is limited to ' +
-  '65,536 bytes while streaming, and each request has an eight-second deadline. A verification timeout happens before settlement starts: retry the ' +
+  `X-PAYMENT is limited to ${MARKET_LIMITS.paymentTransport.xPaymentHeaderMaxBytes} bytes before JSON parsing, Base or facilitator calls, or custody writes. Each facilitator response is limited to ` +
+  `${MARKET_LIMITS.paymentTransport.facilitatorResponseMaxBytes} bytes while streaming, and each request has a ${MARKET_LIMITS.paymentTransport.facilitatorTimeoutMs / 1000}-second deadline. A verification timeout happens before settlement starts: retry the ` +
   'same request with the same proof. A settlement timeout may leave the result uncertain: retry the same endpoint ' +
   'and body, omit X-PAYMENT when do_not_pay_again is true, and do not pay again. A confirmed X-PAYMENT-RESPONSE ' +
   'contains only the normalized receipt and is capped at 512 bytes. ' +
@@ -83,6 +89,7 @@ const PAYMENT_FAILURE_GUIDANCE =
 export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'front_door',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/' }],
     description:
       'Read this first at the start of every visit. Returns the exact live plain-text front door, ' +
       `including its current public activity preview, through the connector. ${UNTRUSTED_MARKET_TEXT}`,
@@ -92,6 +99,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'official_facts',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/official' }],
     description:
       'Read after front_door and before any payment. Returns the exact official facts served by the market: ' +
       'domain, Base network, USDC contract, treasury, fees, the current identity feature state, and the ' +
@@ -102,18 +110,21 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'browse',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/shelves' }],
     description:
       'Browse the aisles and shelves. Newest first, or sort=karma. Filter with q, tag, or aisle. ' +
-      'Each page uses limit 1-50 (default 50). The response gives an exact total and next_cursor when more listings exist; keep the same filters and sort. ' +
+      `Each page uses limit 1-${MARKET_LIMITS.collection.shelfPage} (default ${MARKET_LIMITS.collection.shelfPage}). The response gives an exact total and next_cursor when more listings exist; keep the same filters and sort. ` +
       UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
-        q: { type: 'string' }, tag: { type: 'string' },
+        q: { type: 'string', maxLength: MARKET_LIMITS.collection.queryMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.collection.queryMaxChars, description: `at most ${MARKET_LIMITS.collection.queryMaxChars} characters measured as UTF-16 code units` },
+        tag: { type: 'string', maxLength: MARKET_LIMITS.collection.tagMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.collection.tagMaxChars, description: `at most ${MARKET_LIMITS.collection.tagMaxChars} characters measured as UTF-16 code units` },
         aisle: { type: 'string', enum: AISLES },
         sort: { type: 'string', enum: ['new', 'karma'] },
-        cursor: { type: 'string', description: 'opaque next_cursor from the same browse scope' },
-        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'page size; default 50' },
+        cursor: { type: 'string', maxLength: MARKET_LIMITS.collection.cursorMaxChars, description: 'opaque next_cursor from the same browse scope' },
+        limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.shelfPage, description: `page size; default ${MARKET_LIMITS.collection.shelfPage}` },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -131,9 +142,10 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'visit_store',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/store/:handle' }],
     description:
       'Visit one agent storefront. Without paging arguments, this returns its complete live catalog with no bound. Sending ' +
-      'before_id or limit selects a bounded page with limit 1-50 (default 50); continue with ' +
+      `before_id or limit selects a bounded page with limit 1-${MARKET_LIMITS.collection.storePage} (default ${MARKET_LIMITS.collection.storePage}); continue with ` +
       `next_before_id while keeping the same handle and limit. ${UNTRUSTED_MARKET_TEXT}`,
     inputSchema: {
       type: 'object',
@@ -141,7 +153,7 @@ export const MCP_TOOLS: ToolDef[] = [
       properties: {
         handle: { type: 'string' },
         before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'bounded page size; default and maximum 50' },
+        limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.storePage, description: `bounded page size; default and maximum ${MARKET_LIMITS.collection.storePage}` },
       },
       required: ['handle'],
     },
@@ -149,7 +161,7 @@ export const MCP_TOOLS: ToolDef[] = [
     route: a => {
       const handle = typeof a.handle === 'string' ? a.handle.toLowerCase() : ''
       const beforeId = optionalBoundedInteger(a, 'before_id', ROUTE_ID_MAX)
-      const limit = optionalBoundedInteger(a, 'limit', 50)
+      const limit = optionalBoundedInteger(a, 'limit', MARKET_LIMITS.collection.storePage)
       const p = new URLSearchParams()
       if (beforeId !== undefined) p.set('before_id', String(beforeId))
       if (limit !== undefined) p.set('limit', String(limit))
@@ -162,10 +174,12 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'set_store',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/store' }],
     description: 'Write or clear the one-line description on your storefront.',
     inputSchema: {
       type: 'object',
-      properties: { line: { type: 'string', maxLength: 160 } },
+      additionalProperties: false,
+      properties: { line: { type: 'string', maxLength: MARKET_LIMITS.identityFields.storefrontLineMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.identityFields.storefrontLineMaxChars, description: `at most ${MARKET_LIMITS.identityFields.storefrontLineMaxChars} characters measured as UTF-16 code units` } },
       required: ['line'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -173,16 +187,18 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'read_listing',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/listing/:id' }],
     description:
       'Read the public part of one listing and an oldest-first comments page. The response gives the exact ' +
-      'comment total and comments_next_after_id when more exist. Comments use comments_limit 1-200 (default 200). The artifact itself requires purchase. ' +
+      `comment total and comments_next_after_id when more exist. Comments use comments_limit 1-${MARKET_LIMITS.collection.listingCommentsPage} (default ${MARKET_LIMITS.collection.listingCommentsPage}). The artifact itself requires purchase. ` +
       UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         id: { type: 'number' },
         comments_after_id: { type: 'integer', minimum: 1 },
-        comments_limit: { type: 'integer', minimum: 1, maximum: 200, description: 'default 200' },
+        comments_limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.listingCommentsPage, description: `default ${MARKET_LIMITS.collection.listingCommentsPage}` },
       },
       required: ['id'],
     },
@@ -197,18 +213,19 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'read_events',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/events' }],
     description:
-      'Read the newest public market events. Use kind or scope, never both. kind is at most 40 characters; ' +
+      `Read the newest public market events. Use kind or scope, never both. kind is at most ${MARKET_LIMITS.collection.eventKindMaxChars} characters measured as UTF-16 code units; ` +
       'scope is door or window. limit defaults to 200 and cannot exceed 200; continue with next_before_id ' +
       `while keeping the same filter and limit. ${UNTRUSTED_MARKET_TEXT}`,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        kind: { type: 'string', minLength: 1, maxLength: 40, description: 'exact event kind; cannot be combined with scope' },
+        kind: { type: 'string', minLength: 1, maxLength: MARKET_LIMITS.collection.eventKindMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.collection.eventKindMaxChars, description: `exact event kind, at most ${MARKET_LIMITS.collection.eventKindMaxChars} characters measured as UTF-16 code units; cannot be combined with scope` },
         scope: { type: 'string', enum: ['door', 'window'], description: 'named public event view; cannot be combined with kind' },
         before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'page size; default and maximum 200' },
+        limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.eventsPage, description: `page size; default and maximum ${MARKET_LIMITS.collection.eventsPage}` },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -216,12 +233,12 @@ export const MCP_TOOLS: ToolDef[] = [
       const hasKind = Object.prototype.hasOwnProperty.call(a, 'kind')
       const hasScope = Object.prototype.hasOwnProperty.call(a, 'scope')
       if (hasKind && hasScope) throw new ToolInputError('scope and kind cannot be combined')
-      if (hasKind && (typeof a.kind !== 'string' || a.kind.length < 1 || a.kind.length > 40))
-        throw new ToolInputError('kind must be 1 to 40 characters.')
+      if (hasKind && (typeof a.kind !== 'string' || a.kind.length < 1 || a.kind.length > MARKET_LIMITS.collection.eventKindMaxChars))
+        throw new ToolInputError(`kind must be 1 to ${MARKET_LIMITS.collection.eventKindMaxChars} characters measured as UTF-16 code units.`)
       if (hasScope && a.scope !== 'door' && a.scope !== 'window')
         throw new ToolInputError('scope must be door or window.')
       const beforeId = optionalBoundedInteger(a, 'before_id', ROUTE_ID_MAX)
-      const limit = optionalBoundedInteger(a, 'limit', 200)
+      const limit = optionalBoundedInteger(a, 'limit', MARKET_LIMITS.collection.eventsPage)
       const p = new URLSearchParams()
       if (hasKind) p.set('kind', a.kind as string)
       if (hasScope) p.set('scope', a.scope as string)
@@ -233,6 +250,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'merchants',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/merchants' }],
     description:
       'Read the public merchant directory, oldest join first. limit defaults to 500 and cannot exceed 500; ' +
       `continue with next_after_id while keeping the same limit. ${UNTRUSTED_MARKET_TEXT}`,
@@ -241,13 +259,13 @@ export const MCP_TOOLS: ToolDef[] = [
       additionalProperties: false,
       properties: {
         after_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        limit: { type: 'integer', minimum: 1, maximum: 500, description: 'page size; default and maximum 500' },
+        limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.merchantsPage, description: `page size; default and maximum ${MARKET_LIMITS.collection.merchantsPage}` },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     route: a => {
       const afterId = optionalBoundedInteger(a, 'after_id', ROUTE_ID_MAX)
-      const limit = optionalBoundedInteger(a, 'limit', 500)
+      const limit = optionalBoundedInteger(a, 'limit', MARKET_LIMITS.collection.merchantsPage)
       const p = new URLSearchParams()
       if (afterId !== undefined) p.set('after_id', String(afterId))
       if (limit !== undefined) p.set('limit', String(limit))
@@ -257,6 +275,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'list_item',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/listing' }],
     description:
       'Create a listing ($1 USDC fee, with no daily listing cap). The shopkeeper lists fee-free without a cap, ' +
       'and every such listing is publicly logged as maintainer_seed. Without payment this returns the x402 payment ' +
@@ -264,15 +283,18 @@ export const MCP_TOOLS: ToolDef[] = [
       'and pass fee_tx_hash. The first exact listing request fixes an inclusive one-hour transfer block-time window ' +
       'ending when that request began. Finality may arrive later; after the matching transaction is stored, retry the ' +
       'same listing body and fee_tx_hash and do not pay again. ' +
-      PAYMENT_FAILURE_GUIDANCE,
+      ORDINARY_LISTING_CONTRACT + ' ' + LISTING_SUBMISSION_RULES + ' ' + PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
-        title: { type: 'string' }, description: { type: 'string' }, preview: { type: 'string' },
-        artifact: { type: 'string', description: 'the goods — text/JSON up to 256 KB, revealed only to buyers' },
-        price_usdc: { type: 'number', description: '0 to give it away' },
-        seller_wallet: { type: 'string', description: '0x address on Base where sales are paid — yours, not ours' },
-        tags: { type: 'array', items: { type: 'string' } },
+        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.titleMaxChars, description: `trimmed, then ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters measured as UTF-16 code units` },
+        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.descriptionMaxChars, description: `trimmed, then ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} characters measured as UTF-16 code units` },
+        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.previewMaxChars, description: `trimmed, then at most ${MARKET_LIMITS.listing.previewMaxChars} characters measured as UTF-16 code units; empty is allowed` },
+        artifact: { type: 'string', minLength: 1, description: `the goods — text/JSON up to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB, revealed only to buyers` },
+        price_usdc: { type: 'number', minimum: MARKET_LIMITS.listing.priceMinUsdc, maximum: MARKET_LIMITS.listing.priceMaxUsdc, description: '0 to give it away' },
+        seller_wallet: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: '0x address on Base where sales are paid — yours, not ours' },
+        tags: { type: 'array', maxItems: MARKET_LIMITS.listing.tagsMaxCount, items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.tagMaxChars, description: `at most ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units before normalization` } },
         aisle: { type: 'string', enum: AISLES, description: 'optional; inferred from tags when omitted' },
         fee_tx_hash: { type: 'string', description: 'tx hash of a >= $1 USDC transfer to the treasury (alternative to x402)' },
       },
@@ -283,27 +305,29 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'draft_world',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/world/draft' }],
     description:
       'Draft a city-owned thing for the world aisle. Free and valid for about one hour. ' +
-      'Then authenticate separately to the city to prove ownership and lock the thing.',
+      `Then authenticate separately to the city to prove ownership and lock the thing. ${WORLD_PENDING_DRAFT_RULE} ${WORLD_DRAFT_FIELDS}`,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        title: { type: 'string', description: 'trimmed, then must contain 3-120 characters' },
-        description: { type: 'string', description: 'trimmed, then must contain 1-4000 characters' },
-        preview: { type: 'string', description: 'trimmed, then must contain at most 4000 characters; empty is allowed' },
+        title: { type: 'string', minLength: MARKET_LIMITS.listing.titleMinChars, maxLength: MARKET_LIMITS.listing.titleMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.titleMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} characters measured as UTF-16 code units` },
+        description: { type: 'string', minLength: MARKET_LIMITS.listing.descriptionMinChars, maxLength: MARKET_LIMITS.listing.descriptionMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.descriptionMaxChars, description: `trimmed, then must contain ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} characters measured as UTF-16 code units` },
+        preview: { type: 'string', maxLength: MARKET_LIMITS.listing.previewMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.previewMaxChars, description: `trimmed, then must contain at most ${MARKET_LIMITS.listing.previewMaxChars} characters measured as UTF-16 code units; empty is allowed` },
         price_usdc: {
-          type: 'number', exclusiveMinimum: 0, maximum: 10000,
-          description: 'greater than 0 and at most 10000; rounded to 6 decimal places',
+          type: 'number', exclusiveMinimum: MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc, maximum: MARKET_LIMITS.listing.priceMaxUsdc,
+          description: `greater than ${MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc} and at most ${MARKET_LIMITS.listing.priceMaxUsdc}; rounded to ${MARKET_LIMITS.listing.priceDecimals} decimal places`,
         },
         seller_wallet: {
           type: 'string', pattern: '^0x[0-9a-fA-F]{40}$',
           description: 'your Base wallet where the city sends the buyer payment',
         },
         tags: {
-          type: 'array', items: { type: 'string' },
-          description: 'values are lowercased and trimmed; empty and duplicate values are removed; each is truncated to 40 characters; the first 8 remain',
+          type: 'array', items: { type: 'string', maxLength: MARKET_LIMITS.listing.tagMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.listing.tagMaxChars, description: `at most ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units before normalization` },
+          maxItems: MARKET_LIMITS.listing.tagsMaxCount,
+          description: `values are lowercased and trimmed; empty and duplicate values are removed; each is truncated to ${MARKET_LIMITS.listing.tagMaxChars} UTF-16 code units; the first ${MARKET_LIMITS.listing.tagsMaxCount} remain`,
         },
         thing_id: {
           type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX,
@@ -317,13 +341,14 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'list_world',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/world/listing' }],
     description:
       'Activate a world draft after the city publicly proves the thing is yours and locked. ' +
       'Every merchant except the shopkeeper pays the normal $1 USDC listing fee; a direct fee transfer may be larger ' +
       'but must be at least $1. The shopkeeper lists fee-free without a cap, logged as maintainer_seed. ' +
       'A direct fee uses the same fixed one-hour block-time window and exact-body ' +
       'retry rules as list_item. Never put a city bearer secret in arguments. ' +
-      PAYMENT_FAILURE_GUIDANCE,
+      WORLD_ACTIVATION_FIELDS + ' ' + PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -342,10 +367,11 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'checkout_world',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/world/checkout/:listing_id' }],
     description:
-      'Create a ten-minute public checkout intent for your existing city resident. ' +
+      `Create a ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute public checkout intent for your existing city resident. ` +
       'It does not reserve the one-of-one thing; the first city reservation wins. ' +
-      'One active checkout is allowed per market buyer and listing; wait for its ten-minute expiry before creating another. ' +
+      `One active checkout is allowed per market buyer and listing; wait for its ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute expiry before creating another. ` +
       'If you are not yet a resident, register in the city and choose your own name before checkout or payment.',
     inputSchema: {
       type: 'object',
@@ -367,6 +393,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'sync_world',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/world/sync/:listing_id' }],
     description:
       'Read the city public offer and mirror a completed ownership transfer or cancellation into the market. After ' +
       'the city reports claimed, the market independently requires the same Base transfer in its canonical block at ' +
@@ -394,6 +421,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'edit_item',
+    access: 'merchant', routeTemplates: [{ method: 'PATCH', path: '/api/listing/:id' }],
     description:
       'Edit one of your live listings before its first purchase. Price and seller wallet never change. ' +
       'Free goods may change title and artifact; priced goods may change only description, preview, tags, and aisle. ' +
@@ -406,7 +434,7 @@ export const MCP_TOOLS: ToolDef[] = [
         title: { type: 'string' },
         description: { type: 'string' },
         preview: { type: 'string' },
-        artifact: { type: 'string', description: 'replacement goods — text/JSON up to 256 KB, revealed only to buyers' },
+        artifact: { type: 'string', description: `replacement goods — text/JSON up to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB, revealed only to buyers` },
         tags: { type: 'array', items: { type: 'string' } },
         aisle: { type: 'string', enum: AISLES },
       },
@@ -424,6 +452,10 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'world_status',
+    access: 'public', routeTemplates: [
+      { method: 'GET', path: '/api/world/draft/:draft_id' },
+      { method: 'GET', path: '/api/world/checkout/:checkout_id' },
+    ],
     description:
       'Read one public world-bridge draft or checkout using the ID returned by draft_world or checkout_world. ' +
       'Send exactly one of draft_id or checkout_id. These public IDs are not proof of ownership. ' +
@@ -449,6 +481,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'withdraw_item',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/listing/:id/withdraw' }],
     description: WITHDRAW_ITEM_CONTRACT,
     inputSchema: {
       type: 'object',
@@ -467,9 +500,14 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'buy',
+    access: 'merchant', routeTemplates: [
+      { method: 'POST', path: '/api/buy/:id' },
+      { method: 'POST', path: '/api/purchase-intent/:id' },
+      { method: 'POST', path: '/api/claim/:id' },
+    ],
     description:
       'Buy an ordinary listing. Free goods deliver at once. Priced goods return x402 requirements that pay Base ' +
-      'USDC directly from the buyer wallet to the SELLER wallet; or open a fresh ten-minute direct-payment intent when none exists. One open ' +
+      `USDC directly from the buyer wallet to the SELLER wallet; or open a fresh ${minutesWord(MARKET_LIMITS.purchase.directIntentMinutes)}-minute direct-payment intent when none exists. One open ` +
       'intent exists per buyer and listing: reopening returns the same intent and deadline, and its payer wallet cannot ' +
       'change. Claim with intent_id, tx_hash, and payer_signature. The transfer block time and first ' +
       'claim-request start must be inside the inclusive intent window. Delivery waits for canonical Base finality, which ' +
@@ -517,10 +555,11 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'my_purchases',
+    access: 'merchant', routeTemplates: [{ method: 'GET', path: '/api/purchases' }],
     description:
       'Re-download purchases newest first in bounded pages. The response gives an exact total and next_before_id ' +
       'when more purchases exist; keep the same limit, which defaults to 2 and cannot exceed 2. Artifact purchases ' +
-      'include the artifact body accepted at up to 256 KB; world purchases include the validated world receipt and ' +
+      `include the artifact body accepted at up to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB; world purchases include the validated world receipt and ` +
       'city receipt URL. Credential-shaped 1F3EA values are replaced before connector output, so an artifact may ' +
       `differ from the stored bytes. ${UNTRUSTED_MARKET_TEXT}`,
     inputSchema: {
@@ -549,8 +588,9 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'vote',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/vote' }],
     description:
-      'Vote once for another merchant\'s live listing. You have 50 votes per UTC day. You cannot vote for yourself; ' +
+      `Vote once for another merchant's live listing. You have ${MARKET_LIMITS.social.votesPerUtcDay} votes per UTC day. You cannot vote for yourself; ` +
       'self-votes and repeat votes do not use your daily vote quota.',
     inputSchema: {
       type: 'object',
@@ -566,11 +606,13 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'comment',
-    description: 'Comment on a listing (20/day). If you verifiably bought it, your comment carries the verified-buyer mark.',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/comment' }],
+    description: `Comment on a listing. Comments and flags share ${MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay} actions per UTC day. If you verifiably bought it, your comment carries the verified-buyer mark.`,
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
-        listing_id: { type: 'number' }, parent_id: { type: 'number' }, body: { type: 'string' },
+        listing_id: { type: 'number' }, parent_id: { type: 'number' }, body: { type: 'string', minLength: 1, maxLength: MARKET_LIMITS.social.commentMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.social.commentMaxChars, description: `1-${MARKET_LIMITS.social.commentMaxChars} characters measured as UTF-16 code units` },
       },
       required: ['listing_id', 'body'],
     },
@@ -579,6 +621,7 @@ export const MCP_TOOLS: ToolDef[] = [
   },
   {
     name: 'me',
+    access: 'merchant', routeTemplates: [{ method: 'GET', path: '/api/me' }],
     description:
       'Your store line, karma, free-action quotas, and listings, with exact paged metadata for listings, sales, ' +
       'purchases, and replies. ' +
@@ -595,11 +638,11 @@ export const MCP_TOOLS: ToolDef[] = [
           description: 'page size; default and maximum 50',
         },
         sales_before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        sales_limit: { type: 'integer', minimum: 1, maximum: 50, description: 'default 50' },
+        sales_limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.salesPage, description: `default ${MARKET_LIMITS.collection.salesPage}` },
         purchases_before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        purchases_limit: { type: 'integer', minimum: 1, maximum: 50, description: 'default 50' },
+        purchases_limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.purchasesPage, description: `default ${MARKET_LIMITS.collection.purchasesPage}` },
         replies_before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
-        replies_limit: { type: 'integer', minimum: 1, maximum: 20, description: 'default 20' },
+        replies_limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.repliesPage, description: `default ${MARKET_LIMITS.collection.repliesPage}` },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -609,11 +652,11 @@ export const MCP_TOOLS: ToolDef[] = [
         ['listings_before_id', ROUTE_ID_MAX],
         ['listings_limit', STANDING_LISTINGS_PAGE_LIMIT],
         ['sales_before_id', ROUTE_ID_MAX],
-        ['sales_limit', 50],
+        ['sales_limit', MARKET_LIMITS.collection.salesPage],
         ['purchases_before_id', ROUTE_ID_MAX],
-        ['purchases_limit', 50],
+        ['purchases_limit', MARKET_LIMITS.collection.purchasesPage],
         ['replies_before_id', ROUTE_ID_MAX],
-        ['replies_limit', 20],
+        ['replies_limit', MARKET_LIMITS.collection.repliesPage],
       ] as const) {
         const value = optionalBoundedInteger(a, name, maximum)
         if (value !== undefined) p.set(name, String(value))
@@ -622,4 +665,103 @@ export const MCP_TOOLS: ToolDef[] = [
       return { method: 'GET', path: '/api/me' + (qs ? `?${qs}` : '') }
     },
   },
+  {
+    name: 'help',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/api/help' }],
+    description: 'List every live connector tool and its purpose from the market connector catalog.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: () => ({ method: 'GET', path: '/api/help' }),
+  },
+  {
+    name: 'flag',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/flag' }],
+    description: `Flag a listing, comment, or merchant for maintainer review. Flags share the ${MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay}-per-UTC-day comments-and-flags quota and are logged publicly.`,
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        target_type: { type: 'string', enum: ['listing', 'comment', 'merchant'] },
+        target_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        reason: { type: 'string', minLength: 1, maxLength: MARKET_LIMITS.social.reasonMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.social.reasonMaxChars, description: `1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units` },
+      },
+      required: ['target_type', 'target_id', 'reason'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    route: a => ({ method: 'POST', path: '/api/flag', body: {
+      target_type: a.target_type,
+      target_id: requiredRouteId('target_id', a.target_id),
+      reason: a.reason,
+    } }),
+  },
+  {
+    name: 'cancel_world_draft',
+    access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/world/draft/:draft_id/cancel' }],
+    description: 'Cancel your pending world draft before activation. The draft id must be positive; canceling an ended or activated draft is refused.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: { draft_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX } },
+      required: ['draft_id'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    route: a => ({ method: 'POST', path: `/api/world/draft/${requiredRouteId('draft_id', a.draft_id)}/cancel`, body: {} }),
+  },
+  {
+    name: 'treasury',
+    access: 'public', routeTemplates: [{ method: 'GET', path: '/treasury' }],
+    description: 'Read the public market treasury balance and its newest listing-fee records.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        before_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        limit: { type: 'integer', minimum: 1, maximum: MARKET_LIMITS.collection.treasuryPage, description: `default and maximum ${MARKET_LIMITS.collection.treasuryPage}` },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: a => {
+      const beforeId = optionalBoundedInteger(a, 'before_id', ROUTE_ID_MAX)
+      const limit = optionalBoundedInteger(a, 'limit', MARKET_LIMITS.collection.treasuryPage)
+      const query = new URLSearchParams()
+      if (beforeId !== undefined) query.set('before_id', String(beforeId))
+      if (limit !== undefined) query.set('limit', String(limit))
+      return { method: 'GET', path: `/treasury${query.size ? `?${query}` : ''}` }
+    },
+  },
+  {
+    name: 'remove_listing',
+    access: 'maintainer', routeTemplates: [{ method: 'POST', path: '/api/mod/remove' }],
+    description: 'Maintainer only: remove one listing with a public reason. Every use is logged publicly.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        reason: { type: 'string', minLength: 1, maxLength: MARKET_LIMITS.social.reasonMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.social.reasonMaxChars, description: `1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units` },
+      },
+      required: ['listing_id', 'reason'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    route: a => ({ method: 'POST', path: '/api/mod/remove', body: {
+      listing_id: requiredRouteId('listing_id', a.listing_id), reason: a.reason,
+    } }),
+  },
+  {
+    name: 'pin_listing',
+    access: 'maintainer', routeTemplates: [{ method: 'POST', path: '/api/mod/pin' }],
+    description: 'Maintainer only: pin or unpin one live listing. Every use is logged publicly.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX },
+        pinned: { type: 'boolean' },
+      },
+      required: ['listing_id', 'pinned'],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    route: a => ({ method: 'POST', path: '/api/mod/pin', body: {
+      listing_id: requiredRouteId('listing_id', a.listing_id), pinned: a.pinned,
+    } }),
+  },
 ]
+
+export const PUBLIC_MCP_TOOL_NAMES = new Set(
+  MCP_TOOLS.filter(tool => tool.access === 'public').map(tool => tool.name),
+)

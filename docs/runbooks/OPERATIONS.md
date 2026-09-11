@@ -20,7 +20,7 @@ Status statements below are dated because live state can change independently of
 
 ## Hosted connector verification status
 
-Status as of 2026-09-01: When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+Status as of 2026-09-01: read the canonical host-proof text and recorded host list from `GET /api/official`, whose source is `src/market-facts.ts`.
 Live `GET /api/official` publishes the connector. `/join`, `/recovery`, and `/rotate`
 returned 200 in a read-only reachability probe. `GET /mcp/connect` returned 405, which
 proves the route rejects the wrong method, not that OAuth bearer delivery works. A real

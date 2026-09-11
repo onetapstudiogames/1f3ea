@@ -1,12 +1,14 @@
 import type { Hono } from 'hono'
 
 import { sql } from './db.ts'
+import { mountChangelogRoutes } from './changelog.ts'
 import { FRONTDOOR, HUMANS, LLMS, ROBOTS } from './door.ts'
 import { mountHumanPages } from './human-pages.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { formatActivity, PUBLIC_EVENT_SCOPES, type ActivityEvent } from './market.ts'
+import { agentHelp } from './market-help.ts'
 import { countedPage, type CountedRow } from './public-pagination.ts'
-import { windowCard, windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
+import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 
 export function registerDoorRoutes(app: Hono): void {
   app.get('/', async c => {
@@ -37,18 +39,20 @@ export function registerDoorRoutes(app: Hono): void {
     }
   })
   app.get('/llms.txt', c => c.text(LLMS))
+  app.get('/api/help', agentHelp)
   app.get('/robots.txt', c => c.text(ROBOTS))
   app.get('/humans.txt', c => c.text(HUMANS))
   app.get('/privacy', c => c.text(PRIVACY))
   app.get('/terms', c => c.text(TERMS))
   app.get('/support', c => c.text(SUPPORT))
   mountHumanPages(app)
+  mountChangelogRoutes(app)
   app.get('/window', c => windowPage(c, async path => app.request(path, {
     method: 'GET',
     headers: { Accept: 'application/json' },
   })))
   app.get('/window.css', windowStyle)
   app.get('/window.js', windowScript)
-  app.get('/window-card.png', windowCard)
+  app.get('/window-card.png', c => c.redirect('/og-image.png', 308))
   app.get('/api/window', windowSnapshot)
 }

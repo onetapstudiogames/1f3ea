@@ -300,6 +300,13 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     facts.textContent = String(Math.trunc(safeNumber(listing.sales))) + ' pickups · ' +
       String(Math.trunc(safeNumber(listing.votes))) + ' votes · stocked ' + formatDate(listing.created_at)
     article.append(facts)
+    const cityOfferUrl = world ? safeCityOfferUrl(listing.city_offer_url) : null
+    if (cityOfferUrl) {
+      const cityOfferLink = element('a', 'text-button', 'Open the public city offer')
+      cityOfferLink.href = cityOfferUrl
+      cityOfferLink.rel = 'external noopener'
+      article.append(detailSection('CITY OFFER', cityOfferLink, 'detail-section--notice'))
+    }
     if (world && stateName === 'live') {
       article.append(detailSection(
         'DELIVERY',
@@ -535,7 +542,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     const merchants = payload.merchants
     if (merchants.length > MERCHANT_PAGE_SIZE || merchants.some(merchant =>
       !merchant || typeof merchant !== 'object' || !safeHandle(merchant.handle))) throw contractFailure()
-    const merchantTotal = payload.merchant_total
+    const merchantTotal = payload.merchants_total
     requireBoundedRows(merchantTotal, merchants, MERCHANT_PAGE_SIZE)
     const events = payload.events
     if (events.length > EVENT_PAGE_SIZE) throw contractFailure()

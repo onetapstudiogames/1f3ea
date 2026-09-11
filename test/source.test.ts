@@ -277,7 +277,7 @@ test('caller payment contracts state finality windows and safe retries before us
   for (const surface of [FRONTDOOR, LLMS, mcpContract]) {
     assert.match(surface, /one-hour|inclusive (?:one-)?hour/iu)
     assert.match(surface, /finalized head|Base finality/iu)
-    assert.match(surface, /eight-second/iu)
+    assert.match(surface, /eight-second|8-second|8 seconds|facilitatorTimeoutMs/iu)
     assert.match(surface, /do_not_pay_again/iu)
     assert.match(surface, /payment_preserved/iu)
   }

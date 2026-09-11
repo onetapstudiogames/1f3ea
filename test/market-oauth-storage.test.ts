@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { MARKET_LIMITS } from '../src/market-facts.ts'
 import {
   createMarketOAuthStore,
   type MarketOAuthQuery,
@@ -54,7 +55,7 @@ test('authorization requests retain exact OAuth binding fields and only session/
   assert.equal(fake.captured.length, 1)
   assert.match(fake.captured[0]!.text, /session_hash, csrf_hash, client_id, client_display_name, redirect_uri/)
   assert.match(fake.captured[0]!.text, /resource, scope, state, code_challenge, code_challenge_method, expires_at/)
-  assert.match(fake.captured[0]!.text, /interval '15 minutes'/)
+  assert.match(fake.captured[0]!.text, /make_interval\(mins => \$10\)/)
   assert.deepEqual(fake.captured[0]!.values, [
     HASH_A,
     HASH_B,
@@ -64,7 +65,7 @@ test('authorization requests retain exact OAuth binding fields and only session/
     'https://1f3ea.com/mcp/connect',
     'market:merchant',
     'opaque-state',
-    'x'.repeat(43),
+    'x'.repeat(43), MARKET_LIMITS.oauth.requestMinutes,
   ])
 })
 
@@ -103,12 +104,12 @@ test('existing-merchant approval is one atomic transaction and never persists th
   assert.match(approvalSql, /WHERE secret_hash = \$1/)
   assert.match(approvalSql, /UPDATE oauth_authorization_requests/)
   assert.match(approvalSql, /INSERT INTO oauth_authorization_codes/)
-  assert.match(approvalSql, /interval '5 minutes'/)
+  assert.match(approvalSql, /make_interval\(mins => \$5\)/)
   assert.doesNotMatch(
     approvalSql,
     /merchant_secret\s+TEXT|permanent_key\s+TEXT|bearer_secret\s+TEXT|access_token\s+TEXT|refresh_token\s+TEXT/,
   )
-  assert.deepEqual(fake.captured[0]!.values, [HASH_C, HASH_A, HASH_B, HASH_D])
+  assert.deepEqual(fake.captured[0]!.values, [HASH_C, HASH_A, HASH_B, HASH_D, MARKET_LIMITS.oauth.authorizationCodeMinutes])
 })
 
 test('pending request lookup and cancellation are hash-bound and one-use', async () => {
@@ -401,9 +402,11 @@ test('authorization-code exchange atomically consumes the code and stores 10m/30
   assert.match(sql, /UPDATE oauth_authorization_codes[\s\S]*used_at = now\(\)/)
   assert.match(sql, /used_at IS NULL/)
   assert.match(sql, /INSERT INTO oauth_token_families/)
-  assert.match(sql, /interval '30 days'/)
+  assert.match(sql, /make_interval\(days => \$9\)/)
   assert.match(sql, /INSERT INTO oauth_tokens/)
-  assert.match(sql, /interval '10 minutes'/)
+  assert.match(sql, /make_interval\(mins => \$11\)/)
+  assert.ok(fake.captured[0]!.values.includes(MARKET_LIMITS.oauth.refreshPassDays))
+  assert.ok(fake.captured[0]!.values.includes(MARKET_LIMITS.oauth.accessPassMinutes))
   assert.doesNotMatch(sql, /access_token\s*,|refresh_token\s*,/)
 })
 
@@ -424,9 +427,10 @@ test('refresh rotation is one-use and reuse revokes the complete token family', 
   assert.match(rotatedFake.captured[0]!.text, /rotated_from_token_id/)
   assert.match(
     rotatedFake.captured[0]!.text,
-    /family\.expires_at >= now\(\) \+ interval '10 minutes'/,
+    /family\.expires_at >= now\(\) \+ make_interval\(mins => \$4\)/,
     'a successful refresh must always receive the promised 10-minute access-token lifetime',
   )
+  assert.ok(rotatedFake.captured[0]!.values.includes(MARKET_LIMITS.oauth.accessPassMinutes))
 
   const reusedFake = fakeQuery([[], [{ id: 9 }]])
   const reused = createMarketOAuthStore(reusedFake.query)

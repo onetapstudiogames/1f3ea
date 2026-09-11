@@ -6,6 +6,7 @@ import {
   marketIdentityPublicFacts,
   mountMarketIdentityRoutes,
 } from '../src/market-identity-routes.ts'
+import { HOSTED_PROOF_CONTRACT, LEGACY_REGISTRATION_STATUS } from '../src/market-facts.ts'
 
 const READY = {
   PUBLIC_ORIGIN: 'https://market.test',
@@ -44,7 +45,7 @@ test('dormant identity routes return one private caller-worded refusal without c
     hosted_connector: null,
     hosted_status: 'dormant',
     hosted_proven_hosts: [],
-    legacy_registration: 'retired',
+    legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
   })
@@ -78,9 +79,9 @@ test('enabled identity routes serve the coding-client JSON doors and pairing, an
     rotate: 'https://market.test/rotate',
     rotation_enabled: true,
     hosted_connector: 'https://market.test/mcp/connect',
-    hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
+    hosted_status: HOSTED_PROOF_CONTRACT,
     hosted_proven_hosts: [],
-    legacy_registration: 'retired',
+    legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport:
       'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
       'never chat, MCP arguments or results, URLs, or logs',
@@ -152,9 +153,9 @@ test('the browser pages go live without the coding-client doors when only the id
     rotate: 'https://market.test/rotate',
     rotation_enabled: true,
     hosted_connector: 'https://market.test/mcp/connect',
-    hosted_status: 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.',
+    hosted_status: HOSTED_PROOF_CONTRACT,
     hosted_proven_hosts: [],
-    legacy_registration: 'retired',
+    legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
   })

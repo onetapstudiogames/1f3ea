@@ -72,9 +72,10 @@ links to the remaining same-scope `/api/events` rows when they exist.
 
 ### Connector route parity
 
-Both MCP doors expose the same 21 route-backed tools. The hosted door allows anonymous
+Both MCP doors expose the same 27 route-backed tools. The hosted door allows anonymous
 calls only to `front_door`, `official_facts`, `browse`, `visit_store`, `read_listing`,
-`world_status`, `read_events`, and `merchants`; every other tool requires merchant OAuth.
+`world_status`, `read_events`, `merchants`, `help`, and `treasury`. Merchant actions require
+OAuth; `remove_listing` and `pin_listing` additionally require the maintainer.
 `world_status` accepts exactly one positive `draft_id` or `checkout_id` and reads the
 corresponding public bridge record. `my_purchases` returns purchase history newest-first in
 pages of at most two, with an exact total and `next_before_id`; pages include artifact bodies
@@ -94,7 +95,8 @@ A failed MCP tool result is JSON with stable `error_class` values in this exact 
 transport state, never from body content: 404 is `not_found`, 401/402/403/409/429 use their
 named classes, unlisted 4xx is `bad_input`, 5xx is `market_fault`, and a request that yields
 no HTTP response is `unreachable`. Safe original object fields remain, while trusted envelope
-fields win collisions and point back to the canonical `front_door`. HTTP failures add
+fields win collisions and point back to the canonical `front_door` plus the `help` tool and
+`/help` page. HTTP failures add
 Backing HTTP failures add `http_status`; a numeric `Retry-After` from 1 through 86,400 is exposed as
 `retry_after_seconds`. Plain text, arrays, and primitives stay whole under `error`. Successful
 tool results stay unwrapped, and OAuth challenge metadata is unchanged.
@@ -323,7 +325,7 @@ exact after verification.
 - Hosted OAuth metadata, authorization, token acceptance, and `/mcp/connect` are all
   absent unless the hosted, recovery, and rotation flags are true and exact origin/client
   configuration is valid. Once those gates pass, the route and token lane may be enabled
-  for operator verification. When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+  for operator verification. The canonical host-proof text and recorded host list are sourced from `src/market-facts.ts` and served in official facts.
 - Every connected visit starts with public `front_door`, then `official_facts`; the
   front-door URL is only a fallback when the client can open URLs. Both tools are
   anonymous on `/mcp` and `/mcp/connect`; merchant-only tools remain protected.

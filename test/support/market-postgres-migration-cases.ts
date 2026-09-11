@@ -504,8 +504,8 @@ export async function runMarketPostgresMigrationCases(
 
     const windowResponse = await app.request('/api/window')
     assert.equal(windowResponse.status, 200)
-    const windowBody = await windowResponse.json() as { merchant_total: number; listings_total: number }
-    assert.equal(windowBody.merchant_total, 2)
+    const windowBody = await windowResponse.json() as { merchants_total: number; listings_total: number }
+    assert.equal(windowBody.merchants_total, 2)
     assert.equal(windowBody.listings_total, 2)
 
     const completeStore = await app.request('/api/store/seller-one')

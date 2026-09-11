@@ -18,12 +18,14 @@ const OFFICIAL_FACTS = { domain: ORIGIN, token: null, network: 'base' } as const
 const PUBLIC_TOOL_NAMES = [
   'front_door', 'official_facts', 'browse', 'visit_store', 'read_listing',
   'world_status', 'read_events', 'merchants',
+  'help', 'treasury',
 ] as const
 const TOOL_NAMES = [
   'front_door', 'official_facts', 'browse', 'visit_store', 'set_store',
   'read_listing', 'read_events', 'merchants', 'list_item', 'draft_world',
   'list_world', 'checkout_world', 'sync_world', 'edit_item', 'world_status',
   'withdraw_item', 'buy', 'my_purchases', 'vote', 'comment', 'me',
+  'help', 'flag', 'cancel_world_draft', 'treasury', 'remove_listing', 'pin_listing',
 ] as const
 
 process.env.PUBLIC_ORIGIN = ORIGIN
@@ -85,6 +87,8 @@ function createHarness(payload: Record<string, unknown> = { merchant: { id: 7, h
   market.get('/', c => c.text(FRONT_DOOR_TEXT))
   market.get('/api/official', c => c.json(OFFICIAL_FACTS))
   market.get('/api/shelves', c => c.json({ listings: [] }))
+  market.get('/api/help', c => c.json({ tools: [] }))
+  market.get('/treasury', c => c.json({ fees: [] }))
   market.get('/api/me', async c => {
     forwardedAuthorization = c.req.header('authorization')
     if (forwardedAuthorization === `Bearer ${LEGACY_SECRET}`) return c.json(payload)
@@ -138,8 +142,8 @@ test('both catalogs keep permanent-key creation out of tools and hosted tools ad
 
   assert.deepEqual(legacy.map(tool => tool.name), [...TOOL_NAMES])
   assert.deepEqual(hosted.map(tool => tool.name), [...TOOL_NAMES])
-  assert.equal(legacy.length, 21)
-  assert.equal(hosted.length, 21)
+  assert.equal(legacy.length, 27)
+  assert.equal(hosted.length, 27)
   assert.equal(legacy.some(tool => tool.name === 'register'), false)
   assert.equal(legacy.some(tool => tool.name === 'rotate'), false)
   assert.equal(legacy.every(tool => tool.securitySchemes === undefined), true)
@@ -216,10 +220,12 @@ test('connector parity schemas state every exclusivity rule, default, limit, and
 
   const readEvents = find('read_events')
   const eventProperties = readEvents.inputSchema.properties as Record<string, {
-    enum?: string[]; maxLength?: number; maximum?: number; description?: string
+    enum?: string[]; maxLength?: number; maximum?: number; description?: string; 'x-maxUtf16CodeUnits'?: number
   }>
   assert.equal(readEvents.inputSchema.additionalProperties, false)
   assert.equal(eventProperties.kind?.maxLength, 40)
+  assert.equal(eventProperties.kind?.['x-maxUtf16CodeUnits'], 40)
+  assert.match(eventProperties.kind?.description ?? '', /UTF-16 code units/u)
   assert.deepEqual(eventProperties.scope?.enum, ['door', 'window'])
   assert.equal(eventProperties.limit?.maximum, 200)
   assert.match(readEvents.description, /kind or scope, never both/i)
@@ -339,7 +345,7 @@ test('anonymous hosted browsing works while a protected call returns an OAuth ch
   assert.doesNotMatch(JSON.stringify(me), /1f3ea_(?:sk|at|rt|ac)_/i)
 })
 
-test('all new public reads dispatch anonymously while purchase and vote stop for sign-in first', async () => {
+test('public reads dispatch anonymously while merchant and maintainer actions stop for sign-in first', async () => {
   const { gateway, market } = createHarness()
   let protectedBackingCalls = 0
   market.get('/api/world/draft/:id', c => c.json({ draft: { id: Number(c.req.param('id')) } }))
@@ -358,6 +364,8 @@ test('all new public reads dispatch anonymously while purchase and vote stop for
     ['world_status', { draft_id: 7 }],
     ['read_events', { limit: 5 }],
     ['merchants', { limit: 6 }],
+    ['help', {}],
+    ['treasury', {}],
   ] as const) {
     const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
       name, arguments: arguments_,
@@ -368,6 +376,10 @@ test('all new public reads dispatch anonymously while purchase and vote stop for
   for (const [name, arguments_] of [
     ['my_purchases', {}],
     ['vote', { listing_id: 3 }],
+    ['flag', { target_type: 'listing', target_id: 3, reason: 'spam' }],
+    ['cancel_world_draft', { draft_id: 3 }],
+    ['remove_listing', { listing_id: 3, reason: 'spam' }],
+    ['pin_listing', { listing_id: 3, pinned: true }],
   ] as const) {
     const response = await rpc(gateway, '/mcp/connect', 'tools/call', {
       name, arguments: arguments_,

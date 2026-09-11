@@ -35,6 +35,14 @@ const missingShelf = () => ({
 
 const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
 app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
+app.use('*', async (c, next) => {
+  await next()
+  if (c.res.status >= 400) {
+    const helpLink = '</help>; rel="help"'
+    const current = c.res.headers.get('Link')
+    c.header('Link', current ? `${current}, ${helpLink}` : helpLink)
+  }
+})
 if (HOSTED_MARKET_SIGNIN.ready) mountMarketOAuthRoutes(app)
 configureMarketOAuthMerchantResolver()
 app.onError((error, c) => {

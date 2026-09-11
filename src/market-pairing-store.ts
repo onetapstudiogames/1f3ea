@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { credentialPrefix, credentialShapeRe } from './core.ts'
 import { sql } from './db.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import { requireMarketIdentityHash as requireHash } from './market-identity-validation.ts'
 
 export const PAIRING_CODE_PREFIX = credentialPrefix('pairing_code')
 export const PAIRING_CODE_RE = credentialShapeRe('pairing_code', 'u')
-export const PAIRING_CODE_SECONDS = 10 * 60
+export const PAIRING_CODE_SECONDS = MARKET_LIMITS.pairing.lifetimeMinutes * 60
 
 export function newPairingCode(): string {
   return PAIRING_CODE_PREFIX + randomBytes(24).toString('hex')
@@ -30,7 +31,7 @@ export async function createMerchantPairingCode(input: {
       DELETE FROM merchant_pairing_codes WHERE expires_at <= now()
     ), inserted AS (
       INSERT INTO merchant_pairing_codes (merchant_id, code_hash, expires_at)
-      VALUES (${input.merchantId}, ${input.codeHash}, now() + interval '10 minutes')
+      VALUES (${input.merchantId}, ${input.codeHash}, now() + make_interval(mins => ${MARKET_LIMITS.pairing.lifetimeMinutes}))
       RETURNING expires_at
     )
     SELECT expires_at FROM inserted

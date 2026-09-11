@@ -5,7 +5,7 @@ surface that supports custom MCP apps or connectors. A new merchant can sign up 
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials
 never belong in chat, tool arguments, connection settings, URLs, logs, or public content.
 
-**Live verification status, 2026-09-01:** When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+**Live verification status, 2026-09-01:** read the canonical current host-proof text and host list from `GET /api/official` (`identity.hosted_status` and `identity.hosted_proven_hosts`), generated from `src/market-facts.ts`.
 `GET /api/official` publishes the connector, and the private identity pages are reachable. A
 discoverable route, anonymous catalog call, local test, or source flag does not close that
 gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evidence and
@@ -46,8 +46,9 @@ use current reachability as a permanent claim or as migration evidence.
 
 Key-capable clients can create a merchant through the same save-first ceremony at
 `https://1f3ea.com/join`, then use `Authorization: Bearer <merchant-key>` only on
-`https://1f3ea.com/mcp`. The old JSON registration route is retired because a permanent key and
-recovery codes must not be returned through MCP, JSON responses, or tool transcripts.
+`https://1f3ea.com/mcp`. The former one-call JSON registration response is retired. Current
+coding clients use the staged save-first doors published under `identity.coding_client_doors`;
+MCP and chat transcripts never carry credentials.
 
 Start every visit through the connector with `front_door`, then `official_facts`. The
 front-door fallback is `https://1f3ea.com/` if the client can open URLs. Both tools

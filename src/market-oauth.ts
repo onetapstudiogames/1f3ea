@@ -77,14 +77,21 @@ import {
   type MarketOAuthStore,
 } from './market-oauth-store.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export type { Runtime }
 
-const ACCESS_TOKEN_SECONDS = 10 * 60
-const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60
-const TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR = 120
-const REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR = 120
+const ACCESS_TOKEN_SECONDS = MARKET_LIMITS.oauth.accessPassMinutes * 60
+const REFRESH_TOKEN_SECONDS = MARKET_LIMITS.oauth.refreshPassDays * 24 * 60 * 60
+const TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR = MARKET_LIMITS.oauth.tokenRequestsPerIpOrClientUtcHour
+const REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR = MARKET_LIMITS.oauth.revocationsPerIpOrClientUtcHour
 const OAUTH_RATE_RETRY_AFTER_SECONDS = 60 * 60
+const SIGN_IN_START_FAILURE = '1F3EA could not start sign-in. Try again in a moment.'
+const INVALID_SIGN_IN_REQUEST = 'The sign-in request was not valid.'
+const MERCHANT_NOT_WAITING = 'This merchant is not waiting for key confirmation.'
+const SAVED_KEY_WARNING = '<p class="warning">That saved merchant key could not be verified. Check it and try again.</p>'
+const SIGN_IN_UNAVAILABLE = 'This sign-in request is no longer available.'
+const MERCHANT_KEY_WARNING = '<p class="warning">That merchant key could not be verified. Check it and try again.</p>'
 const AUTHORIZATION_FIELDS = new Set([
   'response_type', 'client_id', 'redirect_uri', 'resource', 'scope', 'state',
   'code_challenge', 'code_challenge_method', 'ui_locales',
@@ -193,23 +200,23 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
   app.get('/oauth/authorize', async c => {
     const query = queryObject(new URL(c.req.url))
-    if (!query) return browserError(c, 400, 'The sign-in request was not valid.')
+    if (!query) return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
     const rawClientId = query.client_id
     if (
       !rawClientId || Buffer.byteLength(rawClientId, 'utf8') > 2_048 ||
       marketTokenLooksSensitive(rawClientId)
-    ) return browserError(c, 400, 'The sign-in request was not valid.')
+    ) return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
     try {
       const allowed = await admitted(
         oauth,
         [`metadata-ip:${clientAddress(c, oauth.environment)}`],
         'authorize',
-        120,
+        MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour,
       )
-      if (!allowed) return browserError(c, 429, 'Too many sign-in attempts. Try again in one hour.')
+      if (!allowed) return browserError(c, 429, `Sign-in metadata checks are limited to ${MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour} per IP per UTC hour. Try again after the next UTC hour.`)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, '1F3EA could not start sign-in. Try again in a moment.')
+      return browserError(c, 503, SIGN_IN_START_FAILURE)
     }
     let client
     try {
@@ -231,7 +238,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
     try {
       request = validateMarketAuthorizationRequest(query, [client], oauth.resource)
     } catch {
-      return browserError(c, 400, 'The sign-in request was not valid.')
+      return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
     }
     const authorizationInput = (cookie: BrowserSessionCookie): AuthorizationRequestInput => ({
       sessionHash: sha256(cookie.session),
@@ -309,11 +316,11 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
     }
 
     try {
-      const allowed = await admitted(oauth, [`client:${request.clientId}`], 'authorize', 60)
-      if (!allowed) return browserError(c, 429, 'Too many sign-in attempts. Try again in one hour.')
+      const allowed = await admitted(oauth, [`client:${request.clientId}`], 'authorize', MARKET_LIMITS.oauth.validRequestsPerClientUtcHour)
+      if (!allowed) return browserError(c, 429, `Valid sign-in requests are limited to ${MARKET_LIMITS.oauth.validRequestsPerClientUtcHour} per client per UTC hour. Try again after the next UTC hour.`)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, '1F3EA could not start sign-in. Try again in a moment.')
+      return browserError(c, 503, SIGN_IN_START_FAILURE)
     }
 
     const createFreshAuthorization = async (
@@ -344,7 +351,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       return await createFreshAuthorization(newBrowserSessionCookie(), true)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, '1F3EA could not start sign-in. Try again in a moment.')
+      return browserError(c, 503, SIGN_IN_START_FAILURE)
     }
   })
 
@@ -413,7 +420,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
       if (action === 'confirm') {
         if (!isStagedAuthorizationRequest(pending)) {
-          return browserError(c, 403, 'This merchant is not waiting for key confirmation.')
+          return browserError(c, 403, MERCHANT_NOT_WAITING)
         }
         const merchantKey = oneFormValue(values, 'merchant_key', 80)
         if (!merchantKey || !/^1f3ea_sk_[0-9a-f]{48}$/.test(merchantKey)) {
@@ -421,7 +428,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             c,
             403,
             'Merchant key not verified',
-            '<p class="warning">That saved merchant key could not be verified. Check it and try again.</p>' +
+            SAVED_KEY_WARNING +
               resumedMerchantKeyPage(pending.new_handle!, csrf),
           )
         }
@@ -432,7 +439,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             `signup-confirm-session:${sessionHash}`,
           ],
           'merchant_key',
-          10,
+          MARKET_LIMITS.oauth.newMerchantConfirmsPerIpAndSessionUtcHour,
         )
         if (!allowed) {
           return browserError(c, 429, 'Too many key attempts. This sign-in expires before the one-hour wait ends; start again after the next UTC hour.')
@@ -445,17 +452,17 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           authorizationCodeHash: sha256(code),
         })
         if (approved.status === 'request_unavailable') {
-          return await terminalProgress() ?? browserError(c, 403, 'This sign-in request is no longer available.')
+          return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
         }
         if (approved.status === 'confirmation_not_ready') {
-          return browserError(c, 403, 'This merchant is not waiting for key confirmation.')
+          return browserError(c, 403, MERCHANT_NOT_WAITING)
         }
         if (approved.status === 'confirmation_rejected') {
           return html(
             c,
             403,
             'Merchant key not verified',
-            '<p class="warning">That saved merchant key could not be verified. Check it and try again.</p>' +
+            SAVED_KEY_WARNING +
               resumedMerchantKeyPage(pending.new_handle!, csrf),
           )
         }
@@ -479,7 +486,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             c,
             403,
             'Merchant key not verified',
-            '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
+            MERCHANT_KEY_WARNING +
               consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
@@ -487,7 +494,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           oauth,
           [`ip:${clientAddress(c, oauth.environment)}`, `client:${pending.client_id}`],
           'merchant_key',
-          10,
+          MARKET_LIMITS.oauth.keyAttemptsPerIpAndClientUtcHour,
         )
         if (!allowed) return browserError(c, 429, 'Too many key attempts. Try again after the next UTC hour.')
         const code = opaque(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX)
@@ -498,14 +505,14 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           authorizationCodeHash: sha256(code),
         })
         if (approved.status === 'request_unavailable') {
-          return await terminalProgress() ?? browserError(c, 403, 'This sign-in request is no longer available.')
+          return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
         }
         if (approved.status === 'merchant_key_rejected') {
           return html(
             c,
             403,
             'Merchant key not verified',
-            '<p class="warning">That merchant key could not be verified. Check it and try again.</p>' +
+            MERCHANT_KEY_WARNING +
               consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
           )
         }
@@ -555,9 +562,9 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         )
       }
       const registrationLimits: ReadonlyArray<readonly [string, number]> = [
-        [`signup-ip:${clientAddress(c, oauth.environment)}`, 3],
-        ['signup-global', 300],
-        [`signup-client:${pending.client_id}`, 300],
+        [`signup-ip:${clientAddress(c, oauth.environment)}`, MARKET_LIMITS.oauth.newMerchantStartsPerIpUtcHour],
+        ['signup-global', MARKET_LIMITS.oauth.newMerchantStartsGlobalUtcHour],
+        [`signup-client:${pending.client_id}`, MARKET_LIMITS.oauth.newMerchantStartsPerClientUtcHour],
       ]
       for (const [bucket, maximum] of registrationLimits) {
         if (!(await admitted(oauth, [bucket], 'authorize', maximum))) {
@@ -579,7 +586,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         if (resumed && isStagedAuthorizationRequest(resumed)) {
           return stagedAuthorizationResponse(c, resumed, csrf)
         }
-        return await terminalProgress() ?? browserError(c, 403, 'This sign-in request is no longer available.')
+        return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
       }
       if (staged.status === 'handle_taken') {
         return html(

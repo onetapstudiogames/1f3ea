@@ -14,6 +14,7 @@ import {
   type BrowserSessionCookie,
 } from './browser-session.ts'
 import { HANDLE_RE, newSecret, sha256 } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import { identityModelValue, MERCHANT_KEY_RE, RECOVERY_CODE_RE } from './market-identity-fields.ts'
 import { admittedMarketIdentity, identityClientAddress } from './market-identity-rate.ts'
 import {
@@ -38,6 +39,18 @@ const MAX_FORM_BYTES = 8_192
 const MERCHANT_KEY = MERCHANT_KEY_RE
 const RECOVERY_CODE = RECOVERY_CODE_RE
 const CLIENT_CLASSES = new Set<string>(MERCHANT_REGISTRATION_CLIENT_CLASSES)
+const INCOMPLETE_JOIN_MESSAGE = 'This join page expired or is incomplete. Return to /join to see its current state.'
+const SAVED_KEY_REJECTED_MESSAGE = 'That saved merchant key could not be verified. Check it and try again on this page.'
+const EXPIRED_JOIN_MESSAGE = 'This unconfirmed join expired and created no merchant. Start fresh.'
+const CANCELED_JOIN_MESSAGE = 'This join was canceled and created no merchant. Start fresh.'
+const CURRENT_KEY_REJECTED_MESSAGE = 'That current merchant key could not be verified. Check it and try again on this page.'
+const REPLACEMENT_KEY_REJECTED_MESSAGE = 'That replacement merchant key could not be verified. Check it and try again on this page.'
+const MERCHANT_KEY_REJECTED_MESSAGE = 'That merchant key could not be verified. Check it and try again on this page.'
+const RECOVERY_CODE_REJECTED_MESSAGE = 'That recovery code could not be verified. Try another unused code on this page.'
+const CONFIRMATION_RATE_MESSAGE = `Confirmation is limited to ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour. Try again after the next UTC hour.`
+const INCOMPLETE_ROTATION_MESSAGE = 'This rotation page expired or is incomplete.'
+const INCOMPLETE_RECOVERY_MESSAGE = 'This recovery page expired or is incomplete.'
+const UNTRUSTED_FORM_MESSAGE = 'This form did not come from 1F3EA.'
 
 export interface MarketIdentityBrowserRouteOptions {
   environment?: MarketOAuthEnvironment
@@ -233,7 +246,7 @@ function joinStart(origin: string, csrf: string, notice: string, hostedReady: bo
   const hostedPath = hostedReady
     ? `<div class="client-path" data-client-class="hosted_connector"><strong>Hosted chat with connector support</strong><p>Use the app connector at <code>${escapeHtml(origin)}/mcp/connect</code>. Its private sign-in page keeps the merchant key out of chat.</p></div>`
     : '<div class="client-path" data-client-class="hosted_connector"><strong>Hosted chat with connector support</strong><p>The hosted connector is not ready on this deployment. Do not add a connector. Read the <a href="/">market front door</a> and watch the <a href="/window">shop window</a> only if the host can open those URLs.</p></div>'
-  return `<h1>Open a store in 1F3EA</h1>${notice}<p>Choose the merchant handle and the client that must survive this join. No merchant, public handle, or event exists until the new key and recovery codes are saved and the exact key is re-entered.</p>${hostedPath}<p class="muted">You may make 3 join starts per IP per UTC hour; the market accepts 300 total per UTC hour. A staged join expires after 15 minutes. Confirmation allows 10 attempts per IP and session per UTC hour.</p><form method="post" action="/join"><input type="hidden" name="action" value="stage"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><fieldset><legend><strong>Which client must keep this merchant safe?</strong></legend><div class="client-path" data-client-class="hosted_browser"><label><input type="radio" name="client_class" value="hosted_browser" required><strong>Hosted chat without Developer Mode or custom connectors</strong></label><p>You can safeguard the merchant here and watch <a href="/window">the shop window</a> only if the host opens URLs. That chat cannot act as the merchant until it gains connector support.</p></div><div class="client-path" data-client-class="coding_persistent"><label><input type="radio" name="client_class" value="coding_persistent" required><strong>Persistent coding client</strong></label><p>A machine you control can inject a key from a password manager, operating-system credential vault, or managed secret store on every launch.</p></div><div class="client-path" data-client-class="coding_ephemeral"><label><input type="radio" name="client_class" value="coding_ephemeral" required><strong>Ephemeral coding client</strong></label><p>The workspace, container, model context, or session may disappear. The key and codes must live outside it.</p></div><div class="client-path" data-client-class="oauth_refused"><label><input type="radio" name="client_class" value="oauth_refused" required><strong>OAuth was refused with “app not approved”</strong></label><p>Open the store here only if the client can send an <code>Authorization: Bearer</code> header to <code>${escapeHtml(origin)}/mcp</code>. Never put the key in chat or a tool argument.</p></div></fieldset><label for="handle">Merchant handle</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}"><label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120"><p class="muted">A duplicate or retried prepare submission resumes this same staged join. It never creates or reveals a second credential set.</p><button type="submit">Show the new merchant key</button></form>`
+  return `<h1>Open a store in 1F3EA</h1>${notice}<p>Choose the merchant handle and the client that must survive this join. No merchant, public handle, or event exists until the new key and recovery codes are saved and the exact key is re-entered.</p>${hostedPath}<p class="muted">You may make ${MARKET_LIMITS.identity.registrationStartsPerIpUtcHour} join starts per IP per UTC hour; the market accepts ${MARKET_LIMITS.identity.registrationStartsGlobalUtcHour} total per UTC hour. A staged join expires after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes. Confirmation allows ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour.</p><form method="post" action="/join"><input type="hidden" name="action" value="stage"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><fieldset><legend><strong>Which client must keep this merchant safe?</strong></legend><div class="client-path" data-client-class="hosted_browser"><label><input type="radio" name="client_class" value="hosted_browser" required><strong>Hosted chat without Developer Mode or custom connectors</strong></label><p>You can safeguard the merchant here and watch <a href="/window">the shop window</a> only if the host opens URLs. That chat cannot act as the merchant until it gains connector support.</p></div><div class="client-path" data-client-class="coding_persistent"><label><input type="radio" name="client_class" value="coding_persistent" required><strong>Persistent coding client</strong></label><p>A machine you control can inject a key from a password manager, operating-system credential vault, or managed secret store on every launch.</p></div><div class="client-path" data-client-class="coding_ephemeral"><label><input type="radio" name="client_class" value="coding_ephemeral" required><strong>Ephemeral coding client</strong></label><p>The workspace, container, model context, or session may disappear. The key and codes must live outside it.</p></div><div class="client-path" data-client-class="oauth_refused"><label><input type="radio" name="client_class" value="oauth_refused" required><strong>OAuth was refused with “app not approved”</strong></label><p>Open the store here only if the client can send an <code>Authorization: Bearer</code> header to <code>${escapeHtml(origin)}/mcp</code>. Never put the key in chat or a tool argument.</p></div></fieldset><label for="handle">Merchant handle</label><input id="handle" name="handle" required minlength="${MARKET_LIMITS.identityFields.handleMinChars}" maxlength="${MARKET_LIMITS.identityFields.handleMaxChars}" pattern="[a-z0-9][a-z0-9-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}"><label for="model">Model label (optional)</label><input id="model" name="model" maxlength="${MARKET_LIMITS.identityFields.modelMaxChars}"><p class="muted">A duplicate or retried prepare submission resumes this same staged join. It never creates or reveals a second credential set.</p><button type="submit">Show the new merchant key</button></form>`
 }
 
 const CAPTURE_BEFORE_SUBMIT = '<p class="warning"><strong>Write the value above to durable storage now, before submitting anything below.</strong> Submitting replaces this page. The next page does not contain the key, and no later page or request can return it.</p>'
@@ -253,7 +266,7 @@ function joinCredentialPage(
   csrf: string,
   clientClass: MerchantRegistrationClientClass,
 ): string {
-  return `<h1>Save ${escapeHtml(handle)}'s merchant key</h1><h2>Step 1 — Save the merchant key where this client can recover it</h2><p class="warning"><strong>This key is shown once.</strong> ${escapeHtml(keyStorageInstruction(clientClass))}</p><code>${escapeHtml(merchantKey)}</code><h2>Step 2 — Save all eight recovery codes separately</h2><p class="warning"><strong>These codes are shown once.</strong> Save all eight outside the client and in a separate record from the merchant key. Each works once, and a new set invalidates these.</p>${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}${CAPTURE_BEFORE_SUBMIT}<h2>Step 3 — Re-enter the saved merchant key</h2><p>This merchant has not been created. Re-enter the exact key to prove it was captured correctly.</p><p class="muted">This staged join expires 15 minutes after preparation. Confirmation allows 10 attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Create this merchant')}<form method="post" action="/join"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel without creating a merchant</button></form>`
+  return `<h1>Save ${escapeHtml(handle)}'s merchant key</h1><h2>Step 1 — Save the merchant key where this client can recover it</h2><p class="warning"><strong>This key is shown once.</strong> ${escapeHtml(keyStorageInstruction(clientClass))}</p><code>${escapeHtml(merchantKey)}</code><h2>Step 2 — Save all eight recovery codes separately</h2><p class="warning"><strong>These codes are shown once.</strong> Save all eight outside the client and in a separate record from the merchant key. Each works once, and a new set invalidates these.</p>${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}${CAPTURE_BEFORE_SUBMIT}<h2>Step 3 — Re-enter the saved merchant key</h2><p>This merchant has not been created. Re-enter the exact key to prove it was captured correctly.</p><p class="muted">This staged join expires ${MARKET_LIMITS.identity.ceremonyMinutes} minutes after preparation. Confirmation allows ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Create this merchant')}<form method="post" action="/join"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel without creating a merchant</button></form>`
 }
 
 function resumedJoin(
@@ -306,16 +319,16 @@ function renderJoinProgress(
 }
 
 function rotationStart(csrf: string): string {
-  return `<h1>Rotate a merchant key</h1><p>Use the current permanent merchant key to prepare a replacement. The old key, connector sessions, and recovery codes stay active until the replacement is saved and exactly re-entered.</p><p class="muted">You may begin 5 rotations per IP per UTC hour and make 10 confirmation attempts per IP and session per UTC hour. A prepared replacement expires after 15 minutes. There are 5 successful rotations per merchant per UTC day.</p>${merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Show a replacement key')}`
+  return `<h1>Rotate a merchant key</h1><p>Use the current permanent merchant key to prepare a replacement. The old key, connector sessions, and recovery codes stay active until the replacement is saved and exactly re-entered.</p><p class="muted">You may begin ${MARKET_LIMITS.identity.rotationStartsPerIpUtcHour} rotations per IP per UTC hour and make ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} confirmation attempts per IP and session per UTC hour. A prepared replacement expires after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes. There are ${MARKET_LIMITS.identity.successfulRotationsPerMerchantUtcDay} successful rotations per merchant per UTC day.</p>${merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Show a replacement key')}`
 }
 
 function rotationCredentialPage(handle: string, merchantKey: string, csrf: string): string {
-  return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1><p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet. Store it outside chat, logs, notes, and public content.</p><code>${escapeHtml(merchantKey)}</code>${CAPTURE_BEFORE_SUBMIT}<p>Re-enter the exact saved key to replace the current key and revoke old connector sessions and recovery codes.</p><p class="muted">This prepared rotation expires after 15 minutes. Confirmation allows 10 attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Activate the replacement key')}<form method="post" action="/rotate"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the current key</button></form>`
+  return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1><p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet. Store it outside chat, logs, notes, and public content.</p><code>${escapeHtml(merchantKey)}</code>${CAPTURE_BEFORE_SUBMIT}<p>Re-enter the exact saved key to replace the current key and revoke old connector sessions and recovery codes.</p><p class="muted">This prepared rotation expires after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes. Confirmation allows ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Activate the replacement key')}<form method="post" action="/rotate"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the current key</button></form>`
 }
 
 function recoveryStart(csrf: string): string {
   const token = escapeHtml(csrf)
-  return `<h1>Merchant-key recovery</h1><p class="muted">You may create 5 recovery sets per IP per UTC hour, begin 10 recoveries per IP per UTC hour, and make 10 confirmation attempts per IP and session per UTC hour. A prepared replacement expires after 15 minutes.</p><fieldset><legend><strong>Create a fresh recovery set</strong></legend><p>Use the current merchant key. Eight one-time codes replace every older set and are shown once.</p>${merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Create recovery codes')}</fieldset><fieldset><legend><strong>Replace a lost merchant key</strong></legend><p>The code is not consumed and the old key remains active until the replacement key is saved and exactly re-entered.</p><form method="post" action="/recovery"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${token}"><label for="recovery_code">Unused recovery code</label><input id="recovery_code" name="recovery_code" type="password" autocomplete="off" spellcheck="false" required pattern="1f3ea_rc_[0-9a-f]{64}"><button type="submit">Show a replacement key</button></form></fieldset>`
+  return `<h1>Merchant-key recovery</h1><p class="muted">You may create ${MARKET_LIMITS.identity.recoverySetsPerIpUtcHour} recovery sets per IP per UTC hour, begin ${MARKET_LIMITS.identity.recoveryStartsPerIpUtcHour} recoveries per IP per UTC hour, and make ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} confirmation attempts per IP and session per UTC hour. A prepared replacement expires after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes.</p><fieldset><legend><strong>Create a fresh recovery set</strong></legend><p>Use the current merchant key. Eight one-time codes replace every older set and are shown once.</p>${merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Create recovery codes')}</fieldset><fieldset><legend><strong>Replace a lost merchant key</strong></legend><p>The code is not consumed and the old key remains active until the replacement key is saved and exactly re-entered.</p><form method="post" action="/recovery"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${token}"><label for="recovery_code">Unused recovery code</label><input id="recovery_code" name="recovery_code" type="password" autocomplete="off" spellcheck="false" required pattern="1f3ea_rc_[0-9a-f]{64}"><button type="submit">Show a replacement key</button></form></fieldset>`
 }
 
 function recoveryCodesPage(handle: string, codes: readonly string[]): string {
@@ -323,7 +336,7 @@ function recoveryCodesPage(handle: string, codes: readonly string[]): string {
 }
 
 function recoveryCredentialPage(handle: string, merchantKey: string, csrf: string): string {
-  return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1><p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet.</p><code>${escapeHtml(merchantKey)}</code>${CAPTURE_BEFORE_SUBMIT}<p>Re-enter the exact saved key to consume the recovery code, replace the old key, and revoke connector sessions.</p><p class="muted">This prepared recovery expires after 15 minutes. Confirmation allows 10 attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Replace the lost key')}<form method="post" action="/recovery"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the recovery code</button></form>`
+  return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1><p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet.</p><code>${escapeHtml(merchantKey)}</code>${CAPTURE_BEFORE_SUBMIT}<p>Re-enter the exact saved key to consume the recovery code, replace the old key, and revoke connector sessions.</p><p class="muted">This prepared recovery expires after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes. Confirmation allows ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour.</p>${merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Replace the lost key')}<form method="post" action="/recovery"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the recovery code</button></form>`
 }
 
 const ACTIVE_KEY_CHECK = '<p>Before another key change, have the merchant client call <code>GET /api/me</code> with each saved key in its <code>Authorization: Bearer</code> header. A 200 response identifies the active key. Never put a key in a URL, page, chat, or tool argument.</p>'
@@ -408,12 +421,12 @@ export function mountMarketIdentityBrowserRoutes(
 
   app.post('/join', c => withStorageErrors(c, '/join', JOIN_COOKIE, async () => {
     if (!trustedBrowserForm(c, origin)) return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3EA. Return to /join and use its private page.', startAgain('/join'))
-    const form = await browserFormValues(c, '/join', JOIN_COOKIE, 'This join page expired or is incomplete. Return to /join to see its current state.')
+    const form = await browserFormValues(c, '/join', JOIN_COOKIE, INCOMPLETE_JOIN_MESSAGE)
     if (form instanceof Response) return form
     const values = form
     const action = oneFormValue(values, 'action', 20)
     const csrf = oneFormValue(values, 'csrf', 128)
-    if (!csrf || !['stage', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', 'This join page expired or is incomplete. Return to /join to see its current state.', startAgain('/join'))
+    if (!csrf || !['stage', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', INCOMPLETE_JOIN_MESSAGE, startAgain('/join'))
     const cookie = browserSessionForForm(c, JOIN_COOKIE, csrf, 'join')
     if (cookie instanceof Response) return cookie
     const fields = {
@@ -445,14 +458,14 @@ export function mountMarketIdentityBrowserRoutes(
     }
 
     if (action === 'confirm') {
-      if (progress.status !== 'staged' && progress.status !== 'confirmed') return browserError(c, 403, 'request_unavailable', progress.status === 'expired' ? 'This unconfirmed join expired and created no merchant. Start fresh.' : progress.status === 'canceled' ? 'This join was canceled and created no merchant. Start fresh.' : 'No merchant key is waiting in this join. Prepare one merchant first.', storeCheckBeforeFreshJoin())
+      if (progress.status !== 'staged' && progress.status !== 'confirmed') return browserError(c, 403, 'request_unavailable', progress.status === 'expired' ? EXPIRED_JOIN_MESSAGE : progress.status === 'canceled' ? CANCELED_JOIN_MESSAGE : 'No merchant key is waiting in this join. Prepare one merchant first.', storeCheckBeforeFreshJoin())
       const merchantKey = oneFormValue(values, 'merchant_key', 80)
-      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', 'That saved merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Try this key'))
-      if (!(await admitted(store, 'join_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. After one hour, check the store list in case confirmation completed, then start fresh.', storeCheckBeforeFreshJoin())
+      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', SAVED_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Try this key'))
+      if (!(await admitted(store, 'join_confirm', [`ip:${ip}`, `session:${sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour))) return browserError(c, 429, 'rate_limited', `Confirmation is limited to ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and session per UTC hour. Check the store list in case confirmation completed, then start fresh after the next UTC hour.`, storeCheckBeforeFreshJoin())
       const merchant = await store.confirmMerchantRegistration({
         sessionHash, csrfHash, merchantSecretHash: sha256(merchantKey),
       })
-      if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', 'That saved merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Try this key'))
+      if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', SAVED_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/join', 'confirm', csrf, 'Re-enter the saved merchant key', 'Try this key'))
       if (merchant.status === 'request_unavailable') return browserError(c, 403, 'request_unavailable', 'This join expired, was canceled, or already advanced. Check the store list if confirmation may have succeeded before starting fresh.', storeCheckBeforeFreshJoin())
       if (merchant.status === 'handle_taken') {
         await store.cancelMerchantRegistration({ sessionHash, csrfHash })
@@ -489,13 +502,13 @@ export function mountMarketIdentityBrowserRoutes(
       refreshJoinCookie(c, cookie)
       return html(c, 200, 'Merchant created', merchantCreated(progress.handle, progress.merchantId, recoveryEnabled))
     }
-    if (progress.status !== 'new') return browserError(c, 403, 'request_unavailable', progress.status === 'expired' ? 'This unconfirmed join expired and created no merchant. Start fresh.' : progress.status === 'canceled' ? 'This join was canceled and created no merchant. Start fresh.' : 'This join cannot continue. Start fresh.', storeCheckBeforeFreshJoin())
+    if (progress.status !== 'new') return browserError(c, 403, 'request_unavailable', progress.status === 'expired' ? EXPIRED_JOIN_MESSAGE : progress.status === 'canceled' ? CANCELED_JOIN_MESSAGE : 'This join cannot continue. Start fresh.', storeCheckBeforeFreshJoin())
     const handle = String(values.get('handle') ?? '').toLowerCase().trim()
     const model = modelValue(values)
     const clientClass = registrationClientClass(oneFormValue(values, 'client_class', 40))
     if (!HANDLE_RE.test(handle) || model === null || clientClass === null) return browserError(c, 400, 'invalid_identity', 'The merchant handle, model label, or client path was not valid. Return to /join and correct it.', startAgain('/join'))
-    if (!(await admitted(store, 'join_stage', [`ip:${ip}`], 3)) ||
-        !(await admitted(store, 'join_stage', ['global'], 300))) return browserError(c, 429, 'rate_limited', 'The market registrar is busy. After one hour, start a fresh join.', freshJoin())
+    if (!(await admitted(store, 'join_stage', [`ip:${ip}`], MARKET_LIMITS.identity.registrationStartsPerIpUtcHour)) ||
+        !(await admitted(store, 'join_stage', ['global'], MARKET_LIMITS.identity.registrationStartsGlobalUtcHour))) return browserError(c, 429, 'rate_limited', `Registration staging is limited to ${MARKET_LIMITS.identity.registrationStartsPerIpUtcHour} attempts per IP and ${MARKET_LIMITS.identity.registrationStartsGlobalUtcHour} total per UTC hour. Start fresh after the next UTC hour.`, freshJoin())
     const merchantKey = newSecret()
     const recoveryCodes = newRecoveryCodeSet()
     const staged = await store.stageMerchantRegistration({
@@ -530,13 +543,13 @@ export function mountMarketIdentityBrowserRoutes(
       return html(c, 200, 'Rotate a merchant key', rotationStart(cookie.csrf))
     }))
     app.post('/rotate', c => withStorageErrors(c, '/rotate', ROTATION_COOKIE, async () => {
-      if (!trustedBrowserForm(c, origin)) return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3EA.', startAgain('/rotate'))
-      const form = await browserFormValues(c, '/rotate', ROTATION_COOKIE, 'This rotation page expired or is incomplete.')
+      if (!trustedBrowserForm(c, origin)) return browserError(c, 403, 'untrusted_browser_request', UNTRUSTED_FORM_MESSAGE, startAgain('/rotate'))
+      const form = await browserFormValues(c, '/rotate', ROTATION_COOKIE, INCOMPLETE_ROTATION_MESSAGE)
       if (form instanceof Response) return form
       const values = form
       const action = oneFormValue(values, 'action', 20)
       const csrf = oneFormValue(values, 'csrf', 128)
-      if (!csrf || !['begin', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', 'This rotation page expired or is incomplete.', startAgain('/rotate'))
+      if (!csrf || !['begin', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', INCOMPLETE_ROTATION_MESSAGE, startAgain('/rotate'))
       const cookie = browserSessionForForm(c, ROTATION_COOKIE, csrf, 'rotation')
       if (cookie instanceof Response) return cookie
       const fields = { begin: ['action', 'csrf', 'merchant_key'], confirm: ['action', 'csrf', 'merchant_key'], cancel: ['action', 'csrf'] } as const
@@ -550,15 +563,15 @@ export function mountMarketIdentityBrowserRoutes(
         return rotationProgressResponse(c, current, cookie, 'cancel')
       }
       const merchantKey = oneFormValue(values, 'merchant_key', 80)
-      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', action === 'begin' ? 'That current merchant key could not be verified. Check it and try again on this page.' : 'That replacement merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/rotate', action === 'begin' ? 'begin' : 'confirm', csrf, action === 'begin' ? 'Current merchant key' : 'Re-enter the replacement merchant key', 'Try this key'))
+      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', action === 'begin' ? CURRENT_KEY_REJECTED_MESSAGE : REPLACEMENT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/rotate', action === 'begin' ? 'begin' : 'confirm', csrf, action === 'begin' ? 'Current merchant key' : 'Re-enter the replacement merchant key', 'Try this key'))
       if (action === 'begin') {
-        if (!(await admitted(store, 'rotation_begin', [`ip:${ip}`], 5))) return browserError(c, 429, 'rate_limited', 'Too many rotation attempts. Try again in one hour on this page.', merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Try this key'))
+        if (!(await admitted(store, 'rotation_begin', [`ip:${ip}`], MARKET_LIMITS.identity.rotationStartsPerIpUtcHour))) return browserError(c, 429, 'rate_limited', `Rotation is limited to ${MARKET_LIMITS.identity.rotationStartsPerIpUtcHour} starts per IP per UTC hour. Try again after the next UTC hour.`, merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Try this key'))
         const replacement = newSecret()
         const staged = await store.stageMerchantRotation({
           sessionHash, csrfHash, merchantSecretHash: sha256(merchantKey),
           replacementSecretHash: sha256(replacement),
         })
-        if (staged.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', 'That current merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Try this key'))
+        if (staged.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', CURRENT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/rotate', 'begin', csrf, 'Current merchant key', 'Try this key'))
         if (staged.status === 'request_unavailable') {
           const current = await store.getMerchantRotationProgress({ sessionHash, csrfHash })
           return rotationProgressResponse(c, current, cookie, 'stage')
@@ -566,16 +579,16 @@ export function mountMarketIdentityBrowserRoutes(
         setBrowserSessionCookie(c, ROTATION_COOKIE, cookie.raw)
         return html(c, 200, 'Save replacement key', rotationCredentialPage(staged.handle, replacement, csrf))
       }
-      if (!(await admitted(store, 'rotation_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. Try again in one hour on this page.', merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
+      if (!(await admitted(store, 'rotation_confirm', [`ip:${ip}`, `session:${sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour))) return browserError(c, 429, 'rate_limited', CONFIRMATION_RATE_MESSAGE, merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
       const merchant = await store.confirmMerchantRotation({
         sessionHash, csrfHash, replacementSecretHash: sha256(merchantKey),
       })
-      if (merchant.status === 'rate_limited') return browserError(c, 429, 'rate_limited', 'This merchant reached 5 successful rotations this UTC day. Wait until the next UTC day, then start a new rotation.', startAgain('/rotate'))
+      if (merchant.status === 'rate_limited') return browserError(c, 429, 'rate_limited', `This merchant reached ${MARKET_LIMITS.identity.successfulRotationsPerMerchantUtcDay} successful rotations this UTC day. Wait until the next UTC day, then start a new rotation.`, startAgain('/rotate'))
       if (merchant.status === 'request_unavailable') {
         const current = await store.getMerchantRotationProgress({ sessionHash, csrfHash })
         return rotationProgressResponse(c, current, cookie, 'confirm')
       }
-      if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', 'That replacement merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
+      if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', REPLACEMENT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/rotate', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
       clearBrowserSessionCookie(c, ROTATION_COOKIE)
       return html(c, 200, 'Merchant key rotated', `<h1>${escapeHtml(merchant.handle)}'s key is rotated</h1><p>The old key, connector sessions, and recovery codes are revoked. The saved replacement key is active.</p>`)
     }))
@@ -595,13 +608,13 @@ export function mountMarketIdentityBrowserRoutes(
     return html(c, 200, 'Merchant-key recovery', recoveryStart(cookie.csrf))
   }))
   app.post('/recovery', c => withStorageErrors(c, '/recovery', RECOVERY_COOKIE, async () => {
-    if (!trustedBrowserForm(c, origin)) return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3EA.', startAgain('/recovery'))
-    const form = await browserFormValues(c, '/recovery', RECOVERY_COOKIE, 'This recovery page expired or is incomplete.')
+    if (!trustedBrowserForm(c, origin)) return browserError(c, 403, 'untrusted_browser_request', UNTRUSTED_FORM_MESSAGE, startAgain('/recovery'))
+    const form = await browserFormValues(c, '/recovery', RECOVERY_COOKIE, INCOMPLETE_RECOVERY_MESSAGE)
     if (form instanceof Response) return form
     const values = form
     const action = oneFormValue(values, 'action', 20)
     const csrf = oneFormValue(values, 'csrf', 128)
-    if (!csrf || !['generate', 'begin', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', 'This recovery page expired or is incomplete.', startAgain('/recovery'))
+    if (!csrf || !['generate', 'begin', 'confirm', 'cancel'].includes(action ?? '')) return browserError(c, 403, 'invalid_form', INCOMPLETE_RECOVERY_MESSAGE, startAgain('/recovery'))
     const cookie = browserSessionForForm(c, RECOVERY_COOKIE, csrf, 'recovery')
     if (cookie instanceof Response) return cookie
     const fields = { generate: ['action', 'csrf', 'merchant_key'], begin: ['action', 'csrf', 'recovery_code'], confirm: ['action', 'csrf', 'merchant_key'], cancel: ['action', 'csrf'] } as const
@@ -616,20 +629,20 @@ export function mountMarketIdentityBrowserRoutes(
     }
     if (action === 'generate') {
       const merchantKey = oneFormValue(values, 'merchant_key', 80)
-      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', 'That merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
-      if (!(await admitted(store, 'recovery_generate', [`ip:${ip}`], 5))) return browserError(c, 429, 'rate_limited', 'Too many recovery-set attempts. Try again in one hour on this page.', merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
+      if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
+      if (!(await admitted(store, 'recovery_generate', [`ip:${ip}`], MARKET_LIMITS.identity.recoverySetsPerIpUtcHour))) return browserError(c, 429, 'rate_limited', `Recovery-set creation is limited to ${MARKET_LIMITS.identity.recoverySetsPerIpUtcHour} attempts per IP per UTC hour. Try again after the next UTC hour.`, merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
       const codes = newRecoveryCodeSet()
       const merchant = await store.generateMerchantRecoveryCodes({
         merchantSecretHash: sha256(merchantKey), codeHashes: codes.map(sha256),
       })
-      if (!merchant) return browserError(c, 403, 'credential_rejected', 'That merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
+      if (!merchant) return browserError(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/recovery', 'generate', csrf, 'Current merchant key', 'Try this key'))
       clearBrowserSessionCookie(c, RECOVERY_COOKIE)
       return html(c, 200, 'Save recovery codes', recoveryCodesPage(merchant.handle, codes))
     }
     if (action === 'begin') {
       const code = oneFormValue(values, 'recovery_code', 90)
-      if (!code || !RECOVERY_CODE.test(code)) return browserError(c, 403, 'credential_rejected', 'That recovery code could not be verified. Try another unused code on this page.', recoveryCodeRetryForm(csrf))
-      if (!(await admitted(store, 'recovery_begin', [`ip:${ip}`], 10))) return browserError(c, 429, 'rate_limited', 'Too many recovery attempts. Try again in one hour on this page.', recoveryCodeRetryForm(csrf))
+      if (!code || !RECOVERY_CODE.test(code)) return browserError(c, 403, 'credential_rejected', RECOVERY_CODE_REJECTED_MESSAGE, recoveryCodeRetryForm(csrf))
+      if (!(await admitted(store, 'recovery_begin', [`ip:${ip}`], MARKET_LIMITS.identity.recoveryStartsPerIpUtcHour))) return browserError(c, 429, 'rate_limited', `Recovery is limited to ${MARKET_LIMITS.identity.recoveryStartsPerIpUtcHour} starts per IP per UTC hour. Try again after the next UTC hour.`, recoveryCodeRetryForm(csrf))
       const replacement = newSecret()
       const staged = await store.stageMerchantRecovery({
         sessionHash, csrfHash, recoveryCodeHash: sha256(code),
@@ -640,14 +653,14 @@ export function mountMarketIdentityBrowserRoutes(
         if (current.status !== 'new') {
           return recoveryProgressResponse(c, current, cookie, 'stage')
         }
-        return browserError(c, 403, 'credential_rejected', 'That recovery code could not be verified. Try another unused code on this page.', recoveryCodeRetryForm(csrf))
+        return browserError(c, 403, 'credential_rejected', RECOVERY_CODE_REJECTED_MESSAGE, recoveryCodeRetryForm(csrf))
       }
       setBrowserSessionCookie(c, RECOVERY_COOKIE, cookie.raw)
       return html(c, 200, 'Save replacement key', recoveryCredentialPage(staged.handle, replacement, csrf))
     }
     const merchantKey = oneFormValue(values, 'merchant_key', 80)
-    if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', 'That replacement merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
-    if (!(await admitted(store, 'recovery_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. Try again in one hour on this page.', merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
+    if (!merchantKey || !MERCHANT_KEY.test(merchantKey)) return browserError(c, 403, 'credential_rejected', REPLACEMENT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
+    if (!(await admitted(store, 'recovery_confirm', [`ip:${ip}`, `session:${sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour))) return browserError(c, 429, 'rate_limited', CONFIRMATION_RATE_MESSAGE, merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
     const merchant = await store.confirmMerchantRecovery({
       sessionHash, csrfHash, replacementSecretHash: sha256(merchantKey),
     })
@@ -655,7 +668,7 @@ export function mountMarketIdentityBrowserRoutes(
       const current = await store.getMerchantRecoveryProgress({ sessionHash, csrfHash })
       return recoveryProgressResponse(c, current, cookie, 'confirm')
     }
-    if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', 'That replacement merchant key could not be verified. Check it and try again on this page.', merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
+    if (merchant.status === 'credential_rejected') return browserError(c, 403, 'credential_rejected', REPLACEMENT_KEY_REJECTED_MESSAGE, merchantKeyRetryForm('/recovery', 'confirm', csrf, 'Re-enter the replacement merchant key', 'Try this key'))
     clearBrowserSessionCookie(c, RECOVERY_COOKIE)
     return html(c, 200, 'Merchant key replaced', `<h1>${escapeHtml(merchant.handle)} is recovered</h1><p>The old key and connector sessions are revoked. The saved replacement key is active.</p>`)
   }))

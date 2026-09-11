@@ -1,6 +1,8 @@
+import { MARKET_LIMITS } from './market-facts.ts'
+
 const POSTGRES_INTEGER_MAX = 2_147_483_647
 const SHELF_CURSOR_VERSION = 1
-const MAX_CURSOR_LENGTH = 2_048
+const MAX_CURSOR_LENGTH = MARKET_LIMITS.collection.cursorMaxChars
 
 export interface NumericPageOptions {
   cursorName: string

@@ -1,6 +1,7 @@
 import { sql } from './db.ts'
 import type { Merchant } from './core.ts'
 import { requireOAuthHash as requireHash } from './market-oauth-hashes.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import {
   createMarketOAuthRegistrationStore,
   type ConfirmNewMerchantInput,
@@ -167,7 +168,7 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
       ) VALUES (
         ${input.sessionHash}, ${input.csrfHash}, ${input.clientId}, ${input.clientName},
         ${input.redirectUri}, ${input.resource}, ${input.scope}, ${input.state},
-        ${input.codeChallenge}, 'S256', now() + interval '15 minutes'
+        ${input.codeChallenge}, 'S256', now() + make_interval(mins => ${MARKET_LIMITS.oauth.requestMinutes})
       )
     `
   }
@@ -320,7 +321,7 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
           scope, code_challenge, code_challenge_method, expires_at
         )
         SELECT id, ${input.authorizationCodeHash}, merchant_id, client_id, redirect_uri,
-          resource, scope, code_challenge, 'S256', now() + interval '5 minutes'
+          resource, scope, code_challenge, 'S256', now() + make_interval(mins => ${MARKET_LIMITS.oauth.authorizationCodeMinutes})
         FROM consumed_request
         RETURNING request_id
       ), completed AS MATERIALIZED (
@@ -419,17 +420,17 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
         INSERT INTO oauth_token_families (
           merchant_id, client_id, resource, scope, expires_at
         )
-        SELECT merchant_id, client_id, resource, scope, now() + interval '30 days'
+        SELECT merchant_id, client_id, resource, scope, now() + make_interval(days => ${MARKET_LIMITS.oauth.refreshPassDays})
         FROM consumed_code
         RETURNING id
       ), new_access AS (
         INSERT INTO oauth_tokens (token_hash, token_type, family_id, expires_at)
-        SELECT ${input.accessTokenHash}, 'access', id, now() + interval '10 minutes'
+        SELECT ${input.accessTokenHash}, 'access', id, now() + make_interval(mins => ${MARKET_LIMITS.oauth.accessPassMinutes})
         FROM new_family
         RETURNING id
       ), new_refresh AS (
         INSERT INTO oauth_tokens (token_hash, token_type, family_id, expires_at)
-        SELECT ${input.refreshTokenHash}, 'refresh', id, now() + interval '30 days'
+        SELECT ${input.refreshTokenHash}, 'refresh', id, now() + make_interval(days => ${MARKET_LIMITS.oauth.refreshPassDays})
         FROM new_family
         RETURNING id
       )
@@ -492,12 +493,12 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
           AND family.client_id = ${input.clientId}
           AND family.resource = ${input.resource}
           AND family.revoked_at IS NULL
-          AND family.expires_at >= now() + interval '10 minutes'
+          AND family.expires_at >= now() + make_interval(mins => ${MARKET_LIMITS.oauth.accessPassMinutes})
         RETURNING token.id, token.family_id
       ), new_access AS (
         INSERT INTO oauth_tokens (token_hash, token_type, family_id, expires_at)
         SELECT ${input.accessTokenHash}, 'access', consumed.family_id,
-          LEAST(now() + interval '10 minutes', family.expires_at)
+          LEAST(now() + make_interval(mins => ${MARKET_LIMITS.oauth.accessPassMinutes}), family.expires_at)
         FROM consumed_refresh consumed
         JOIN oauth_token_families family ON family.id = consumed.family_id
         RETURNING id

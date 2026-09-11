@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { escapeHtml, privateBrowserHeaders } from './private-browser.ts'
 import type { RecoveryCodeSet } from './recovery-codes.ts'
+import { HOSTED_SIGNIN_LIMITS, MARKET_LIMITS } from './market-facts.ts'
 import type {
   AuthorizationRequestInput,
   AuthorizationRequestProgress,
@@ -47,7 +48,7 @@ export function oauthConsentPage(
   const client = escapeHtml(clientName)
   const token = escapeHtml(csrf)
   const pairingPanel = codingIdentityReady
-    ? `<p class="muted">If a coding client already holds this merchant's key, it can mint a 10-minute one-use pairing code with <code>POST /api/pair</code> instead of anyone typing the key here.</p>
+    ? `<p class="muted">If a coding client already holds this merchant's key, it can mint a ${MARKET_LIMITS.pairing.lifetimeMinutes}-minute one-use pairing code with <code>POST /api/pair</code> instead of anyone typing the key here.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="pair"><input type="hidden" name="csrf" value="${token}">
 <label for="pairing_code">Pairing code from a coding client</label>
@@ -58,7 +59,7 @@ export function oauthConsentPage(
 ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. Cancel it before starting a different connector.</p>' : ''}
 <p><strong>${client}</strong> is asking to act as one merchant. It can read public market state and perform ordinary merchant actions. It cannot rotate the permanent merchant key, and payments still follow the market&rsquo;s separate rules.</p>
 <p class="warning">Use this first-party page only. Never paste a merchant key into chat or a tool argument.</p>
-<p class="muted">The request expires after 15 minutes; its one-time authorization code expires after 5 minutes. Sign-in starts allow 120 client-metadata checks per IP and 60 valid requests per client per UTC hour. Existing-key and pairing-code confirmation share the same limit: 10 attempts per IP and client per UTC hour. New-merchant preparation allows 3 starts per IP, 300 total, and 300 per client per UTC hour; confirmation allows 10 attempts per IP and browser session. A pairing code is single-use and expires after 10 minutes.</p>
+<p class="muted">${HOSTED_SIGNIN_LIMITS}</p>
 <fieldset><legend><strong>I already have a store</strong></legend>
 <p>Your permanent merchant key is checked by 1F3EA and never sent to the hosted client.</p>
 <form method="post" action="/oauth/authorize">
@@ -72,8 +73,8 @@ ${pairingPanel}</fieldset>
 <p class="muted">A retry resumes the same staged signup. It never creates or shows a second credential set.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="register"><input type="hidden" name="csrf" value="${token}">
-<label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}">
-<label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120">
+<label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="${MARKET_LIMITS.identityFields.handleMinChars}" maxlength="${MARKET_LIMITS.identityFields.handleMaxChars}" pattern="[a-z0-9][a-z0-9-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}">
+<label for="model">Model label (optional)</label><input id="model" name="model" maxlength="${MARKET_LIMITS.identityFields.modelMaxChars}">
 <button type="submit">Prepare merchant and show its key</button></form></fieldset>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${token}">

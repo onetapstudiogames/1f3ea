@@ -1,6 +1,7 @@
 # City and market surface parity
 
-Status checked 2026-09-01 against the market source and the city page-audit standard in
+Status checked 2026-09-11 against the market source, the installed market skill at
+`C:\Users\Owner\.codex\skills\1f3ea-skill`, and the city page-audit standard in
 1F3D9 issue #86. This is the public difference ledger required by market issue #14. A
 source match is not a live claim: post-merge deployment, crawler, and real-device checks
 remain separately recorded evidence.
@@ -22,7 +23,8 @@ Status words are exact:
 | `/` | Agent | Full plain-text market contract and first entry point | Source matched; generated copy is tested against `src/frontdoor.txt` |
 | `/llms.txt` | Agent/indexer | Compact discovery map and operating contract | Source matched; generated copy is tested against `src/llms.txt` |
 | `/about` | Human | Script-free project, operator, and safety explanation | Source matched; browser checks cover the shared page shell |
-| `/help` | Human and agent operator | Entry-path, limits, credential, window, bridge, and support handoffs | Source matched; direct city-bridge handoff included |
+| `/help` | Human and agent operator | Existing entry and safety guide plus a live connector catalog | Source matched; catalog is generated from the same 27-tool list as MCP |
+| `/changelog` | Human and agent | Rendered public release notes from root `CHANGELOG.md` | Source matched; `/changelog.txt` serves the exact same source |
 | `/city-bridge` | Human and agent operator | Seller, buyer, recovery, cancellation, watching, and stall-keeping walkthrough | Source matched; live two-site walkthrough remains unrecorded |
 | `/window` | Human | Read-only shelves, stores, books, activity, and public failure states | Deliberate market product view; source and browser checks matched |
 | `/join` | Human-assisted agent | Private merchant-key creation ceremony | Feature-gated setup pattern; source checked, live protected-client proof unrecorded |
@@ -47,7 +49,7 @@ Status words are exact:
 | `/og-image.png` | Crawler asset | Default Open Graph and Twitter share image | Source matched; live crawler probe pending |
 | `/window.css` | Browser asset | Shop-window visual system | Matched in source |
 | `/window.js` | Browser asset | Read-only shop-window state machine | Matched in source |
-| `/window-card.png` | Crawler asset | Current shop-window share card | Source matched; live crawler probe pending |
+| `/window-card.png` | Crawler asset | Compatibility address for the canonical share image | Redirects to `/og-image.png`, so one cache policy owns the bytes |
 
 JSON APIs are inventoried in `docs/SPEC.md`; this table covers rendered human, agent, and
 infrastructure surfaces rather than repeating every API operation.
@@ -71,7 +73,7 @@ infrastructure surfaces rather than repeating every API operation.
 | Source layout | Cohesive route and helper modules | PR #33 splits the oversized index, removes dead OAuth code, and relocates the live helper without behavior change | Implemented in PR #33; live verification pending |
 | Operations | Indexed runbooks, exact environment ownership, migrations, and stop conditions | `docs/runbooks/` maps current deployment, environment, and market operations | Matched in source; live verification pending |
 | Public commerce model | City presents rooms and things | Market deliberately presents shelves, stores, books, and a read-only window | Deliberate difference |
-| External market skill | Installed instructions begin from current live facts and bridge guidance | The published skill still contains retired identity, wallet, and pending-payment guidance | External follow-up; not editable in this repo |
+| External market skill | Installed instructions begin from current live facts and bridge guidance | Rechecked 2026-09-11: wallet safety and staged setup are current. Three gaps remain: it hard-codes the old 21-tool catalog, calls the ordinary machine registration path retired before explaining that its setup command uses the current staged JSON doors, and documents `payment_pending` without the three terminal city recovery outcomes. | External follow-up; skill-owned |
 | Immutable live listings | Public historical records stay honest | Source seeds are corrected, but live listings 1, 2, 3, 4, 6, and 8 need the replacement/retirement procedure in `docs/runbooks/OPERATIONS.md` | External operator follow-up after merge |
 
 ## Mechanic × surface consistency matrix
@@ -84,7 +86,7 @@ deliberate omission for that audience, **E** is an external surface not editable
 |---|---|---|---|---|---|---|---|---|---|
 | Entry, identity, and credential safety | C | C | E | E | C | L | D | C | Market surfaces matched; both skills external |
 | Public browse, totals, limits, and cursors | C | C | E | E | L | L | C | C | Market source matched; private bounds are implemented in PR #33 |
-| Ordinary listing and direct/x402 fee retry | C | C | E | E | L | D | D | C | Market source matched; external skill stale |
+| Ordinary listing and direct/x402 fee retry | C | C | E | E | L | D | D | C | Market source matched; installed skill omits ordinary `needs_review` terminal guidance |
 | Ordinary purchase, signed intent, and re-download | C | C | E | E | L | D | D | C | Market source matched; bounded re-download pages are implemented in PR #33 |
 | World seller, activation, cancellation, and stall sign | C | C | E | E | C | L | L | C | Market source matched; city front/skill links external |
 | World buyer, claim, finality, sync, and recovery | C | C | E | E | C | L | L | C | Market source matched in merged PR #32; city front/skill links external |

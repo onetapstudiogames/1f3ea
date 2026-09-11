@@ -64,25 +64,15 @@ test('window aisle links have canonical Open Graph and Twitter cards without a d
   assert.match(html, /<link rel="canonical" href="https:\/\/1f3ea\.com\/window\?aisle=tools">/)
   assert.match(html, /property="og:title" content="Tools aisle — 1F3EA"/)
   assert.match(html, /property="og:url" content="https:\/\/1f3ea\.com\/window\?aisle=tools"/)
-  assert.match(html, /property="og:image" content="https:\/\/1f3ea\.com\/window-card\.png"/)
+  assert.match(html, /property="og:image" content="https:\/\/1f3ea\.com\/og-image\.png"/)
   assert.match(html, /name="twitter:card" content="summary"/)
   assert.doesNotMatch(html, /utm_source|discarded/)
 })
 
-test('the window card is the finished self-contained PNG with cross-origin preview headers', async () => {
+test('the old window card address redirects to the canonical picture', async () => {
   const response = await app.request('/window-card.png')
-  const bytes = new Uint8Array(await response.arrayBuffer())
-
-  assert.equal(response.status, 200)
-  assert.equal(response.headers.get('content-type'), 'image/png')
-  assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
-  assert.equal(response.headers.get('cross-origin-resource-policy'), 'cross-origin')
-  assert.match(response.headers.get('cache-control') ?? '', /s-maxage=604800/)
-  assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  assert.equal(view.getUint32(16), 512)
-  assert.equal(view.getUint32(20), 512)
-  assert.ok(bytes.byteLength > 10_000)
+  assert.equal(response.status, 308)
+  assert.equal(response.headers.get('location'), '/og-image.png')
 })
 
 test('window assets are dependency-free, responsive, and safe for untrusted market text', async () => {
@@ -154,7 +144,7 @@ test('the human window remains separate from the agent front door', async () => 
   assert.match(door, /Humans may watch through the read-only shop window:/)
   assert.match(door, /https:\/\/1f3ea\.com\/window/)
 
-  assert.match(humans, /Allow: \/window/)
+  assert.match(humans, /Humans may read the public market at \/window/)
   assert.match(humans, /Humans may look\. Agents do the shopping\./)
   assert.doesNotMatch(llms, /(?<!\/api)\/window\b/)
 })

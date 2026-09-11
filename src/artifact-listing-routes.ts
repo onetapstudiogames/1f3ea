@@ -29,8 +29,9 @@ import {
   type ListingFeeResolution,
 } from './listing-fee-payment.ts'
 import { x402CustodyFailureResponse, x402NoPayResponse } from './x402-route-response.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
-const DUPE_WINDOW_DAYS = 7
+const DUPE_WINDOW_DAYS = MARKET_LIMITS.listing.duplicateWindowDays
 const FEE_TX_CONSTRAINTS: readonly string[] = [
   'fees_tx_hash_key',
   'fees_tx_hash_lower_unique',
@@ -44,21 +45,27 @@ interface ListingBody {
 
 export function validListing(b: unknown): ListingBody | string {
   const o = b as Record<string, unknown> | null
-  if (!o || typeof o !== 'object') return 'body must be JSON'
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return 'body must be JSON'
+  const allowedFields = [
+    'title', 'description', 'preview', 'artifact', 'price_usdc', 'seller_wallet', 'tags', 'aisle',
+    'fee_tx_hash',
+  ] as const
+  if (Object.keys(o).some(key => !(allowedFields as readonly string[]).includes(key)))
+    return `body may contain only: ${allowedFields.join(', ')}`
   const title = String(o.title ?? '').trim()
   const description = String(o.description ?? '').trim()
   const preview = String(o.preview ?? '').trim()
   const artifact = String(o.artifact ?? '')
   const price = Number(o.price_usdc ?? NaN)
   const wallet = String(o.seller_wallet ?? '')
-  const tags = Array.isArray(o.tags) ? [...new Set(o.tags.map(String).map(t => t.toLowerCase().trim().slice(0, 40)).filter(Boolean))].slice(0, 8) : []
+  const tags = Array.isArray(o.tags) ? [...new Set(o.tags.map(String).map(t => t.toLowerCase().trim().slice(0, MARKET_LIMITS.listing.tagMaxChars)).filter(Boolean))].slice(0, MARKET_LIMITS.listing.tagsMaxCount) : []
   const rawAisle = typeof o.aisle === 'string' ? o.aisle.toLowerCase().trim() : ''
   const feeTxHash = o.fee_tx_hash == null ? undefined : canonicalTxHash(o.fee_tx_hash)
-  if (title.length < 3 || title.length > 120) return 'title: 3-120 chars'
-  if (!description || description.length > 4000) return 'description: 1-4000 chars'
-  if (preview.length > 4000) return 'preview: max 4000 chars'
-  if (!artifact || Buffer.byteLength(artifact, 'utf8') > 262144) return 'artifact: 1 byte - 256 KB of text'
-  if (!Number.isFinite(price) || price < 0 || price > 10000) return 'price_usdc: 0 to 10000'
+  if (title.length < MARKET_LIMITS.listing.titleMinChars || title.length > MARKET_LIMITS.listing.titleMaxChars) return `title: ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} chars`
+  if (!description || description.length > MARKET_LIMITS.listing.descriptionMaxChars) return `description: ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} chars`
+  if (preview.length > MARKET_LIMITS.listing.previewMaxChars) return `preview: max ${MARKET_LIMITS.listing.previewMaxChars} chars`
+  if (!artifact || Buffer.byteLength(artifact, 'utf8') > MARKET_LIMITS.listing.artifactMaxBytes) return `artifact: ${MARKET_LIMITS.listing.descriptionMinChars} byte - ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB of text`
+  if (!Number.isFinite(price) || price < MARKET_LIMITS.listing.priceMinUsdc || price > MARKET_LIMITS.listing.priceMaxUsdc) return `price_usdc: ${MARKET_LIMITS.listing.priceMinUsdc} to ${MARKET_LIMITS.listing.priceMaxUsdc}`
   if (!WALLET_RE.test(wallet)) return 'seller_wallet: 0x + 40 hex chars (an address on Base)'
   if (rawAisle === 'world') return 'world listings start at POST /api/world/draft; artifact listings cannot use the world aisle'
   if (o.aisle != null && (typeof o.aisle !== 'string' || !isAisle(rawAisle)))
@@ -66,7 +73,7 @@ export function validListing(b: unknown): ListingBody | string {
   if (o.fee_tx_hash != null && !feeTxHash) return 'fee_tx_hash: 0x + 64 hex chars'
   return {
     title, description, preview, artifact,
-    price_usdc: Math.round(price * 1e6) / 1e6, seller_wallet: wallet, tags,
+    price_usdc: Math.round(price * 10 ** MARKET_LIMITS.listing.priceDecimals) / 10 ** MARKET_LIMITS.listing.priceDecimals, seller_wallet: wallet, tags,
     aisle: rawAisle ? rawAisle as Aisle : suggestAisle(tags),
     fee_tx_hash: feeTxHash ?? undefined,
   }
@@ -535,7 +542,17 @@ app.patch('/api/listing/:id', async c => {
   if (priced && (keys.includes('title') || keys.includes('artifact')))
     return err(c, 409, 'title and artifact are immutable on a priced listing')
 
-  const merged = { ...current, ...(body as Record<string, unknown>) }
+  const merged = {
+    title: current.title,
+    description: current.description,
+    preview: current.preview,
+    artifact: current.artifact,
+    price_usdc: current.price_usdc,
+    seller_wallet: current.seller_wallet,
+    tags: current.tags,
+    aisle: current.aisle,
+    ...(body as Record<string, unknown>),
+  }
   const validated = validListing(merged)
   if (typeof validated === 'string') return err(c, 400, validated)
 

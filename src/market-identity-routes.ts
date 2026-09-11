@@ -9,7 +9,7 @@ import {
 } from './market-oauth-config.ts'
 import { mountMarketPairingRoutes } from './market-pairing-routes.ts'
 import { privateBrowserHeaders } from './private-browser.ts'
-import { HOSTED_PROOF_CONTRACT, HOSTED_PROVEN_HOSTS } from './public-contracts.ts'
+import { HOSTED_PROOF_CONTRACT, HOSTED_PROVEN_HOSTS, LEGACY_REGISTRATION_STATUS } from './market-facts.ts'
 
 export type MarketIdentityRouteOptions = Readonly<{
   environment?: MarketOAuthEnvironment
@@ -117,7 +117,7 @@ export function marketIdentityPublicFacts(
     hosted_connector: hostedReady ? `${origin}/mcp/connect` : null,
     hosted_status: hostedReady ? HOSTED_PROOF_CONTRACT : 'dormant',
     hosted_proven_hosts: HOSTED_PROVEN_HOSTS,
-    legacy_registration: 'retired',
+    legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport: codingReady
       ? 'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
         'never chat, MCP arguments or results, URLs, or logs'

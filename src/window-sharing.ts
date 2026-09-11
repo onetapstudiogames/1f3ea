@@ -1,11 +1,12 @@
 import { HANDLE_RE } from './core.ts'
 import { AISLES, UNSAFE_DIRECTION_CONTROL_RE } from './market.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 const PUBLIC_ORIGIN = 'https://1f3ea.com'
-const CARD_URL = `${PUBLIC_ORIGIN}/window-card.png`
-const MAX_PUBLIC_CARD_BYTES = 65_536
-const MAX_META_TEXT_CHARS = 200
-const PUBLIC_CARD_READ_TIMEOUT_MS = 3_000
+const CARD_URL = `${PUBLIC_ORIGIN}/og-image.png`
+const MAX_PUBLIC_CARD_BYTES = MARKET_LIMITS.publicRead.shareMaxBytes
+const MAX_META_TEXT_CHARS = MARKET_LIMITS.publicRead.metaTextMaxChars
+const PUBLIC_CARD_READ_TIMEOUT_MS = MARKET_LIMITS.publicRead.shareTimeoutMs
 
 export interface WindowShare {
   canonicalUrl: string
@@ -162,7 +163,7 @@ async function beforeDeadline<T>(
 export async function resolveWindowShare(
   href: string,
   publicRead: WindowPublicRead,
-  timeoutMs = PUBLIC_CARD_READ_TIMEOUT_MS,
+  timeoutMs: number = PUBLIC_CARD_READ_TIMEOUT_MS,
 ): Promise<WindowShare> {
   let url: URL
   try {

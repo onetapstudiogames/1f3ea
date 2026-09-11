@@ -9,6 +9,7 @@ import type { Context } from 'hono'
 
 import { oneFormValue } from './browser-form.ts'
 import { sha256 } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import { MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX } from './market-oauth-config.ts'
 import {
   isInitialAuthorizationRequest,
@@ -76,7 +77,7 @@ export async function handlePairAction(
     oauth,
     [`ip:${clientAddress(c, oauth.environment)}`, `client:${pending.client_id}`],
     'merchant_key',
-    10,
+    MARKET_LIMITS.oauth.keyAttemptsPerIpAndClientUtcHour,
   )
   if (!allowed) return browserError(c, 429, 'Too many pairing attempts. Try again after the next UTC hour.')
   const reserved = await reservePairing({ sessionHash, csrfHash, codeHash: sha256(pairingCode) })

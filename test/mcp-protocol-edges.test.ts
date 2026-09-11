@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import { mcp, type McpOptions } from '../src/mcp.ts'
 
 const ACCESS_TOKEN = `1f3ea_at_${'cd'.repeat(32)}`
+const HELP_DATA = { help_tool: 'help', help_page: 'https://1f3ea.com/help' } as const
 
 function gateway(backing: Hono, options: McpOptions = {}) {
   const app = new Hono()
@@ -52,17 +53,17 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   })
   assert.equal(malformedJson.status, 200)
   assert.deepEqual(await malformedJson.json(), {
-    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message' },
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message', data: HELP_DATA },
   })
 
   const batch = await app.request('/mcp', jsonRequest([]))
   assert.deepEqual(await batch.json(), {
-    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported' },
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported', data: HELP_DATA },
   })
 
   const wrongVersion = await app.request('/mcp', jsonRequest({ jsonrpc: '1.0', id: 9, method: 'ping' }))
   assert.deepEqual(await wrongVersion.json(), {
-    jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message' },
+    jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message', data: HELP_DATA },
   })
 
   const missingMethod = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 10 }))
@@ -70,7 +71,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
 
   const unknown = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 11, method: 'not-real' }))
   assert.deepEqual(await unknown.json(), {
-    jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real' },
+    jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real', data: HELP_DATA },
   })
 
   const structuredToolName = await app.request('/mcp', jsonRequest({
@@ -79,7 +80,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   }))
   assert.equal(structuredToolName.status, 200)
   assert.deepEqual(await structuredToolName.json(), {
-    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ', data: HELP_DATA },
   })
 })
 
@@ -306,6 +307,8 @@ test('both MCP doors redact Unicode-escaped credentials in JSON keys and nested 
           error_class: 'bad_input',
           front_door_tool: 'front_door',
           front_door: 'https://1f3ea.com/',
+          help_tool: 'help',
+          help_page: 'https://1f3ea.com/help',
           http_status: 400,
         } : {}),
       })
@@ -409,6 +412,12 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
     { name: 'buy', arguments: { id: 3 } },
     { name: 'buy', arguments: { id: 4, payer_wallet: '0x1111111111111111111111111111111111111111' } },
     { name: 'buy', arguments: { id: 5, intent_id: 8, tx_hash: 'proof' } },
+    { name: 'help', arguments: {} },
+    { name: 'flag', arguments: { target_type: 'listing', target_id: 6, reason: 'spam' } },
+    { name: 'cancel_world_draft', arguments: { draft_id: 7 } },
+    { name: 'treasury', arguments: { limit: 8 } },
+    { name: 'remove_listing', arguments: { listing_id: 9, reason: 'copied' } },
+    { name: 'pin_listing', arguments: { listing_id: 10, pinned: true } },
   ]
   for (const params of calls) {
     const response = await app.request('/mcp', jsonRequest({
@@ -428,6 +437,12 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
       body: { payer_wallet: '0x1111111111111111111111111111111111111111' },
     },
     { method: 'POST', path: '/api/claim/5', body: { intent_id: 8, tx_hash: 'proof' } },
+    { method: 'GET', path: '/api/help', body: null },
+    { method: 'POST', path: '/api/flag', body: { target_type: 'listing', target_id: 6, reason: 'spam' } },
+    { method: 'POST', path: '/api/world/draft/7/cancel', body: {} },
+    { method: 'GET', path: '/treasury?limit=8', body: null },
+    { method: 'POST', path: '/api/mod/remove', body: { listing_id: 9, reason: 'copied' } },
+    { method: 'POST', path: '/api/mod/pin', body: { listing_id: 10, pinned: true } },
   ])
 
   for (const handle of [undefined, 'a/b', '\ud800']) {
@@ -450,8 +465,40 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
     jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
   }))
   assert.deepEqual(await unknownTool.json(), {
-    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ' },
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ', data: HELP_DATA },
   })
+})
+
+test('new connector actions preserve public, merchant, and maintainer access through dispatch', async () => {
+  const backing = new Hono()
+  const token = (authorization: string | undefined) => authorization?.replace(/^Bearer\s+/u, '')
+  const merchant = (authorization: string | undefined) => ['merchant', 'maintainer'].includes(token(authorization) ?? '')
+  const maintainer = (authorization: string | undefined) => token(authorization) === 'maintainer'
+
+  backing.get('/api/help', c => c.json({ ok: true }))
+  backing.get('/treasury', c => c.json({ ok: true }))
+  backing.post('/api/flag', c => merchant(c.req.header('authorization')) ? c.json({ ok: true }) : c.json({ error: 'sign in' }, 401))
+  backing.post('/api/world/draft/:id/cancel', c => merchant(c.req.header('authorization')) ? c.json({ ok: true }) : c.json({ error: 'sign in' }, 401))
+  backing.post('/api/mod/remove', c => maintainer(c.req.header('authorization')) ? c.json({ ok: true }) : c.json({ error: merchant(c.req.header('authorization')) ? 'maintainer only' : 'sign in' }, merchant(c.req.header('authorization')) ? 403 : 401))
+  backing.post('/api/mod/pin', c => maintainer(c.req.header('authorization')) ? c.json({ ok: true }) : c.json({ error: merchant(c.req.header('authorization')) ? 'maintainer only' : 'sign in' }, merchant(c.req.header('authorization')) ? 403 : 401))
+  const app = gateway(backing)
+
+  for (const [name, args] of [['help', {}], ['treasury', {}]] as const)
+    assert.equal((await callTool(app, name, args)).body.result.isError, false, name)
+  for (const [name, args] of [
+    ['flag', { target_type: 'listing', target_id: 1, reason: 'spam' }],
+    ['cancel_world_draft', { draft_id: 1 }],
+  ] as const) {
+    assert.equal((await callTool(app, name, args)).body.result.isError, true, `${name} anonymous`)
+    assert.equal((await callTool(app, name, args, 'Bearer merchant')).body.result.isError, false, `${name} merchant`)
+  }
+  for (const [name, args] of [
+    ['remove_listing', { listing_id: 1, reason: 'spam' }],
+    ['pin_listing', { listing_id: 1, pinned: true }],
+  ] as const) {
+    assert.equal((await callTool(app, name, args, 'Bearer merchant')).body.result.isError, true, `${name} merchant`)
+    assert.equal((await callTool(app, name, args, 'Bearer maintainer')).body.result.isError, false, `${name} maintainer`)
+  }
 })
 
 test('known tools reject non-object arguments before any backing request', async () => {
@@ -597,7 +644,7 @@ test('new connector arguments reject invalid filters and limits instead of silen
     },
     {
       name: 'read_events', arguments: { kind: 'x'.repeat(41) },
-      error: 'kind must be 1 to 40 characters.',
+      error: 'kind must be 1 to 40 characters measured as UTF-16 code units.',
     },
     {
       name: 'read_events', arguments: { scope: 'private' },

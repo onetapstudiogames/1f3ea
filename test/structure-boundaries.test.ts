@@ -10,8 +10,8 @@ function digest(value: string): string {
 }
 
 test('window source splits preserve the exact served JavaScript and CSS bytes', () => {
-  assert.equal(Buffer.byteLength(WINDOW_JS, 'utf8'), 62_192)
-  assert.equal(digest(WINDOW_JS), '6ba4ed738a18cb43a39aa379517a6435b1e78d1731350653fad3e54ebc3a3abb')
+  assert.equal(Buffer.byteLength(WINDOW_JS, 'utf8'), 62_892)
+  assert.equal(digest(WINDOW_JS), '3f0a8c4ec8c575bb4f37c933cf29725586507f21577503fc2b080ce50a6c7e0b')
   assert.equal(Buffer.byteLength(WINDOW_CSS, 'utf8'), 26_634)
   assert.equal(digest(WINDOW_CSS), 'df92223b65b39fa46b9b6bb9d58e6ce463757973d9a4dfed7a2db40f536741a9')
 })

@@ -32,6 +32,7 @@ const OPEN_INTENT_CONSTRAINTS: readonly string[] = [
   'direct_purchase_intents_open_unique',
   'direct_purchase_intents_buyer_listing_unique',
 ]
+const DIFFERENT_PAYER_MESSAGE = ' It is bound to a different payer wallet.'
 
 interface BuyableListing {
   id: number; merchant_id: number; title: string; price_usdc: number
@@ -207,7 +208,7 @@ async function createDirectPurchaseIntent(
       )`) as DirectPurchaseIntentRow[]
   if (existing[0]?.payment_status === 'payment_pending') {
     const walletNote = existing[0].payer_wallet !== payerWallet.toLowerCase()
-      ? ' It is bound to a different payer wallet.'
+      ? DIFFERENT_PAYER_MESSAGE
       : ''
     return c.json({
       error: `this purchase intent already has a payment awaiting finality; do not pay again.${walletNote}`,
@@ -217,7 +218,7 @@ async function createDirectPurchaseIntent(
   }
   if (existing[0]?.payment_status === 'needs_review') {
     const walletNote = existing[0].payer_wallet !== payerWallet.toLowerCase()
-      ? ' It is bound to a different payer wallet.'
+      ? DIFFERENT_PAYER_MESSAGE
       : ''
     return c.json({
       error: `this purchase intent has a payment that needs review; do not pay again.${walletNote}`,

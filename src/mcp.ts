@@ -102,8 +102,14 @@ function hostedAuthenticationHeaders(c: Context, challenge: string): void {
   appendResponseHeader(c, 'Access-Control-Expose-Headers', 'WWW-Authenticate')
 }
 
-const rpcError = (c: Context, id: unknown, code: number, message: string) =>
-  c.json({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
+const rpcError = (c: Context, id: unknown, code: number, message: string) => c.json({
+  jsonrpc: '2.0', id: id ?? null,
+  error: {
+    code,
+    message,
+    data: { help_tool: 'help', help_page: `${configuredFrontDoor()}help` },
+  },
+})
 
 type McpErrorClass =
   | 'bad_input'
@@ -143,6 +149,8 @@ function classifiedErrorText(
     error_class: errorClass,
     front_door_tool: 'front_door',
     front_door: configuredFrontDoor(),
+    help_tool: 'help',
+    help_page: `${configuredFrontDoor()}help`,
     http_status: httpStatus,
     retry_after_seconds: retryAfterSeconds,
   }

@@ -1,4 +1,5 @@
 import { EDITABLE_LISTING_FIELDS } from './market.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 export const WINDOW_JS_CATALOG = String.raw`(() => {
   'use strict'
 
@@ -7,12 +8,12 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
   const REQUEST_TIMEOUT_MS = 10_000
   const MAX_ERROR_RESPONSE_BYTES = 4_096
   const MAX_ERROR_CAUSE_BYTES = 500
-  const MAX_FILTER_CHARS = 100
+  const MAX_FILTER_CHARS = ${MARKET_LIMITS.collection.queryMaxChars}
   const PUBLIC_WINDOW_URL = 'https://1f3ea.com/window'
-  const EVENT_PAGE_SIZE = 100
-  const LISTING_PAGE_SIZE = 50
-  const MERCHANT_PAGE_SIZE = 500
-  const COMMENT_PAGE_SIZE = 200
+  const EVENT_PAGE_SIZE = ${MARKET_LIMITS.collection.windowEvents}
+  const LISTING_PAGE_SIZE = ${MARKET_LIMITS.collection.windowListings}
+  const MERCHANT_PAGE_SIZE = ${MARKET_LIMITS.collection.windowMerchants}
+  const COMMENT_PAGE_SIZE = ${MARKET_LIMITS.collection.listingCommentsPage}
   const INCONSISTENT_PUBLIC_DATA = 'the market returned incomplete or inconsistent public data'
   const UNREADABLE_PUBLIC_JSON = 'the market returned unreadable JSON'
   const UNREADABLE_HTTP_FAILURE = 'the market returned an unreadable HTTP failure response'
@@ -92,6 +93,15 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
   }
   function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
   function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
+  function safeCityOfferUrl(value) {
+    if (typeof value !== 'string') return null
+    try {
+      const url = new URL(value)
+      return url.origin === 'https://1f3d9.com' && /^\/api\/world\/offer\/[1-9]\d*$/.test(url.pathname) && !url.search && !url.hash
+        ? url.href
+        : null
+    } catch { return null }
+  }
   function publicFailure(cause) {
     const error = new Error('public market read failed')
     error.publicCause = cause

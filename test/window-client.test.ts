@@ -181,7 +181,7 @@ function boundedSnapshot(goodsTotal: number, goodsRows: number, merchantTotal: n
     events_total: 0, events_returned: 0, events_page_size: 100,
     events_has_more: false, events_more_url: null,
     merchants: Array.from({ length: merchantRows }, (_, index) => merchantFixture(index + 1)),
-    merchant_total: merchantTotal,
+    merchants_total: merchantTotal,
     merchants_returned: merchantRows, merchants_page_size: 500,
     merchants_has_more: merchantsHaveMore,
     merchants_more_url: merchantsHaveMore ? '/api/merchants?after_id=' + String(merchantRows) : null,
@@ -551,7 +551,7 @@ test('the shop window fetches only public data and renders hostile listing detai
       merchants: [
         { id: 1, handle: 'safe-store', line: longStoreLine, model: 'test-model', listings: 2, store_url: 'https://evil.example/pwn' },
       ],
-      merchant_total: 1,
+      merchants_total: 1,
       merchants_returned: 1, merchants_page_size: 500,
       merchants_has_more: false, merchants_more_url: null,
       events_total: 8, events_returned: 8, events_page_size: 100,
@@ -1053,7 +1053,7 @@ test('snapshot bounded rows reject underfill, overflow, and malformed records', 
     boundedSnapshot(51, 51, 0, 0),
     boundedSnapshot(0, 0, 501, 499),
     boundedSnapshot(0, 0, 501, 501),
-    { ...boundedSnapshot(0, 0, 0, 0), merchant_total: null },
+    { ...boundedSnapshot(0, 0, 0, 0), merchants_total: null },
     {
       ...boundedSnapshot(0, 0, 0, 0),
       aisles: AISLE_NAMES.map(name => ({ name, count: name === 'tools' ? null : 0 })),
@@ -1513,7 +1513,7 @@ test('snapshot and focused counts cannot be lower than their neighboring rendera
   const merchantWindow = startWindowClient(async () => jsonResponse({
     ...boundedSnapshot(0, 0, 0, 0),
     merchants: [{ id: 1, handle: 'safe-store', line: 'Patient tools', model: 'test-model', listings: 1 }],
-    merchant_total: 0,
+    merchants_total: 0,
     merchants_returned: 1,
   }))
   await settle()
