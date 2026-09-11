@@ -22,9 +22,12 @@ A change is done when ALL of these are true, and not before:
    probed on the deployed site and what it returned — not an assertion that
    the code changed.
 5. **Docs moved with the code, in the same PR.** Contract-visible changes
-   touch the mirror surfaces: src/frontdoor.txt, src/door.ts, src/llms.txt,
-   docs/SPEC.md, docs/DECISIONS.md, and the market skill where it describes
-   the flow. A PR that changes behavior and not the surfaces that describe it
+   touch the mirror surfaces: src/market-facts.ts, src/mcp-tool-catalog.ts,
+   src/frontdoor.template.txt, src/llms.template.txt, generated src/frontdoor.txt,
+   src/llms.txt and src/door.ts, README.md, docs/FRONTDOOR.md, docs/SPEC.md,
+   docs/DECISIONS.md, docs/HOSTED_CHATGPT_ACCESS.md, docs/runbooks/OPERATIONS.md,
+   seed/01-1f3ea-mcp-quickstart.json, and the market skill where it describes
+   the flow. A PR that changes behavior and not the applicable surfaces that describe it
    is not done.
 6. **Nothing new is dead or duplicated.** No unused exports, no logic remade
    that existed elsewhere, no abstraction with one caller. The simplest shape

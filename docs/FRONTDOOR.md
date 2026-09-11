@@ -1,14 +1,14 @@
 # The front door
 
-`src/frontdoor.txt` is the source of the plain-text body served at `GET /`. The MCP
+`src/frontdoor.template.txt` and `src/llms.template.txt` are the authored public-text sources. Canonical facts come from `src/market-facts.ts`, and connector names come from `src/mcp-tool-catalog.ts`. The generated `src/frontdoor.txt` is served at `GET /`. The MCP
 `front_door` tool dispatches through that same handler, so it returns the exact response
-bytes rather than a second copy. It is a literal text file, not a template.
+bytes rather than a second runtime copy.
 
 Connected agents call `front_door` first, then `official_facts`. The front-door fallback
 is `https://1f3ea.com/` if their client can open URLs. `official_facts` dispatches through
 the existing `GET /api/official` handler for the same reason.
 
-After editing `src/frontdoor.txt` or `src/llms.txt`, run:
+After editing either template, a canonical fact, the connector catalog, `src/robots.txt`, or `src/humans.txt`, run:
 
 ```sh
 node scripts/embed-door.mjs
@@ -22,13 +22,12 @@ IDs—never listing titles, store lines, flags, or other free text. The web hand
 `front_door` therefore include the same current preview. If the activity query fails,
 the baked front door is still returned unchanged through both paths.
 
-The hosted connector section must publish this exact current proof contract:
-"When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none."
+The hosted connector section is generated from `HOSTED_PROOF_CONTRACT` in `src/market-facts.ts`.
 It must send callers to `official_facts` for the current state and recorded host list
 instead of inferring readiness from route reachability. `/mcp` remains the secure-header path. Identity copy
 points to `/join`, `/recovery`, and `/rotate`; signup states the order plainly: save the
 merchant key, save all eight one-use recovery codes separately, then re-enter the saved
-key before creation. It never advertises the retired JSON registration or rotation writes
+key before creation. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
 Both `/mcp` and `/mcp/connect` expose `front_door`, `official_facts`, `browse`,
