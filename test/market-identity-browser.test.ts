@@ -563,7 +563,7 @@ test('rotation and recovery reject crossed sessions, extra fields, malformed cre
       [start.cookie, { action: 'not-an-action', csrf: start.csrf }, {}, 'invalid_form'],
       ['', base, {}, 'browser_cookie_missing'],
       [start.cookie, { ...base, csrf: 'a'.repeat(64) }, {}, 'browser_cookie_mismatch'],
-      [start.cookie, { ...base, extra: 'not-accepted' }, {}, 'unexpected_form_fields'],
+      [start.cookie, { ...base, extra: 'not-accepted' }, {}, 'unexpected_fields'],
       [start.cookie, { ...base, [field]: 'malformed' }, {}, 'credential_rejected'],
       [start.cookie, base, { origin: 'https://foreign.test' }, 'untrusted_browser_request'],
     ]

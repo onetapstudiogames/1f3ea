@@ -2,6 +2,13 @@ import type { Context } from 'hono'
 import { escapeHtml, privateBrowserHeaders } from './private-browser.ts'
 import type { RecoveryCodeSet } from './recovery-codes.ts'
 import { HOSTED_SIGNIN_LIMITS, MARKET_LIMITS } from './market-facts.ts'
+import {
+  markMarketRefusal,
+  marketRefusalNextStep,
+  secondsUntilNextUtcHour,
+  type MarketRefusalDetail,
+  type MarketRefusalReason,
+} from './market-refusal.ts'
 import type {
   AuthorizationRequestInput,
   AuthorizationRequestProgress,
@@ -30,12 +37,58 @@ export function oauthHtml(
   return c.html(page(title, body), status)
 }
 
-export function oauthBrowserError(c: Context, status: Exclude<HtmlStatus, 200>, message: string) {
+export function oauthBrowserError(
+  c: Context,
+  status: Exclude<HtmlStatus, 200>,
+  reason: MarketRefusalReason,
+  message: string,
+  nextStep = marketRefusalNextStep(reason),
+  detail?: MarketRefusalDetail,
+) {
+  return renderBrowserError(c, status, reason, message, nextStep, detail)
+}
+
+function renderBrowserError(
+  c: Context,
+  status: Exclude<HtmlStatus, 200>,
+  reason: MarketRefusalReason,
+  message: string,
+  nextStep: string,
+  detail?: MarketRefusalDetail,
+  recoveryHtml = '',
+) {
+  if (status === 429 && !c.res.headers.has('Retry-After')) {
+    c.header('Retry-After', String(secondsUntilNextUtcHour()))
+  }
+  const reference = markMarketRefusal(c, status, reason, undefined, detail)
   return oauthHtml(
     c,
     status,
     'Sign-in stopped',
-    `<h1>Sign-in stopped</h1><p>${escapeHtml(message)}</p>`,
+    `<h1>Sign-in stopped</h1><p>${escapeHtml(message)}</p><p>${escapeHtml(nextStep)}</p>` +
+      `<p class="muted">Reason: <code>${escapeHtml(reason)}</code></p>` +
+      (detail ? `<p class="muted">Cause: <code>${escapeHtml(detail)}</code></p>` : '') +
+      `<p class="muted">Request ID: <code>${escapeHtml(reference.requestId)}</code></p>` +
+      '<p class="muted"><a href="/">Read the market front door</a> or <a href="/help">open market help</a>.</p>' +
+      recoveryHtml,
+  )
+}
+
+export function oauthPairingBrowserError(
+  c: Context,
+  detail: Extract<MarketRefusalDetail, `pairing_${string}`>,
+  message: string,
+  clientName: string,
+  csrf: string,
+): Response {
+  return renderBrowserError(
+    c,
+    403,
+    'pairing_code_rejected',
+    message,
+    'Correct the code below, or mint a fresh pairing code from the coding client.',
+    detail,
+    '<hr><h2>Try another pairing code</h2>' + oauthConsentPage(clientName, csrf, true, true),
   )
 }
 
@@ -52,7 +105,7 @@ export function oauthConsentPage(
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="pair"><input type="hidden" name="csrf" value="${token}">
 <label for="pairing_code">Pairing code from a coding client</label>
-<input id="pairing_code" name="pairing_code" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_pc_[0-9a-f]{48}">
+<input id="pairing_code" name="pairing_code" type="password" required autocomplete="off" spellcheck="false">
 <button type="submit">Connect with this pairing code</button></form>`
     : ''
   return `<h1>Connect ${client} to 1F3EA</h1>
@@ -65,7 +118,7 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="link"><input type="hidden" name="csrf" value="${token}">
 <label for="merchant_key">Current merchant key</label>
-<input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_sk_[0-9a-f]{48}">
+<input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false">
 <button type="submit">Connect this merchant</button></form>
 ${pairingPanel}</fieldset>
 <fieldset><legend><strong>This agent needs a store</strong></legend>
@@ -73,7 +126,7 @@ ${pairingPanel}</fieldset>
 <p class="muted">A retry resumes the same staged signup. It never creates or shows a second credential set.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="register"><input type="hidden" name="csrf" value="${token}">
-<label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="${MARKET_LIMITS.identityFields.handleMinChars}" maxlength="${MARKET_LIMITS.identityFields.handleMaxChars}" pattern="[a-z0-9][a-z0-9-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}">
+<label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="${MARKET_LIMITS.identityFields.handleMinChars}" maxlength="${MARKET_LIMITS.identityFields.handleMaxChars}" pattern="[a-z0-9][a-z0-9\\-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="${MARKET_LIMITS.identityFields.modelMaxChars}">
 <button type="submit">Prepare merchant and show its key</button></form></fieldset>
 <form method="post" action="/oauth/authorize">
@@ -120,7 +173,7 @@ ${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}
 <p>This merchant has not been created. Creation happens only after you save and re-enter the exact key below.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-<label for="merchant_key">Re-enter the saved merchant key</label><input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_sk_[0-9a-f]{48}">
+<label for="merchant_key">Re-enter the saved merchant key</label><input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false">
 <button type="submit">Create merchant and continue</button></form>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
@@ -133,7 +186,7 @@ export function resumedMerchantKeyPage(handle: string, csrf: string): string {
 <p>If you saved the key and all eight codes, re-enter the key. If either is missing, cancel this uncreated merchant and start again.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-<label for="merchant_key">Re-enter the saved merchant key</label><input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false" pattern="1f3ea_sk_[0-9a-f]{48}">
+<label for="merchant_key">Re-enter the saved merchant key</label><input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false">
 <button type="submit">Create merchant and continue</button></form>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
@@ -186,6 +239,7 @@ export function terminalAuthorizationResponse(
     return oauthBrowserError(
       c,
       403,
+      'request_unavailable',
       `${progress.handle} was created and this sign-in already completed. ` +
         'If the connector never received the result, start sign-in again, choose “I already have a store,” ' +
         'and use the saved merchant key. Do not register the merchant again.',
@@ -195,18 +249,20 @@ export function terminalAuthorizationResponse(
     return oauthBrowserError(
       c,
       403,
+      'request_unavailable',
       'The existing merchant was approved and this sign-in already completed. If the connector never received the result, start sign-in again and use the saved merchant key. No merchant was created.',
     )
   }
   if (progress.status === 'canceled') {
-    return oauthBrowserError(c, 403, 'This sign-in was canceled. No staged merchant was created. Start again from the chat app.')
+    return oauthBrowserError(c, 403, 'request_unavailable', 'This sign-in was canceled. No staged merchant was created. Start again from the chat app.')
   }
   if (progress.status === 'expired') {
-    return oauthBrowserError(c, 403, 'This sign-in expired. No staged merchant was created. Start again from the chat app.')
+    return oauthBrowserError(c, 403, 'request_expired', 'This sign-in expired. No staged merchant was created. Start again from the chat app.')
   }
   return oauthBrowserError(
     c,
     403,
+    'request_unavailable',
     'This sign-in already advanced. If a creation response disappeared, restart sign-in and use the saved merchant key as an existing merchant. Do not register again.',
   )
 }

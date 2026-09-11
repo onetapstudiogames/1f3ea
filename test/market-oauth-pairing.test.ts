@@ -19,6 +19,19 @@ import {
 const MERCHANT_KEY = `1f3ea_sk_${'ab'.repeat(24)}`
 const PAIRING_CODE = `1f3ea_pc_${'11'.repeat(24)}`
 const RESERVED_HANDLE = 'tinylantern'
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+async function assertPairingRefusal(response: Response, cause: string): Promise<string> {
+  assert.equal(response.headers.get('x-1f3ea-reason'), 'pairing_code_rejected')
+  assert.equal(response.headers.get('x-1f3ea-cause'), cause)
+  assert.match(response.headers.get('x-request-id') ?? '', REQUEST_ID)
+  const html = await response.text()
+  assert.match(html, new RegExp(`Cause:\\s*<code>${cause}</code>`, 'iu'))
+  assert.match(html, /name="action" value="pair"/u)
+  assert.match(html, /name="csrf" value="[^"]+"/u)
+  assert.match(html, /name="pairing_code"/u)
+  return html
+}
 
 // Reserving and confirming a pairing code (below) are server-side actions, gated on
 // MARKET_CODING_IDENTITY_ENABLED the same way every other coding-client identity door is: both
@@ -133,7 +146,22 @@ test('confirming without a live reservation is refused the same way a bad code w
   // No prior "pair" call, so nothing was ever reserved.
   const response = await confirmPairRequest(app, cookie, csrf)
   assert.equal(response.status, 403)
-  assert.match(await response.text(), /could not be verified, was already used, or expired/iu)
+  assert.match(await assertPairingRefusal(response, 'pairing_reservation_missing'), /No reserved pairing code/iu)
+})
+
+test('a reserved pairing code that expires before confirmation has its own stable cause', async () => {
+  const { app } = fixture({
+    environment: CODING_IDENTITY_READY,
+    reservePairingCode: async () => ({ merchantId: 7, handle: RESERVED_HANDLE, expiresAt: '2026-09-02T00:10:00.000Z' }),
+    takeReservedPairingCode: async () => ({ codeHash: sha256(PAIRING_CODE) }),
+    resolvePairingCode: async () => null,
+  })
+  const { cookie, csrf } = await startSignin(app)
+  assert.equal((await pairRequest(app, cookie, csrf, PAIRING_CODE)).status, 200)
+
+  const response = await confirmPairRequest(app, cookie, csrf)
+  assert.equal(response.status, 403)
+  assert.match(await assertPairingRefusal(response, 'pairing_code_expired_or_revoked'), /already used, expired, or revoked/iu)
 })
 
 test('an expired, used, or unknown pairing code is refused at the reserve step, without a redirect', async () => {
@@ -141,7 +169,7 @@ test('an expired, used, or unknown pairing code is refused at the reserve step, 
   const { cookie, csrf } = await startSignin(app)
   const response = await pairRequest(app, cookie, csrf, PAIRING_CODE)
   assert.equal(response.status, 403)
-  assert.match(await response.text(), /could not be verified, was already used, or expired/iu)
+  assert.match(await assertPairingRefusal(response, 'pairing_code_unavailable'), /was not accepted/iu)
 })
 
 test('a malformed pairing code is refused before any reservation attempt', async () => {
@@ -153,6 +181,7 @@ test('a malformed pairing code is refused before any reservation attempt', async
   const { cookie, csrf } = await startSignin(app)
   const response = await pairRequest(app, cookie, csrf, 'not-a-real-code')
   assert.equal(response.status, 403)
+  assert.match(await assertPairingRefusal(response, 'pairing_code_malformed'), /expected shape/iu)
   assert.equal(called, false)
 })
 
@@ -179,7 +208,7 @@ test('a resolved pairing grant matching no current merchant is refused, not trea
 
   const response = await confirmPairRequest(app, cookie, csrf)
   assert.equal(response.status, 403)
-  assert.match(await response.text(), /no longer matches a current merchant key/iu)
+  assert.match(await assertPairingRefusal(response, 'pairing_merchant_key_changed'), /no longer matches a current merchant key/iu)
 })
 
 test('a repeated confirm click after success cannot redeem or approve a second time', async () => {
