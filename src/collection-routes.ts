@@ -13,7 +13,7 @@ import {
   countedPage, decodeShelfCursor, encodeShelfCursor, invalidPageCursor, parseNumericPage,
   type CountedRow, type ShelfCursorScope,
 } from './public-pagination.ts'
-import { requireValidWorldReceipt } from './world-routes.ts'
+import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
 
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
@@ -474,7 +474,7 @@ export function registerCollectionRoutes(app: Hono) {
       return err(c, 400, 'purchases_before_id is not one of your purchases')
     const purchases = countedPage(rawPurchases, purchasesPage.limit)
     const safePurchases = purchases.items.map(row => row.delivery_kind === 'city_ownership'
-      ? { ...row, world_receipt: requireValidWorldReceipt(row.world_receipt) }
+      ? { ...row, ...safeWorldReceiptForHistory(row) }
       : row)
     const rawReplies = (await sql`
       /* private:me-replies */
@@ -508,6 +508,7 @@ export function registerCollectionRoutes(app: Hono) {
       quotas_left: {
         listings: null,
         comments: QUOTAS.comments - m.comments_today,
+        flags: QUOTAS.flags - m.comments_today,
         votes: QUOTAS.votes - m.votes_today,
       },
       listings: listings.items,

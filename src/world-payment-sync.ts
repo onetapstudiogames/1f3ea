@@ -81,6 +81,21 @@ export function requireValidWorldReceipt(value: unknown): Record<string, unknown
   return receipt
 }
 
+export function safeWorldReceiptForHistory(
+  row: Record<string, unknown>,
+): { world_receipt: Record<string, unknown>; world_receipt_error?: string } {
+  try {
+    return { world_receipt: requireValidWorldReceipt(row.world_receipt) }
+  } catch {
+    const listingId = Number(row.listing_id)
+    const label = Number.isSafeInteger(listingId) && listingId > 0 ? `listing ${listingId}` : 'this listing'
+    return {
+      world_receipt: {},
+      world_receipt_error: `${label}: saved city receipt could not be read`,
+    }
+  }
+}
+
 export function worldReceiptEnvelope(row: WorldPurchaseRow) {
   const city = requireValidWorldReceipt(row.world_receipt)
   const purchaseId = Number(row.purchase_id)
@@ -250,7 +265,7 @@ export async function settleWorldPaymentAttempt(
         FROM listings l JOIN world_checkouts c ON c.id = ${checkout.id} AND c.listing_id = l.id
         WHERE l.id = ${listing.id} AND l.delivery_kind = 'city_ownership'
           AND (NOT l.removed OR ${attempt.start_time}::timestamptz <= l.removed_at)
-          AND (NOT l.withdrawn OR ${attempt.start_time}::timestamptz <= l.withdrawn_at)
+          AND (l.withdrawn_at IS NULL OR ${attempt.start_time}::timestamptz <= l.withdrawn_at)
           AND c.city_handle = ${checkout.city_handle} AND c.status IN ('active','expired')
         FOR UPDATE OF l, c
       ), completed_attempt AS (

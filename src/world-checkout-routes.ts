@@ -510,7 +510,7 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
       if (Number.isNaN(removedAt.getTime()) || reservedAt > removedAt)
         return syncRefusal('market listing was removed before the city reservation began')
     }
-    if (listing.withdrawn) {
+    if (listing.withdrawn || listing.withdrawn_at != null) {
       const withdrawnAt = new Date(listing.withdrawn_at ?? '')
       if (Number.isNaN(withdrawnAt.getTime()) || reservedAt > withdrawnAt)
         return syncRefusal('market listing was withdrawn before the city reservation began')

@@ -12,6 +12,7 @@ import {
   harnessState,
   preparePendingWorldListingDraft,
   resetAndSeed,
+  sha256,
   startMarketPostgresHarness,
 } from '../support/market-postgres-harness.ts'
 import { runMarketPostgresMigrationCases } from '../support/market-postgres-migration-cases.ts'
@@ -60,6 +61,89 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     seller_wallet: BUYER_WALLET,
     tags: ['world'],
     thing_id: 78,
+  })
+
+  await t.test('maintainer removal preserves withdrawal history under the real terminal-state constraint', async () => {
+    await resetAndSeed()
+    const maintainerSecret = `1f3ea_sk_${'cd'.repeat(24)}`
+    await connectedDatabase().query(
+      'UPDATE merchants SET secret_hash = $1 WHERE id = 1',
+      [sha256(maintainerSecret)],
+    )
+    await connectedDatabase().query(`
+      UPDATE listings SET withdrawn = TRUE,
+        withdrawn_at = clock_timestamp() - interval '1 minute',
+        withdrawn_reason = 'withdrawn by merchant'
+      WHERE id = 1
+    `)
+
+    const removed = await app.request('/api/mod/remove', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${maintainerSecret}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ listing_id: 1, reason: 'privacy redaction' }),
+    })
+    assert.equal(removed.status, 200, await removed.clone().text())
+
+    const stored = await connectedDatabase().query<{
+      removed: boolean
+      withdrawn: boolean
+      withdrawn_at: Date | null
+      withdrawn_reason: string | null
+    }>(`SELECT removed, withdrawn, withdrawn_at, withdrawn_reason FROM listings WHERE id = 1`)
+    assert.equal(stored.rows[0]?.removed, true)
+    assert.equal(stored.rows[0]?.withdrawn, false)
+    assert.ok(stored.rows[0]?.withdrawn_at)
+    assert.equal(stored.rows[0]?.withdrawn_reason, 'withdrawn by merchant')
+
+    const publicRead = await app.request('/api/listing/1')
+    assert.equal(publicRead.status, 200, await publicRead.clone().text())
+    const listing = (await publicRead.json() as {
+      listing: { state: string; withdrawn_at: string | null; withdrawn_reason: string | null }
+    }).listing
+    assert.equal(listing.state, 'removed')
+    assert.ok(listing.withdrawn_at)
+    assert.equal(listing.withdrawn_reason, 'withdrawn by merchant')
+  })
+
+  await t.test('duplicate vote races leave one vote and one quota unit in real PostgreSQL', async () => {
+    await resetAndSeed()
+    const vote = () => app.request('/api/vote', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ listing_id: 1 }),
+    })
+    const raced = await Promise.all([vote(), vote()])
+    assert.deepEqual(raced.map(response => response.status).sort(), [200, 409])
+
+    const afterRace = await connectedDatabase().query<{
+      vote_count: number
+      votes_today: number
+      listing_votes: number
+    }>(`
+      SELECT
+        (SELECT count(*)::int FROM votes WHERE merchant_id = 2 AND listing_id = 1) AS vote_count,
+        (SELECT votes_today FROM merchants WHERE id = 2) AS votes_today,
+        (SELECT votes FROM listings WHERE id = 1) AS listing_votes
+    `)
+    assert.deepEqual(afterRace.rows[0], {
+      vote_count: 1,
+      votes_today: 1,
+      listing_votes: 1,
+    })
+
+    await connectedDatabase().query(
+      'UPDATE merchants SET votes_today = 50, quota_day = CURRENT_DATE WHERE id = 2',
+    )
+    const repeated = await vote()
+    assert.equal(repeated.status, 409, await repeated.clone().text())
+    assert.deepEqual(await repeated.json(), { error: 'already voted for that listing' })
+    const exhausted = await connectedDatabase().query<{ votes_today: number }>(
+      'SELECT votes_today FROM merchants WHERE id = 2',
+    )
+    assert.equal(exhausted.rows[0]?.votes_today, 50)
   })
 
   await t.test('an expired world draft does not block a new draft for the same seller', async () => {

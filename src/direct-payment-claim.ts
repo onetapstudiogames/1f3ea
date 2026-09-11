@@ -9,7 +9,7 @@ import {
   reserveDirectPaymentAttempt,
   type DirectPaymentAttempt,
 } from './direct-payment-attempts.ts'
-import { canonicalTxHash, verifyDirectPayment } from './pay.ts'
+import { verifyDirectPayment } from './pay.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 
 export type DirectClaimIntent = DirectPurchaseIntent & DirectPaymentAttempt & {
@@ -80,8 +80,7 @@ export async function resolveDirectPaymentClaim(input: {
   payerSignature: string
   requestStartedAt: Date
 }): Promise<DirectClaimResolution> {
-  const canonical = canonicalTxHash(input.txHash)
-  if (!canonical) return response(402, { error: 'tx_hash must be a 0x-prefixed 32-byte transaction hash' })
+  const canonical = input.txHash
   const { intent } = input
   if (intent.payment_status === 'completed') return { state: 'completed' }
   if (intent.payment_status === 'needs_review') return terminalReview()
@@ -105,6 +104,7 @@ export async function resolveDirectPaymentClaim(input: {
     return response(signatureProof.status === 'invalid' ? 402 : 503, {
       error: signatureProof.reason,
       ...(retrying ? { do_not_pay_again: true } : {}),
+      ...(signatureProof.status === 'unavailable' && !retrying ? { payment_preserved: false } : {}),
     })
   }
 
@@ -172,29 +172,26 @@ export async function resolveDirectPaymentClaim(input: {
       retry: 'retry this same claim after Base finality with the same transaction and signature',
     })
   }
-  if (direct.status !== 'verified') {
-    return doNotPay(503, { error: direct.reason })
-  }
-
-  const windowError = directPaymentWindowError(intent, direct.blockTime, input.requestStartedAt, true)
+  const verified = direct as Extract<typeof direct, { status: 'verified' }>
+  const windowError = directPaymentWindowError(intent, verified.blockTime, input.requestStartedAt, true)
   if (windowError) {
     return reviewDirectPaymentClaim(intent.id, windowError, {
-      blockNumber: direct.blockNumber,
-      blockHash: direct.blockHash,
-      blockTime: direct.blockTime,
-      finalizedAt: direct.finalizedAt,
+      blockNumber: verified.blockNumber,
+      blockHash: verified.blockHash,
+      blockTime: verified.blockTime,
+      finalizedAt: verified.finalizedAt,
     })
   }
   return {
     state: 'verified',
     txHash: canonical,
     payerWallet: intent.payer_wallet,
-    paidAt: direct.blockTime,
+    paidAt: verified.blockTime,
     finality: {
-      blockNumber: direct.blockNumber,
-      blockHash: direct.blockHash,
-      blockTime: direct.blockTime,
-      finalizedAt: direct.finalizedAt,
+      blockNumber: verified.blockNumber,
+      blockHash: verified.blockHash,
+      blockTime: verified.blockTime,
+      finalizedAt: verified.finalizedAt,
     },
   }
 }

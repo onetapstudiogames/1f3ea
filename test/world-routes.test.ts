@@ -2,6 +2,7 @@
 // They never use a live service, bearer secret, wallet, transaction, or database.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
@@ -624,6 +625,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('WITH removed_listing AS') && query.includes('world_checkouts')) {
     state.listingRemoved = true
     state.listingRemovedAt = '2026-08-12T00:03:00.000Z'
+    state.listingWithdrawn = false
     if (state.listingWorldState !== 'sold') state.listingWorldState = 'canceled'
     state.checkoutStatus = 'expired'
     if (state.draftState !== 'sold') state.draftState = 'canceled'
@@ -2501,6 +2503,38 @@ test('a city reservation opened after merchant withdrawal cannot reopen the sale
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 })
 
+test('maintainer removal keeps an earlier withdrawal as the world reservation boundary', async () => {
+  reset()
+  state.merchantId = 1
+  state.draftListingId = 70
+  state.draftState = 'withdrawn'
+  state.listingWorldState = 'canceled'
+  state.listingWithdrawn = true
+  state.listingWithdrawnReason = 'withdrawn by merchant'
+  state.listingWithdrawnAt = '2026-08-12T00:02:30.000Z'
+  const removed = await app.request('/api/mod/remove', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ listing_id: 70, reason: 'unsafe item' }),
+  })
+  assert.equal(removed.status, 200)
+  assert.equal(state.listingWithdrawn, false)
+  assert.equal(state.listingWithdrawnAt, '2026-08-12T00:02:30.000Z')
+
+  state.merchantId = 10
+  state.cityMode = 'claimed'
+  state.cityReservedAt = '2026-08-12T00:02:45.000Z'
+  state.cityReservedUntil = '2026-08-12T00:07:45.000Z'
+  state.cityBlockTime = '2026-08-12T00:03:00.000Z'
+  state.cityClaimedAt = '2026-08-12T00:04:00.000Z'
+  const sync = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(sync.status, 409)
+  assert.match((await sync.json() as { error: string }).error, /withdrawn before the city reservation/i)
+
+  const lockedSaleSql = readFileSync(new URL('../src/world-payment-sync.ts', import.meta.url), 'utf8')
+  assert.match(lockedSaleSql, /l\.withdrawn_at IS NULL OR \$\{attempt\.start_time\}::timestamptz <= l\.withdrawn_at/iu)
+  assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
+})
+
 test('sold world ownership cannot be overwritten by a later merchant withdrawal', async () => {
   reset()
   state.draftListingId = 70
@@ -2580,7 +2614,7 @@ test('world receipts replace downloadable artifacts in purchase history', async 
   assert.deepEqual(payload.purchases[0]!.world_receipt, storedWorldReceipt())
 })
 
-test('corrupt stored world receipts report an internal failure through every read door', async () => {
+test('corrupt stored world receipts stay isolated in purchase-history read doors', async () => {
   reset()
   state.merchantId = 9
   state.priorReceipt = purchaseRow({})
@@ -2611,12 +2645,16 @@ test('corrupt stored world receipts report an internal failure through every rea
     assert.equal(mcpError.front_door, 'https://1f3ea.com/')
 
     const purchases = await app.request('/api/purchases', { headers: auth })
-    assert.equal(purchases.status, 500)
-    assert.deepEqual(await purchases.json(), expected)
+    assert.equal(purchases.status, 200)
+    const purchase = (await purchases.json() as { purchases: Record<string, unknown>[] }).purchases[0]!
+    assert.deepEqual(purchase.world_receipt, {})
+    assert.match(String(purchase.world_receipt_error), /listing 70/iu)
 
     const me = await app.request('/api/me', { headers: auth })
-    assert.equal(me.status, 500)
-    assert.deepEqual(await me.json(), expected)
+    assert.equal(me.status, 200)
+    const mePurchase = (await me.json() as { purchases: Record<string, unknown>[] }).purchases[0]!
+    assert.deepEqual(mePurchase.world_receipt, {})
+    assert.match(String(mePurchase.world_receipt_error), /listing 70/iu)
   } finally {
     console.error = originalConsoleError
   }

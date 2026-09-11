@@ -155,6 +155,8 @@ const state = {
   nextListingId: 42,
   voteInsertErrorCode: null as string | null,
   voteInsertErrorConstraint: null as string | null,
+  x402ReadCount: 0,
+  failX402ReadAfter: null as number | null,
   failFeeInsert: false,
   feeInsertErrorCode: '23505',
   feeInsertErrorConstraint: 'fees_tx_hash_lower_unique',
@@ -243,7 +245,7 @@ const listingDetail = () => ({
   removed_reason: state.listingRemoved ? 'removed by the maintainer' : null,
   withdrawn: state.listingWithdrawn,
   withdrawn_at: state.listingWithdrawnAt,
-  withdrawn_reason: state.listingWithdrawn ? 'withdrawn by merchant' : null,
+  withdrawn_reason: state.listingWithdrawnAt ? 'withdrawn by merchant' : null,
 })
 
 const editableListing = () => ({
@@ -450,6 +452,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
       })
     return []
   }
+  if (query.includes('SELECT 1 FROM votes')) return []
+  if (/votes_today\s*=\s*GREATEST/iu.test(query)) return [{ id: state.merchantId }]
   if (query.includes('comments_today = CASE WHEN quota_day') && query.includes('WHERE secret_hash')) {
     if (!state.authValid) return []
     if (state.quotaDayStale) {
@@ -472,6 +476,9 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     return [{ id: state.duplicateId }]
   }
   if (query.includes('x402-payment-attempt:read-operation')) {
+    state.x402ReadCount += 1
+    if (state.failX402ReadAfter != null && state.x402ReadCount > state.failX402ReadAfter)
+      throw new Error('saved x402 payment row is unreadable')
     const operationKey = String(params[0])
     const attempt = state.x402Attempts.find(candidate => candidate.operation_key === operationKey)
     return attempt ? [{ ...attempt }] : []
@@ -785,6 +792,10 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   }
   if (query.includes('SELECT id FROM purchases')) return state.priorPurchase ? [{ id: 55 }] : []
   if (query.includes('INSERT INTO direct_purchase_intents')) {
+    const open = state.purchaseIntents.find(intent =>
+      !intent.claimed_at && !intent.superseded_at
+      && (intent.payment_status !== 'unsubmitted' || Date.parse(intent.expires_at) > Date.now()))
+    if (open) return []
     const dates = params.filter(value => typeof value === 'string'
       && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) as string[]
     const wallets = params.filter(value => typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value)) as string[]
@@ -847,7 +858,9 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     const intentId = Number(params.find(value =>
       (typeof value === 'number' && Number.isInteger(value) && value >= 100)
       || (typeof value === 'string' && /^\d+$/.test(value) && Number(value) >= 100)))
-    const intent = state.purchaseIntents.find(candidate => candidate.id === intentId)
+    const intent = Number.isInteger(intentId)
+      ? state.purchaseIntents.find(candidate => candidate.id === intentId)
+      : state.purchaseIntents.find(candidate => candidate.listing_id === 1 && candidate.merchant_id === state.merchantId)
     return intent ? [{ ...intent }] : []
   }
   if (query.includes('FROM listings WHERE merchant_id')) return [{
@@ -1122,6 +1135,8 @@ function reset() {
   state.nextListingId = 42
   state.voteInsertErrorCode = null
   state.voteInsertErrorConstraint = null
+  state.x402ReadCount = 0
+  state.failX402ReadAfter = null
   state.failFeeInsert = false
   state.feeInsertErrorCode = '23505'
   state.feeInsertErrorConstraint = 'fees_tx_hash_lower_unique'
@@ -1210,6 +1225,35 @@ test('voting reports a unique vote conflict as a caller-correctable refusal', as
   })
   assert.equal(res.status, 409)
   assert.deepEqual(await res.json(), { error: 'already voted for that listing' })
+  assert.equal(hasSql(/votes_today\s*=\s*GREATEST/iu), true)
+})
+
+test('flagging requires a signed-in merchant and attributes the public event', async () => {
+  reset()
+  const anonymous = await app.request('/api/flag', {
+    method: 'POST',
+    body: JSON.stringify({ target_type: 'listing', target_id: 1, reason: 'copied good' }),
+  })
+  assert.equal(anonymous.status, 401)
+  assert.equal(inserted('events'), 0)
+
+  const signedIn = await app.request('/api/flag', {
+    method: 'POST', headers: authed,
+    body: JSON.stringify({ target_type: 'listing', target_id: 1, reason: 'copied good' }),
+  })
+  assert.equal(signedIn.status, 201)
+  const event = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
+  assert.match(`${event?.query}\n${JSON.stringify(event?.params)}`, /flag[\s\S]*agent-7/iu)
+
+  reset()
+  state.commentQuotaLeft = false
+  const limited = await app.request('/api/flag', {
+    method: 'POST', headers: authed,
+    body: JSON.stringify({ target_type: 'listing', target_id: 1, reason: 'copied good' }),
+  })
+  assert.equal(limited.status, 429)
+  assert.match((await limited.json() as { error: string }).error, /20 combined comments and flags per UTC day/iu)
+  assert.equal(inserted('events'), 0)
 })
 
 test('voting reports an unrelated unique violation as internal', async () => {
@@ -1260,7 +1304,7 @@ test('every market action route returns a caller-facing cause when it refuses a 
     ['claim purchase', '/api/claim/1', 'POST', {}, /open \/join first/iu],
     ['comment', '/api/comment', 'POST', {}, /bad or missing bearer secret/iu],
     ['vote', '/api/vote', 'POST', {}, /bad or missing bearer secret/iu],
-    ['flag', '/api/flag', 'POST', {}, /need target_type.*target_id.*reason/iu],
+    ['flag', '/api/flag', 'POST', {}, /bad or missing bearer secret/iu],
     ['remove listing', '/api/mod/remove', 'POST', {}, /bad or missing bearer secret/iu],
     ['pin listing', '/api/mod/pin', 'POST', {}, /bad or missing bearer secret/iu],
     ['draft world item', '/api/world/draft', 'POST', {}, /bad or missing bearer secret/iu],
@@ -1448,12 +1492,21 @@ test('maintainer removal may supersede a merchant withdrawal and becomes the pub
   assert.equal(removed.status, 200)
   assert.equal(state.listingRemoved, true)
   assert.ok(state.listingRemovedAt)
+  assert.equal(state.listingWithdrawn, false)
+  assert.equal(state.listingWithdrawnAt != null, true)
+  const removalWrite = sqlCalls().find(call => /UPDATE listings SET\s+removed\s*=/iu.test(call.query ?? ''))
+  assert.match(removalWrite?.query ?? '', /withdrawn\s*=\s*FALSE/iu)
+  assert.doesNotMatch(removalWrite?.query ?? '', /withdrawn_at\s*=|withdrawn_reason\s*=/iu)
 
   const publicRead = await app.request('/api/listing/1')
   assert.equal(publicRead.status, 200)
-  const listing = ((await publicRead.json()) as { listing: { state: string; title: string } }).listing
+  const listing = ((await publicRead.json()) as {
+    listing: { state: string; title: string; withdrawn_at: string | null; withdrawn_reason: string | null }
+  }).listing
   assert.equal(listing.state, 'removed')
   assert.equal(listing.title, '[removed by the maintainer]')
+  assert.equal(listing.withdrawn_at, state.listingWithdrawnAt)
+  assert.equal(listing.withdrawn_reason, 'withdrawn by merchant')
   const event = sqlCalls().find(call => call.query?.includes('INSERT INTO events'))
   assert.match(`${event?.query}\n${JSON.stringify(event?.params)}`, /moderation[\s\S]*agent-1/)
 })
@@ -1488,6 +1541,120 @@ test('withdrawal retains artifact delivery for an authenticated prior buyer', as
   const body = await res.json() as { purchases: { listing_id: number; artifact: string }[] }
   assert.equal(body.purchases[0]?.listing_id, 1)
   assert.equal(body.purchases[0]?.artifact, 'previously purchased private artifact')
+})
+
+test('one unreadable world receipt does not block purchase-history rows or pagination', async () => {
+  reset()
+  const badWorld = {
+    id: 99, listing_id: 12, title: 'City thing', amount_usdc: 1, verified_via: 'world',
+    delivery_kind: 'city_ownership', world_receipt: { city_origin: 'incomplete' },
+    created_at: '2026-08-20T12:00:00Z',
+  }
+  const artifact = {
+    id: 98, listing_id: 11, title: 'Readable good', amount_usdc: 1, verified_via: 'free',
+    delivery_kind: 'artifact', artifact: 'still here', world_receipt: null,
+    created_at: '2026-08-19T12:00:00Z',
+  }
+  const older = {
+    id: 97, listing_id: 10, title: 'Older good', amount_usdc: 1, verified_via: 'free',
+    delivery_kind: 'artifact', artifact: 'older', world_receipt: null,
+    created_at: '2026-08-18T12:00:00Z',
+  }
+  state.apiPurchases = [badWorld, artifact, older]
+
+  const response = await app.request('/api/purchases', { headers: authed })
+  assert.equal(response.status, 200)
+  const page = await response.json() as {
+    purchases: Array<{ id: number; world_receipt?: object; world_receipt_error?: string; artifact?: string }>
+    has_more: boolean; next_before_id: number | null
+  }
+  assert.deepEqual(page.purchases.map(row => row.id), [99, 98])
+  assert.deepEqual(page.purchases[0]?.world_receipt, {})
+  assert.match(page.purchases[0]?.world_receipt_error ?? '', /listing 12/iu)
+  assert.equal((page.purchases[1] as { title?: string })?.title, 'Readable good')
+  assert.equal(page.has_more, true)
+  assert.equal(page.next_before_id, 98)
+
+  state.mePurchases = [badWorld, artifact]
+  const me = await app.request('/api/me', { headers: authed })
+  assert.equal(me.status, 200)
+  const meRows = (await me.json() as {
+    purchases: Array<{ id: number; world_receipt?: object; world_receipt_error?: string; artifact?: string }>
+  }).purchases
+  assert.deepEqual(meRows.map(row => row.id), [99, 98])
+  assert.deepEqual(meRows[0]?.world_receipt, {})
+  assert.match(meRows[0]?.world_receipt_error ?? '', /listing 12/iu)
+})
+
+test('claiming a free listing refuses before reading or recording a claim', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0
+  const response = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: '{not valid json',
+  })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), { error: 'this listing is free; use POST /api/buy/:id' })
+  assert.equal(inserted('purchases'), 0)
+
+  state.listingWithdrawn = true
+  const withdrawn = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: '{not valid json',
+  })
+  assert.equal(withdrawn.status, 404)
+  assert.deepEqual(await withdrawn.json(), { error: 'listing was withdrawn and is not available' })
+
+  state.listingWithdrawn = false
+  state.listingRemoved = true
+  const removed = await app.request('/api/claim/1', {
+    method: 'POST', headers: authed, body: '{not valid json',
+  })
+  assert.equal(removed.status, 404)
+  assert.deepEqual(await removed.json(), { error: 'listing was removed' })
+  assert.equal(inserted('purchases'), 0)
+})
+
+test('reopening a purchase returns the same intent and refuses a changed payer wallet plainly', async () => {
+  reset()
+  state.listingOwner = 8
+  state.listingPrice = 0.5
+  const opened = await openDirectIntent()
+  const sameWallet = await app.request('/api/purchase-intent/1', {
+    method: 'POST', headers: authed, body: JSON.stringify({ payer_wallet: state.feeFrom }),
+  })
+  assert.equal(sameWallet.status, 200)
+  assert.equal((await sameWallet.json() as { purchase_intent: PurchaseIntentRow }).purchase_intent.id, opened.id)
+
+  const changedWallet = await app.request('/api/purchase-intent/1', {
+    method: 'POST', headers: authed, body: JSON.stringify({ payer_wallet: STRANGER }),
+  })
+  assert.equal(changedWallet.status, 409)
+  assert.match((await changedWallet.json() as { error: string }).error, /open purchase intent.*different payer wallet/iu)
+
+  state.purchaseIntents = state.purchaseIntents.map(intent => ({
+    ...intent, payment_status: 'payment_pending' as const, payment_tx_hash: TX1,
+  }))
+  const pendingChangedWallet = await app.request('/api/purchase-intent/1', {
+    method: 'POST', headers: authed, body: JSON.stringify({ payer_wallet: STRANGER }),
+  })
+  assert.equal(pendingChangedWallet.status, 409)
+  const pendingBody = await pendingChangedWallet.json() as {
+    error: string; do_not_pay_again?: boolean; retry?: string
+  }
+  assert.match(pendingBody.error, /different payer wallet/iu)
+  assert.equal(pendingBody.do_not_pay_again, true)
+  assert.match(pendingBody.retry ?? '', /same intent, transaction, and signature/iu)
+
+  state.purchaseIntents = state.purchaseIntents.map(intent => ({
+    ...intent, payment_status: 'needs_review' as const,
+  }))
+  const reviewChangedWallet = await app.request('/api/purchase-intent/1', {
+    method: 'POST', headers: authed, body: JSON.stringify({ payer_wallet: STRANGER }),
+  })
+  assert.equal(reviewChangedWallet.status, 409)
+  const reviewBody = await reviewChangedWallet.json() as { error: string; do_not_pay_again?: boolean }
+  assert.match(reviewBody.error, /different payer wallet/iu)
+  assert.equal(reviewBody.do_not_pay_again, true)
 })
 
 test('withdrawal blocks every future buy before payment or purchase writes', async () => {
@@ -2184,6 +2351,66 @@ test('an x402 listing waits for Base finality, then a headerless retry creates i
   assert.equal(state.calls.some(call => call.url.includes('/verify') || call.url.includes('/settle')), false)
 })
 
+test('unreadable saved x402 rows return honest non-looping guidance and safe logs', async () => {
+  const logged: unknown[][] = []
+  const originalConsoleError = console.error
+  console.error = (...args: unknown[]) => { logged.push(args) }
+  try {
+    reset()
+    state.facilitatorVerify = true
+    state.facilitatorSettle = true
+    state.rpcFinalized = false
+    const listingHeader = x402Header(TREASURY, 1)
+    const waitingListing = await app.request('/api/listing', {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': listingHeader }, body: listingBody(),
+    })
+    assert.equal(waitingListing.status, 503)
+    state.x402ReadCount = 0
+    state.failX402ReadAfter = 1
+    const listingRetry = await app.request('/api/listing', {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': listingHeader }, body: listingBody(),
+    })
+    assert.equal(listingRetry.status, 503)
+    const listingBodyResult = await listingRetry.json() as {
+      error: string; retry: string; do_not_pay_again: boolean
+    }
+    assert.match(listingBodyResult.error, /could not read this saved listing payment record/iu)
+    assert.match(listingBodyResult.retry, /contact support/iu)
+    assert.doesNotMatch(listingBodyResult.retry, /retry POST|resume/iu)
+    assert.equal(listingBodyResult.do_not_pay_again, true)
+
+    reset()
+    state.listingOwner = 8
+    state.listingPrice = 0.5
+    state.facilitatorVerify = true
+    state.facilitatorSettle = true
+    state.rpcFinalized = false
+    const purchaseHeader = x402Header(state.listingWallet, 0.5)
+    const waitingPurchase = await app.request('/api/buy/1', {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': purchaseHeader },
+    })
+    assert.equal(waitingPurchase.status, 503)
+    state.x402ReadCount = 0
+    state.failX402ReadAfter = 1
+    const purchaseRetry = await app.request('/api/buy/1', {
+      method: 'POST', headers: { ...authed, 'X-PAYMENT': purchaseHeader },
+    })
+    assert.equal(purchaseRetry.status, 503)
+    const purchaseBody = await purchaseRetry.json() as {
+      error: string; retry: string; do_not_pay_again: boolean
+    }
+    assert.match(purchaseBody.error, /could not read this saved purchase payment record/iu)
+    assert.match(purchaseBody.retry, /contact support.*listing 1/iu)
+    assert.doesNotMatch(purchaseBody.retry, /retry POST|resume/iu)
+    assert.equal(purchaseBody.do_not_pay_again, true)
+  } finally {
+    console.error = originalConsoleError
+  }
+  assert.ok(logged.length >= 2)
+  assert.equal(logged.flat().some(value => value instanceof Error), false)
+  assert.match(JSON.stringify(logged), /listing_id.*1/iu)
+})
+
 test('artifact listing refuses every mismatched saved x402 public term before payment or listing work', async () => {
   const mismatches: ReadonlyArray<readonly [
     string,
@@ -2822,6 +3049,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
   assert.equal(signature.status, 503)
   assert.deepEqual(await signature.json(), {
     error: 'the market could not check payer_signature on Base; retry the same proof later',
+    payment_preserved: false,
   })
 
   reset()
@@ -3832,7 +4060,7 @@ test('comment limits remain after the listing limit is removed', async () => {
     body: JSON.stringify({ listing_id: 1, parent_id: null, body: 'hello' }),
   })
   assert.equal(res.status, 429)
-  assert.match(((await res.json()) as { error: string }).error, /20 comments/)
+  assert.match(((await res.json()) as { error: string }).error, /20 combined comments and flags/)
 })
 
 test('quota spending resets both stale daily counters before incrementing one', async () => {
@@ -3854,13 +4082,14 @@ test('/api/me keeps the listings quota key as an unlimited compatibility marker'
   const body = await res.json() as {
     line: string
     store_url: string
-    quotas_left: { listings: null; comments: number; votes: number }
+    quotas_left: { listings: null; comments: number; flags: number; votes: number }
     listings: { aisle: string }[]
   }
   assert.equal(body.line, state.storeLine)
   assert.equal(body.store_url, '/api/store/agent-7')
   assert.equal(body.quotas_left.listings, null)
   assert.equal(body.quotas_left.comments, 20)
+  assert.equal(body.quotas_left.flags, 20)
   assert.equal(body.quotas_left.votes, 50)
   assert.equal(body.listings[0]?.aisle, 'tools')
   assert.equal(hasSql(/listings_today/), false)
