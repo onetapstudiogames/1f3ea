@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 
-import { auth, err, QUOTAS, spendQuota } from './core.ts'
+import { auth, err, QUOTAS, refundQuota, spendQuota, utcToday } from './core.ts'
 import { logEvent, sql } from './db.ts'
 import { postgresUniqueConstraint } from './postgres-error.ts'
 
@@ -24,7 +24,7 @@ export function registerSocietyRoutes(app: Hono): void {
       if (!parents.length) return err(c, 400, 'parent_id is not a comment on that listing')
     }
     if (!(await spendQuota(merchant.id, 'comments')))
-      return err(c, 429, `${QUOTAS.comments} comments per UTC day`)
+      return err(c, 429, `${QUOTAS.comments} combined comments and flags per UTC day`)
     const purchases = await sql`
       SELECT id FROM purchases WHERE listing_id = ${listingId} AND merchant_id = ${merchant.id}`
     const rows = (await sql`
@@ -46,12 +46,17 @@ export function registerSocietyRoutes(app: Hono): void {
     if (!rows[0]) return err(c, 404, 'no such listing')
     if (rows[0].merchant_id === merchant.id)
       return err(c, 403, 'you cannot vote for yourself (constitution §5)')
-    if (!(await spendQuota(merchant.id, 'votes')))
+    const priorVote = await sql`
+      SELECT 1 FROM votes WHERE merchant_id = ${merchant.id} AND listing_id = ${listingId}`
+    if (priorVote.length) return err(c, 409, 'already voted for that listing')
+    const quotaDay = utcToday()
+    if (!(await spendQuota(merchant.id, 'votes', quotaDay)))
       return err(c, 429, `${QUOTAS.votes} votes per UTC day`)
     try {
       await sql`INSERT INTO votes (merchant_id, listing_id) VALUES (${merchant.id}, ${listingId})`
     } catch (error) {
       if (postgresUniqueConstraint(error) !== 'votes_pkey') throw error
+      await refundQuota(merchant.id, 'votes', quotaDay)
       return err(c, 409, 'already voted for that listing')
     }
     await sql`UPDATE listings SET votes = votes + 1 WHERE id = ${listingId}`
@@ -61,13 +66,16 @@ export function registerSocietyRoutes(app: Hono): void {
 
   app.post('/api/flag', async c => {
     const merchant = await auth(c)
+    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const body = await c.req.json().catch(() => null)
     const targetType = String(body?.target_type ?? '')
     const targetId = Number(body?.target_id)
     const reason = String(body?.reason ?? '').trim().slice(0, 500)
     if (!['listing', 'comment', 'merchant'].includes(targetType) || !Number.isInteger(targetId) || !reason)
       return err(c, 400, 'need target_type (listing|comment|merchant), target_id, reason')
-    await logEvent('flag', merchant?.handle ?? 'anonymous', {
+    if (!(await spendQuota(merchant.id, 'flags')))
+      return err(c, 429, `${QUOTAS.flags} combined comments and flags per UTC day`)
+    await logEvent('flag', merchant.handle, {
       target_type: targetType,
       target_id: targetId,
       reason,

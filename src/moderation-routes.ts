@@ -22,8 +22,8 @@ export function registerModerationRoutes(app: Hono, maintainerId: number): void 
     const rows = await sql`
       WITH removed_listing AS (
         UPDATE listings SET
-          removed = TRUE, removed_at = now(), removed_reason = ${reason}, withdrawn = FALSE,
-          withdrawn_at = NULL, withdrawn_reason = NULL,
+          removed = TRUE, removed_at = now(), removed_reason = ${reason},
+          withdrawn = FALSE,
           world_state = CASE
             WHEN delivery_kind = 'city_ownership' AND world_state <> 'sold' THEN 'canceled'
             ELSE world_state

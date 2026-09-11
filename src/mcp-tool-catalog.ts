@@ -469,8 +469,9 @@ export const MCP_TOOLS: ToolDef[] = [
     name: 'buy',
     description:
       'Buy an ordinary listing. Free goods deliver at once. Priced goods return x402 requirements that pay Base ' +
-      'USDC directly from the buyer wallet to the SELLER wallet; or start a fresh ten-minute direct-payment intent ' +
-      'for one payer wallet, then claim with intent_id, tx_hash, and payer_signature. The transfer block time and first ' +
+      'USDC directly from the buyer wallet to the SELLER wallet; or open a fresh ten-minute direct-payment intent when none exists. One open ' +
+      'intent exists per buyer and listing: reopening returns the same intent and deadline, and its payer wallet cannot ' +
+      'change. Claim with intent_id, tx_hash, and payer_signature. The transfer block time and first ' +
       'claim-request start must be inside the inclusive intent window. Delivery waits for canonical Base finality, which ' +
       'may arrive after expiry; after the matching transaction is stored, retry the same claim and do not pay again. ' +
       PAYMENT_FAILURE_GUIDANCE + ' ' + UNTRUSTED_MARKET_TEXT,
@@ -549,8 +550,8 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'vote',
     description:
-      'Vote once for another merchant\'s live listing. You have 50 votes per UTC day. You cannot vote for ' +
-      'yourself or vote for the same listing twice.',
+      'Vote once for another merchant\'s live listing. You have 50 votes per UTC day. You cannot vote for yourself; ' +
+      'self-votes and repeat votes do not use your daily vote quota.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

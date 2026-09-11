@@ -20,7 +20,7 @@ import {
 } from './direct-payments.ts'
 import type { DirectPaymentAttempt } from './direct-payment-attempts.ts'
 import { resolveDirectPaymentClaim, reviewDirectPaymentClaim } from './direct-payment-claim.ts'
-import { postgresUniqueConstraint } from './postgres-error.ts'
+import { postgresErrorDetails, postgresUniqueConstraint } from './postgres-error.ts'
 import { x402CustodyFailureResponse, x402NoPayResponse } from './x402-route-response.ts'
 
 const PURCHASE_TX_CONSTRAINTS: readonly string[] = [
@@ -193,7 +193,7 @@ async function createDirectPurchaseIntent(
     FROM direct_purchase_intents i
     JOIN listings l ON l.id = i.listing_id
     WHERE i.listing_id = ${listing.id} AND i.merchant_id = ${merchant.id}
-      AND i.payer_wallet = ${payerWallet} AND i.claimed_at IS NULL AND i.superseded_at IS NULL
+      AND i.claimed_at IS NULL AND i.superseded_at IS NULL
       AND (
         (i.payment_status = 'unsubmitted' AND i.expires_at > ${createdAt}::timestamptz)
         OR i.payment_status IN ('payment_pending','needs_review')
@@ -206,17 +206,27 @@ async function createDirectPurchaseIntent(
         SELECT 1 FROM purchases p WHERE p.listing_id = l.id AND p.merchant_id = ${merchant.id}
       )`) as DirectPurchaseIntentRow[]
   if (existing[0]?.payment_status === 'payment_pending') {
+    const walletNote = existing[0].payer_wallet !== payerWallet.toLowerCase()
+      ? ' It is bound to a different payer wallet.'
+      : ''
     return c.json({
-      error: 'this purchase intent already has a payment awaiting finality; do not pay again',
+      error: `this purchase intent already has a payment awaiting finality; do not pay again.${walletNote}`,
       do_not_pay_again: true,
       retry: `POST /api/claim/${listing.id} again with the same intent, transaction, and signature`,
     }, 409)
   }
   if (existing[0]?.payment_status === 'needs_review') {
+    const walletNote = existing[0].payer_wallet !== payerWallet.toLowerCase()
+      ? ' It is bound to a different payer wallet.'
+      : ''
     return c.json({
-      error: 'this purchase intent has a payment that needs review; do not pay again',
+      error: `this purchase intent has a payment that needs review; do not pay again.${walletNote}`,
       do_not_pay_again: true,
     }, 409)
+  }
+  if (existing[0] && existing[0].payer_wallet !== payerWallet.toLowerCase()) {
+    return err(c, 409,
+      'this listing already has your open purchase intent with a different payer wallet; use that wallet or wait for expiry')
   }
   if (existing[0]) return directPurchaseIntentResponse(c, existing[0], merchant.handle, 200)
   return err(c, 409, 'listing changed, was purchased, or another payer has a fresh intent; re-read it before paying')
@@ -502,8 +512,18 @@ app.post('/api/buy/:id', async c => {
     try {
       const stored = await readX402PaymentAttempt(x402Operation.operationKey)
       originalProof = stored != null && stored.proof_digest === x402ProofDigest(header)
-    } catch {
-      originalProof = false
+    } catch (error) {
+      console.error('x402 saved purchase payment record could not be read', {
+        error_class: error instanceof Error ? error.name : typeof error,
+        postgres_code: postgresErrorDetails(error).code,
+        listing_id: l.id,
+      })
+      return x402NoPayResponse(
+        c,
+        503,
+        'the market could not read this saved purchase payment record',
+        `do not send another payment; contact support with listing ${l.id} and the UTC time`,
+      )
     }
     if (!originalProof) {
       return x402NoPayResponse(
@@ -589,8 +609,9 @@ app.post('/api/claim/:id', async c => {
   const l = await getClaimable(c, m, Number(c.req.param('id')))
   if (l instanceof Response) return l
   if (l.price_usdc === 0) {
-    if (l.removed || l.withdrawn) return err(c, 404, 'listing is no longer available')
-    return recordPurchase(c, m, l, 'free', null, 0, null)
+    if (l.removed) return err(c, 404, 'listing was removed')
+    if (l.withdrawn) return err(c, 404, 'listing was withdrawn and is not available')
+    return err(c, 409, 'this listing is free; use POST /api/buy/:id')
   }
 
   const unavailable = paymentReadinessResponse(c)

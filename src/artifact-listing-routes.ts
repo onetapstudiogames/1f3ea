@@ -21,7 +21,7 @@ import {
 } from './pay.ts'
 import { readX402PaymentAttempt, x402ProofDigest } from './x402-payment-attempts.ts'
 import { cityCancelUrl } from './world.ts'
-import { postgresUniqueConstraint } from './postgres-error.ts'
+import { postgresErrorDetails, postgresUniqueConstraint } from './postgres-error.ts'
 import {
   readListingFeeAttempt,
   resolveListingFeePayment,
@@ -224,8 +224,19 @@ app.post('/api/listing', async c => {
     try {
       const stored = await readX402PaymentAttempt(x402Operation.operationKey)
       originalProof = stored != null && stored.proof_digest === x402ProofDigest(paymentHeader)
-    } catch {
-      originalProof = false
+    } catch (error) {
+      console.error('x402 saved listing payment record could not be read', {
+        error_class: error instanceof Error ? error.name : typeof error,
+        postgres_code: postgresErrorDetails(error).code,
+        merchant_id: m.id,
+        operation: 'artifact_listing_fee',
+      })
+      return x402NoPayResponse(
+        c,
+        503,
+        'the market could not read this saved listing payment record',
+        'do not send another payment; contact support with the UTC time and listing title',
+      )
     }
     if (!originalProof) {
       return x402NoPayResponse(

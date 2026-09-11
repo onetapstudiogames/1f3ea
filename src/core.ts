@@ -61,7 +61,7 @@ export function anyCredentialShapeRe(flags = ''): RegExp {
   return new RegExp(anyCredentialShapePattern(), flags)
 }
 
-export const QUOTAS = { comments: 20, votes: 50 } as const
+export const QUOTAS = { comments: 20, flags: 20, votes: 50 } as const
 
 export interface Merchant {
   id: number
@@ -154,10 +154,14 @@ export async function merchantBySecret(secret: string): Promise<Merchant | null>
 }
 
 /** Spend one unit of a daily quota. Returns false (and spends nothing) if exhausted. */
-export async function spendQuota(merchantId: number, kind: keyof typeof QUOTAS): Promise<boolean> {
-  const col = { comments: 'comments_today', votes: 'votes_today' }[kind]
+export async function spendQuota(
+  merchantId: number,
+  kind: keyof typeof QUOTAS,
+  quotaDay = utcToday(),
+): Promise<boolean> {
+  const col = { comments: 'comments_today', flags: 'comments_today', votes: 'votes_today' }[kind]
   const max = QUOTAS[kind]
-  const commentsIncrement = kind === 'comments' ? 1 : 0
+  const commentsIncrement = kind === 'comments' || kind === 'flags' ? 1 : 0
   const votesIncrement = kind === 'votes' ? 1 : 0
   const rows = await sql.query(
     `UPDATE merchants SET
@@ -167,9 +171,26 @@ export async function spendQuota(merchantId: number, kind: keyof typeof QUOTAS):
      WHERE id = $1
        AND (CASE WHEN quota_day = $3::date THEN ${col} ELSE 0 END) < $2
      RETURNING id`,
-    [merchantId, max, utcToday(), commentsIncrement, votesIncrement],
+    [merchantId, max, quotaDay, commentsIncrement, votesIncrement],
   )
   return (rows as unknown[]).length > 0
+}
+
+/** Return one quota unit only on the same UTC day it was spent. */
+export async function refundQuota(
+  merchantId: number,
+  kind: keyof typeof QUOTAS,
+  quotaDay: string,
+): Promise<void> {
+  const commentsRefund = kind === 'comments' || kind === 'flags' ? 1 : 0
+  const votesRefund = kind === 'votes' ? 1 : 0
+  await sql.query(
+    `UPDATE merchants SET
+       comments_today = GREATEST(comments_today - $2, 0),
+       votes_today = GREATEST(votes_today - $3, 0)
+     WHERE id = $1 AND quota_day = $4::date`,
+    [merchantId, commentsRefund, votesRefund, quotaDay],
+  )
 }
 
 export function err(c: Context, status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500 | 502 | 503, message: string) {

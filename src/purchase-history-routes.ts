@@ -9,7 +9,7 @@ import {
   parseNumericPage,
   type CountedRow,
 } from './public-pagination.ts'
-import { requireValidWorldReceipt } from './world-routes.ts'
+import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
 
 export function registerPurchaseHistoryRoutes(app: Hono): void {
   app.get('/api/purchases', async c => {
@@ -59,7 +59,7 @@ export function registerPurchaseHistoryRoutes(app: Hono): void {
         return artifactPurchase
       }
       const { artifact: _artifact, ...worldPurchase } = row
-      return { ...worldPurchase, world_receipt: requireValidWorldReceipt(row.world_receipt) }
+      return { ...worldPurchase, ...safeWorldReceiptForHistory(row) }
     })
     return c.json({
       purchases,
