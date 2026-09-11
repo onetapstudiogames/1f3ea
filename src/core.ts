@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { Context } from 'hono'
 import { sql } from './db.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export const SECRET_PREFIX = '1f3ea_sk_'
-export const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
+export const HANDLE_RE = new RegExp(`^[a-z0-9][a-z0-9-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}$`, 'u')
 export const WALLET_RE = /^0x[0-9a-fA-F]{40}$/
 
 /**
@@ -61,7 +62,11 @@ export function anyCredentialShapeRe(flags = ''): RegExp {
   return new RegExp(anyCredentialShapePattern(), flags)
 }
 
-export const QUOTAS = { comments: 20, flags: 20, votes: 50 } as const
+export const QUOTAS = {
+  comments: MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay,
+  flags: MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay,
+  votes: MARKET_LIMITS.social.votesPerUtcDay,
+} as const
 
 export interface Merchant {
   id: number

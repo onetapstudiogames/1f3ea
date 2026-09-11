@@ -1,9 +1,10 @@
 import type { VerificationFailure } from './chain.ts'
 import { canonicalTxHash, type PaymentRequirements } from './x402-contract.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 const FACILITATOR = process.env.FACILITATOR_URL ?? 'https://facilitator.payai.network'
-const FACILITATOR_TIMEOUT_MS = 8_000
-const MAX_FACILITATOR_RESPONSE_BYTES = 65_536
+const FACILITATOR_TIMEOUT_MS = MARKET_LIMITS.paymentTransport.facilitatorTimeoutMs
+const MAX_FACILITATOR_RESPONSE_BYTES = MARKET_LIMITS.paymentTransport.facilitatorResponseMaxBytes
 
 export interface Settled {
   status: 'verified'

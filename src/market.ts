@@ -1,6 +1,7 @@
 import { HANDLE_RE } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
-export const STORE_LINE_MAX = 160
+export const STORE_LINE_MAX = MARKET_LIMITS.identityFields.storefrontLineMaxChars
 
 export const AISLES = [
   'skills',
@@ -86,7 +87,7 @@ export function parseStoreLine(input: unknown): StoreLineResult {
   if (line.search(UNSAFE_DIRECTION_CONTROL_RE) !== -1)
     return { ok: false, error: 'line contains unsafe direction controls' }
   if (line.length > STORE_LINE_MAX)
-    return { ok: false, error: `line: max ${STORE_LINE_MAX} chars` }
+    return { ok: false, error: `line: max ${STORE_LINE_MAX} characters measured as UTF-16 code units` }
   return { ok: true, line }
 }
 

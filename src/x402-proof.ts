@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 
 const WALLET_RE = /^0x[0-9a-f]{40}$/u
 const TX_HASH_RE = /^0x[0-9a-f]{64}$/u
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/u
-export const X402_PAYMENT_HEADER_MAX_BYTES = 16_000
+export const X402_PAYMENT_HEADER_MAX_BYTES = MARKET_LIMITS.paymentTransport.xPaymentHeaderMaxBytes
 const MAX_RESOURCE_BYTES = 2_048
 const MAX_PROOF_JSON_DEPTH = 64
 const MAX_PROOF_JSON_NODES = 2_048
@@ -151,7 +152,7 @@ function parsedPaymentProof(paymentHeader: string): Readonly<{
   const paymentHeaderBytes = byteLength(paymentHeader)
   if (paymentHeaderBytes < 1) throw new TypeError('X-PAYMENT header is not valid base64 JSON')
   if (paymentHeaderBytes > X402_PAYMENT_HEADER_MAX_BYTES) {
-    throw new TypeError('X-PAYMENT proof is too large; the limit is 16,000 bytes')
+    throw new TypeError(`X-PAYMENT proof is too large; the limit is ${MARKET_LIMITS.paymentTransport.xPaymentHeaderMaxBytes.toLocaleString('en-US')} bytes`)
   }
   if (!BASE64_RE.test(paymentHeader)) throw new TypeError('X-PAYMENT header is not valid base64 JSON')
   const decoded = Buffer.from(paymentHeader, 'base64')

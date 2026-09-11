@@ -11,6 +11,7 @@ import type {
   AuthorizationRequestProgress,
   MarketOAuthQuery,
 } from './market-oauth-store.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export type PendingMerchantRegistrationResult =
   | { status: 'staged'; handle: string }
@@ -220,7 +221,8 @@ export function createMarketOAuthRegistrationStore(
             scope, code_challenge, code_challenge_method, expires_at
           )
           SELECT id, ${input.authorizationCodeHash}, merchant_id, client_id, redirect_uri,
-            resource, scope, code_challenge, 'S256', now() + interval '5 minutes'
+            resource, scope, code_challenge, 'S256',
+            now() + make_interval(mins => ${MARKET_LIMITS.oauth.authorizationCodeMinutes})
           FROM consumed_request
           WHERE EXISTS (
             SELECT 1 FROM new_event WHERE actor = consumed_request.handle

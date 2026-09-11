@@ -10,6 +10,10 @@
     "node": "24.x"
   },
   "scripts": {
+    "generate": "node scripts/embed-door.mjs && node scripts/embed-changelog.mjs",
+    "check:generated": "node scripts/embed-door.mjs --check && node scripts/embed-changelog.mjs --check",
+    "check:contracts": "node --experimental-strip-types scripts/check-contracts.ts",
+    "build": "npm run check:generated && npm run check:contracts && npm run typecheck",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types scripts/run-tests.ts",
     "test:coverage": "node --experimental-strip-types scripts/run-tests.ts --coverage",

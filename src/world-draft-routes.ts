@@ -107,6 +107,13 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const id = positiveId(c.req.param('id'))
     if (!id) return err(c, 400, 'draft id must be a positive integer')
+    const rawBody = (await c.req.text()).trim()
+    if (rawBody) {
+      let body: unknown
+      try { body = JSON.parse(rawBody) } catch { return err(c, 400, 'body must be empty or {}') }
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)
+        return err(c, 400, 'body must be empty or {}')
+    }
     const transaction = await runReadCommittedTransaction(transactionSql => [
       transactionSql`/* world-draft:cancel-lock */
         SELECT id FROM world_drafts

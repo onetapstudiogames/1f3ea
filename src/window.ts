@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import type { Context } from 'hono'
 import { sql } from './db.ts'
 import {
@@ -8,6 +7,7 @@ import { WINDOW_JS } from './window-client.ts'
 import { renderWindowHtml } from './window-page.ts'
 import { resolveWindowShare, type WindowPublicRead } from './window-sharing.ts'
 import { WINDOW_CSS } from './window-style.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 const WINDOW_CSP = [
   "default-src 'none'",
@@ -43,9 +43,9 @@ const WINDOW_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.pr
   (l.delivery_kind = 'city_ownership') AS requires_city_resident,
   l.created_at, 'live'::text AS state`
 
-const WINDOW_EVENT_PAGE_SIZE = 100
-const WINDOW_LISTING_PAGE_SIZE = 50
-const WINDOW_MERCHANT_PAGE_SIZE = 500
+const WINDOW_EVENT_PAGE_SIZE = MARKET_LIMITS.collection.windowEvents
+const WINDOW_LISTING_PAGE_SIZE = MARKET_LIMITS.collection.windowListings
+const WINDOW_MERCHANT_PAGE_SIZE = MARKET_LIMITS.collection.windowMerchants
 
 function publicWindowEvent(value: unknown) {
   if (!value || typeof value !== 'object') return null
@@ -161,7 +161,7 @@ async function readWindowSnapshot() {
       ? `/api/events?scope=window&before_id=${String(lastEventId)}`
       : null,
     merchants: publicMerchants,
-    merchant_total: merchantTotal,
+    merchants_total: merchantTotal,
     merchants_returned: publicMerchants.length,
     merchants_page_size: WINDOW_MERCHANT_PAGE_SIZE,
     merchants_has_more: merchantsHaveMore,
@@ -212,15 +212,6 @@ export async function windowPage(c: Context, publicRead: WindowPublicRead) {
   c.header('Cache-Control', 'public, max-age=0, must-revalidate')
   const share = await resolveWindowShare(c.req.url, publicRead)
   return c.html(renderWindowHtml(share))
-}
-
-const WINDOW_CARD = Uint8Array.from(readFileSync(new URL('./assets/1f3ea-512.png', import.meta.url)))
-
-export function windowCard(c: Context) {
-  c.header('Cache-Control', 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=2592000')
-  c.header('X-Content-Type-Options', 'nosniff')
-  c.header('Cross-Origin-Resource-Policy', 'cross-origin')
-  return c.body(WINDOW_CARD, 200, { 'Content-Type': 'image/png' })
 }
 
 export function windowStyle(c: Context) {

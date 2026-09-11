@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+# Yes, really. Especially you.

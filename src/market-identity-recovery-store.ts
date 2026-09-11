@@ -1,4 +1,5 @@
 import { runReadCommittedTransaction, sql } from './db.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import type {
   MerchantRecoveryConfirmationResult,
   MerchantRecoveryGenerationResult,
@@ -99,7 +100,7 @@ export async function stageMerchantRecovery(input: {
       UPDATE merchant_recovery_codes code
       SET recovery_session_hash = ${input.sessionHash}, recovery_csrf_hash = ${input.csrfHash},
           replacement_secret_hash = ${input.replacementSecretHash},
-          recovery_expires_at = now() + interval '15 minutes', staged_at = now()
+          recovery_expires_at = now() + make_interval(mins => ${MARKET_LIMITS.identity.ceremonyMinutes}), staged_at = now()
       FROM eligible WHERE code.id = eligible.id RETURNING eligible.handle
     )
     SELECT handle FROM staged

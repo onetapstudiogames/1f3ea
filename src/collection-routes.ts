@@ -14,6 +14,8 @@ import {
   type CountedRow, type ShelfCursorScope,
 } from './public-pagination.ts'
 import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
+import { hasOnlyFields } from './request-fields.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
@@ -50,9 +52,11 @@ function eventScope(params: URLSearchParams):
   if (rawScope !== undefined && rawScope !== 'door' && rawScope !== 'window')
     return { ok: false, error: 'scope must be door or window' }
   const scope = rawScope as PublicEventScope | undefined
+  if ((kindValues[0]?.length ?? 0) > MARKET_LIMITS.collection.eventKindMaxChars)
+    return { ok: false, error: `kind must be at most ${MARKET_LIMITS.collection.eventKindMaxChars} characters measured as UTF-16 code units` }
   return {
     ok: true,
-    kind: kindValues[0]?.slice(0, 40) ?? null,
+    kind: kindValues[0] ?? null,
     scope: scope ?? null,
     kinds: scope ? PUBLIC_EVENT_SCOPES[scope] : null,
   }
@@ -63,6 +67,7 @@ export function registerCollectionRoutes(app: Hono) {
     const merchant = await auth(c)
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const body = await c.req.json().catch(() => null)
+    if (!hasOnlyFields(body, ['line'])) return err(c, 400, 'body may contain only: line')
     const parsed = parseStoreLine(body?.line)
     if (!parsed.ok) return err(c, 400, parsed.error)
     await sql`UPDATE merchants SET storefront_line = ${parsed.line} WHERE id = ${merchant.id}`
@@ -79,7 +84,7 @@ export function registerCollectionRoutes(app: Hono) {
     const params = new URL(c.req.url).searchParams
     const bounded = params.has('limit') || params.has('before_id')
     const requestedPage = bounded
-      ? parseNumericPage(params, { cursorName: 'before_id', defaultLimit: 50, maxLimit: 50 })
+      ? parseNumericPage(params, { cursorName: 'before_id', defaultLimit: MARKET_LIMITS.collection.storePage, maxLimit: MARKET_LIMITS.collection.storePage })
       : null
     if (requestedPage && !requestedPage.ok) return err(c, 400, requestedPage.error)
     const stores = (await sql`
@@ -156,8 +161,13 @@ export function registerCollectionRoutes(app: Hono) {
   })
 
   app.get('/api/shelves', async c => {
-    const q = c.req.query('q')?.slice(0, 100)
-    const tag = c.req.query('tag')?.toLowerCase().slice(0, 40)
+    const q = c.req.query('q')
+    const rawTag = c.req.query('tag')
+    if ((q?.length ?? 0) > MARKET_LIMITS.collection.queryMaxChars)
+      return err(c, 400, `q must be at most ${MARKET_LIMITS.collection.queryMaxChars} characters measured as UTF-16 code units`)
+    if ((rawTag?.length ?? 0) > MARKET_LIMITS.collection.tagMaxChars)
+      return err(c, 400, `tag must be at most ${MARKET_LIMITS.collection.tagMaxChars} characters measured as UTF-16 code units`)
+    const tag = rawTag?.toLowerCase()
     const aisleParam = c.req.query('aisle')?.toLowerCase()
     if (aisleParam && !isAisle(aisleParam))
       return err(c, 400, `aisle must be one of: ${AISLES.join(', ')}`)
@@ -165,7 +175,7 @@ export function registerCollectionRoutes(app: Hono) {
     const sort = c.req.query('sort') === 'karma' ? 'karma' : 'new'
     const params = new URL(c.req.url).searchParams
     const requestedPage = parseNumericPage(params, {
-      cursorName: '__numeric_cursor_not_used__', defaultLimit: 50, maxLimit: 50,
+      cursorName: '__numeric_cursor_not_used__', defaultLimit: MARKET_LIMITS.collection.shelfPage, maxLimit: MARKET_LIMITS.collection.shelfPage,
     })
     if (!requestedPage.ok) return err(c, 400, requestedPage.error)
     const cursorValues = params.getAll('cursor')
@@ -248,7 +258,7 @@ export function registerCollectionRoutes(app: Hono) {
     const id = Number(c.req.param('id'))
     if (!Number.isInteger(id)) return err(c, 400, 'bad id')
     const commentsPage = parseNumericPage(new URL(c.req.url).searchParams, {
-      cursorName: 'comments_after_id', limitName: 'comments_limit', defaultLimit: 200, maxLimit: 200,
+      cursorName: 'comments_after_id', limitName: 'comments_limit', defaultLimit: MARKET_LIMITS.collection.listingCommentsPage, maxLimit: MARKET_LIMITS.collection.listingCommentsPage,
     })
     if (!commentsPage.ok) return err(c, 400, commentsPage.error)
     const rows = (await sql.query(
@@ -322,7 +332,7 @@ export function registerCollectionRoutes(app: Hono) {
 
   app.get('/api/merchants', async c => {
     const requestedPage = parseNumericPage(new URL(c.req.url).searchParams, {
-      cursorName: 'after_id', defaultLimit: 500, maxLimit: 500,
+      cursorName: 'after_id', defaultLimit: MARKET_LIMITS.collection.merchantsPage, maxLimit: MARKET_LIMITS.collection.merchantsPage,
     })
     if (!requestedPage.ok) return err(c, 400, requestedPage.error)
     const rawRows = (await sql`
@@ -372,15 +382,15 @@ export function registerCollectionRoutes(app: Hono) {
     })
     if (!listingsPage.ok) return err(c, 400, listingsPage.error)
     const salesPage = parseNumericPage(params, {
-      cursorName: 'sales_before_id', limitName: 'sales_limit', defaultLimit: 50, maxLimit: 50,
+      cursorName: 'sales_before_id', limitName: 'sales_limit', defaultLimit: MARKET_LIMITS.collection.salesPage, maxLimit: MARKET_LIMITS.collection.salesPage,
     })
     if (!salesPage.ok) return err(c, 400, salesPage.error)
     const purchasesPage = parseNumericPage(params, {
-      cursorName: 'purchases_before_id', limitName: 'purchases_limit', defaultLimit: 50, maxLimit: 50,
+      cursorName: 'purchases_before_id', limitName: 'purchases_limit', defaultLimit: MARKET_LIMITS.collection.purchasesPage, maxLimit: MARKET_LIMITS.collection.purchasesPage,
     })
     if (!purchasesPage.ok) return err(c, 400, purchasesPage.error)
     const repliesPage = parseNumericPage(params, {
-      cursorName: 'replies_before_id', limitName: 'replies_limit', defaultLimit: 20, maxLimit: 20,
+      cursorName: 'replies_before_id', limitName: 'replies_limit', defaultLimit: MARKET_LIMITS.collection.repliesPage, maxLimit: MARKET_LIMITS.collection.repliesPage,
     })
     if (!repliesPage.ok) return err(c, 400, repliesPage.error)
     const rawListings = (await sql`
@@ -543,7 +553,7 @@ export function registerCollectionRoutes(app: Hono) {
     const filter = eventScope(params)
     if (!filter.ok) return err(c, 400, filter.error)
     const requestedPage = parseNumericPage(params, {
-      cursorName: 'before_id', defaultLimit: 200, maxLimit: 200,
+      cursorName: 'before_id', defaultLimit: MARKET_LIMITS.collection.eventsPage, maxLimit: MARKET_LIMITS.collection.eventsPage,
     })
     if (!requestedPage.ok) return err(c, 400, requestedPage.error)
     const rawRows = (await sql.query(
@@ -578,7 +588,7 @@ export function registerCollectionRoutes(app: Hono) {
 
   app.get('/treasury', async c => {
     const requestedPage = parseNumericPage(new URL(c.req.url).searchParams, {
-      cursorName: 'before_id', defaultLimit: 50, maxLimit: 50,
+      cursorName: 'before_id', defaultLimit: MARKET_LIMITS.collection.treasuryPage, maxLimit: MARKET_LIMITS.collection.treasuryPage,
     })
     if (!requestedPage.ok) return err(c, 400, requestedPage.error)
     const [balance, rawFeeRows] = await Promise.all([

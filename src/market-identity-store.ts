@@ -1,4 +1,5 @@
 import { runReadCommittedTransaction, sql } from './db.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import { postgresErrorDetails, retryPostgresDeadlockOnce } from './postgres-error.ts'
 import {
   MARKET_IDENTITY_ATTEMPT_KINDS,
@@ -107,7 +108,7 @@ export async function stageMerchantRegistration(
       )
       SELECT ${input.sessionHash}, ${input.csrfHash}, ${input.ipHash}, ${input.handle},
         ${input.model}, ${input.clientClass}, ${input.merchantSecretHash},
-        now() + interval '15 minutes'
+        now() + make_interval(mins => ${MARKET_LIMITS.identity.ceremonyMinutes})
       WHERE NOT EXISTS (SELECT 1 FROM merchants WHERE handle = ${input.handle})
       ON CONFLICT DO NOTHING
       RETURNING session_hash, handle
@@ -387,7 +388,7 @@ export async function stageMerchantRotation(input: {
         merchant_secret_hash, replacement_secret_hash, expires_at
       )
       SELECT proven.id, proven.recovery_generation, ${input.sessionHash}, ${input.csrfHash},
-        proven.secret_hash, ${input.replacementSecretHash}, now() + interval '15 minutes'
+        proven.secret_hash, ${input.replacementSecretHash}, now() + make_interval(mins => ${MARKET_LIMITS.identity.ceremonyMinutes})
       FROM proven WHERE proven.secret_hash <> ${input.replacementSecretHash}
       ON CONFLICT DO NOTHING RETURNING merchant_id
     )
@@ -465,13 +466,13 @@ async function confirmMerchantRotationOnce(input: {
       UPDATE merchant_key_rotations rotation
       SET canceled_at = now(), merchant_secret_hash = NULL, replacement_secret_hash = NULL
       FROM admission WHERE rotation.id = admission.rotation_id
-        AND admission.daily_successes >= 5 RETURNING rotation.id
+        AND admission.daily_successes >= ${MARKET_LIMITS.identity.successfulRotationsPerMerchantUtcDay} RETURNING rotation.id
     ), changed AS (
       UPDATE merchants merchant
       SET secret_hash = admission.replacement_secret_hash,
           recovery_generation = merchant.recovery_generation + 1
       FROM admission WHERE merchant.id = admission.merchant_id
-        AND admission.daily_successes < 5
+        AND admission.daily_successes < ${MARKET_LIMITS.identity.successfulRotationsPerMerchantUtcDay}
         AND merchant.secret_hash = admission.merchant_secret_hash
         AND merchant.recovery_generation = admission.recovery_generation
       RETURNING merchant.id, merchant.handle

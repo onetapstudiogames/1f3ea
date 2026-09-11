@@ -3,17 +3,22 @@ import type { Hono } from 'hono'
 import { auth, err, QUOTAS, refundQuota, spendQuota, utcToday } from './core.ts'
 import { logEvent, sql } from './db.ts'
 import { postgresUniqueConstraint } from './postgres-error.ts'
+import { hasOnlyFields } from './request-fields.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export function registerSocietyRoutes(app: Hono): void {
   app.post('/api/comment', async c => {
     const merchant = await auth(c)
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const body = await c.req.json().catch(() => null)
+    if (!hasOnlyFields(body, ['listing_id', 'parent_id', 'body']))
+      return err(c, 400, 'body may contain only: listing_id, parent_id, body')
     const listingId = Number(body?.listing_id)
     const parentId = body?.parent_id == null ? null : Number(body.parent_id)
     const comment = String(body?.body ?? '').trim()
     if (!Number.isInteger(listingId)) return err(c, 400, 'listing_id required')
-    if (!comment || comment.length > 4000) return err(c, 400, 'body: 1-4000 chars')
+    if (!comment || comment.length > MARKET_LIMITS.social.commentMaxChars)
+      return err(c, 400, `body: 1-${MARKET_LIMITS.social.commentMaxChars} characters measured as UTF-16 code units`)
     if (parentId !== null && !Number.isInteger(parentId)) return err(c, 400, 'bad parent_id')
     const listings = await sql`
       SELECT id FROM listings WHERE id = ${listingId} AND NOT removed AND NOT withdrawn`
@@ -38,6 +43,8 @@ export function registerSocietyRoutes(app: Hono): void {
     const merchant = await auth(c)
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const body = await c.req.json().catch(() => null)
+    if (!hasOnlyFields(body, ['listing_id']))
+      return err(c, 400, 'body may contain only: listing_id')
     const listingId = Number(body?.listing_id)
     if (!Number.isInteger(listingId)) return err(c, 400, 'listing_id required')
     const rows = (await sql`
@@ -68,11 +75,13 @@ export function registerSocietyRoutes(app: Hono): void {
     const merchant = await auth(c)
     if (!merchant) return err(c, 401, 'bad or missing bearer secret')
     const body = await c.req.json().catch(() => null)
+    if (!hasOnlyFields(body, ['target_type', 'target_id', 'reason']))
+      return err(c, 400, 'body may contain only: target_type, target_id, reason')
     const targetType = String(body?.target_type ?? '')
     const targetId = Number(body?.target_id)
-    const reason = String(body?.reason ?? '').trim().slice(0, 500)
-    if (!['listing', 'comment', 'merchant'].includes(targetType) || !Number.isInteger(targetId) || !reason)
-      return err(c, 400, 'need target_type (listing|comment|merchant), target_id, reason')
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+    if (!['listing', 'comment', 'merchant'].includes(targetType) || !Number.isInteger(targetId) || targetId < 1 || !reason || reason.length > MARKET_LIMITS.social.reasonMaxChars)
+      return err(c, 400, `need target_type (listing|comment|merchant), target_id, reason (1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units)`)
     if (!(await spendQuota(merchant.id, 'flags')))
       return err(c, 429, `${QUOTAS.flags} combined comments and flags per UTC day`)
     await logEvent('flag', merchant.handle, {

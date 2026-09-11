@@ -13,11 +13,13 @@ import {
   PAIRING_CODE_SECONDS,
 } from './market-pairing-store.ts'
 import { privateBrowserHeaders } from './private-browser.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 const MAX_PAIR_JSON_BYTES = 4_096
 const NO_CREDENTIAL_MESSAGE =
   'This door takes its credential only from Authorization: Bearer <merchant_key>. Send no ' +
   'request body, or an empty JSON object.'
+const PAIRING_STORAGE_FAILURE = 'The market could not create a pairing code. Retry the same request; no code was issued.'
 
 export interface MarketPairingRouteOptions {
   environment?: MarketOAuthEnvironment
@@ -84,20 +86,20 @@ export function mountMarketPairingRoutes(app: Hono, options: MarketPairingRouteO
     let allowed: boolean
     try {
       allowed = await admittedMarketIdentity(
-        identityStore, 'pair_create', [`ip:${ip}`, `merchant:${merchant.id}`], 20,
+        identityStore, 'pair_create', [`ip:${ip}`, `merchant:${merchant.id}`], MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour,
       )
     } catch {
-      return fail(c, 503, 'storage_unavailable', 'The market could not create a pairing code. Retry the same request; no code was issued.')
+      return fail(c, 503, 'storage_unavailable', PAIRING_STORAGE_FAILURE)
     }
     if (!allowed) {
-      return fail(c, 429, 'rate_limited', 'Pairing-code creation is limited to 20 attempts per IP and per merchant per UTC hour. Retry after the next UTC hour begins.')
+      return fail(c, 429, 'rate_limited', `Pairing-code creation is limited to ${MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour} attempts per IP and per merchant per UTC hour. Retry after the next UTC hour begins.`)
     }
     const code = newPairingCode()
     let created
     try {
       created = await createPairingCode({ merchantId: merchant.id, codeHash: sha256(code) })
     } catch {
-      return fail(c, 503, 'storage_unavailable', 'The market could not create a pairing code. Retry the same request; no code was issued.')
+      return fail(c, 503, 'storage_unavailable', PAIRING_STORAGE_FAILURE)
     }
     privateBrowserHeaders(c)
     return c.json({

@@ -1,9 +1,10 @@
 import { HANDLE_RE, WALLET_RE } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import { canonicalTxHash } from './pay.ts'
 
 const DEFAULT_CITY_ORIGIN = 'https://1f3d9.com'
-const PUBLIC_READ_TIMEOUT_MS = 3_000
-const PUBLIC_RECORD_MAX_BYTES = 64 * 1024
+const PUBLIC_READ_TIMEOUT_MS = MARKET_LIMITS.publicRead.cityTimeoutMs
+const PUBLIC_RECORD_MAX_BYTES = MARKET_LIMITS.publicRead.cityMaxBytes
 
 function configuredOrigin(value: string): string {
   const parsed = new URL(value)
@@ -118,7 +119,7 @@ const normalizedTags = (value: unknown): string[] | null => {
   if (!Array.isArray(value)) return null
   if (value.some(tag => typeof tag !== 'string')) return null
   return [...new Set(value.map(tag => tag.toLowerCase().trim()).filter(Boolean))]
-    .map(tag => tag.slice(0, 40)).slice(0, 8)
+    .map(tag => tag.slice(0, MARKET_LIMITS.listing.tagMaxChars)).slice(0, MARKET_LIMITS.listing.tagsMaxCount)
 }
 
 export function validWorldDraft(body: unknown): WorldDraftInput | string {
@@ -133,10 +134,10 @@ export function validWorldDraft(body: unknown): WorldDraftInput | string {
   const wallet = typeof value.seller_wallet === 'string' ? value.seller_wallet : ''
   const tags = normalizedTags(value.tags)
   const thingId = positiveId(value.thing_id)
-  if (title.length < 3 || title.length > 120) return 'title: 3-120 chars'
-  if (!description || description.length > 4000) return 'description: 1-4000 chars'
-  if (preview.length > 4000) return 'preview: max 4000 chars'
-  if (!Number.isFinite(price) || price <= 0 || price > 10000) return 'price_usdc must be greater than 0 and at most 10000'
+  if (title.length < MARKET_LIMITS.listing.titleMinChars || title.length > MARKET_LIMITS.listing.titleMaxChars) return `title: ${MARKET_LIMITS.listing.titleMinChars}-${MARKET_LIMITS.listing.titleMaxChars} chars`
+  if (!description || description.length > MARKET_LIMITS.listing.descriptionMaxChars) return `description: ${MARKET_LIMITS.listing.descriptionMinChars}-${MARKET_LIMITS.listing.descriptionMaxChars} chars`
+  if (preview.length > MARKET_LIMITS.listing.previewMaxChars) return `preview: max ${MARKET_LIMITS.listing.previewMaxChars} chars`
+  if (!Number.isFinite(price) || price <= MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc || price > MARKET_LIMITS.listing.priceMaxUsdc) return `price_usdc must be greater than ${MARKET_LIMITS.listing.worldPriceExclusiveMinUsdc} and at most ${MARKET_LIMITS.listing.priceMaxUsdc}`
   if (!WALLET_RE.test(wallet)) return 'seller_wallet: 0x + 40 hex chars (an address on Base)'
   if (!tags) return 'tags must be an array of strings'
   if (!thingId) return 'thing_id must be a positive integer'
@@ -144,7 +145,7 @@ export function validWorldDraft(body: unknown): WorldDraftInput | string {
     title,
     description,
     preview,
-    price_usdc: Math.round(price * 1e6) / 1e6,
+    price_usdc: Math.round(price * 10 ** MARKET_LIMITS.listing.priceDecimals) / 10 ** MARKET_LIMITS.listing.priceDecimals,
     seller_wallet: wallet,
     tags,
     thing_id: thingId,

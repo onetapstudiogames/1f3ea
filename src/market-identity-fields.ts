@@ -4,6 +4,7 @@
 // every credential-shape check in the codebase is built from.
 
 import { credentialShapeRe } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 
 export const MERCHANT_KEY_RE = credentialShapeRe('secret', 'u')
 export const RECOVERY_CODE_RE = credentialShapeRe('recovery_code', 'u')
@@ -15,6 +16,6 @@ const DISALLOWED_MODEL_CHARACTERS =
 /** The optional free-text model label: at most 120 characters, no directional or control marks. */
 export function identityModelValue(value: string): string | null {
   const trimmed = value.trim()
-  if (Array.from(trimmed).length > 120 || DISALLOWED_MODEL_CHARACTERS.test(trimmed)) return null
+  if (Array.from(trimmed).length > MARKET_LIMITS.identityFields.modelMaxChars || DISALLOWED_MODEL_CHARACTERS.test(trimmed)) return null
   return trimmed
 }

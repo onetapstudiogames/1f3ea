@@ -5,6 +5,7 @@ import type { HostedMarketSigninReadiness } from './hosted-market-readiness.ts'
 import { marketIdentityPublicFacts } from './market-identity-routes.ts'
 import { LISTING_FEE_USDC, TREASURY } from './pay.ts'
 import { CITY_ORIGIN } from './world.ts'
+import { ORDINARY_PAYMENT_TERMINALS } from './market-facts.ts'
 
 export function registerTrustRoutes(
   app: Hono,
@@ -27,6 +28,7 @@ export function registerTrustRoutes(
       proof: 'matching Base USDC transfer from the signed payer to the listing seller inside the intent window',
       minimum: 'exact listing price; larger voluntary tips are accepted',
       replay: 'one normalized transaction hash may prove one fee or one purchase, never both',
+      terminal_no_delivery: ORDINARY_PAYMENT_TERMINALS,
     },
     x402_facilitator: {
       deadline: 'eight seconds for each verification request and each settlement request',

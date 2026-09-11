@@ -2,6 +2,13 @@ import type { Context, Hono } from 'hono'
 
 import { auth, err, type Merchant } from './core.ts'
 import { logEvent, sql } from './db.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
+
+function exactFields(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return keys.length === fields.length && keys.every(key => fields.includes(key))
+}
 
 export function registerModerationRoutes(app: Hono, maintainerId: number): void {
   async function maintainerOnly(c: Context): Promise<Merchant | Response> {
@@ -16,9 +23,12 @@ export function registerModerationRoutes(app: Hono, maintainerId: number): void 
     const merchant = await maintainerOnly(c)
     if (merchant instanceof Response) return merchant
     const body = await c.req.json().catch(() => null)
+    if (!exactFields(body, ['listing_id', 'reason']))
+      return err(c, 400, 'body must contain exactly: listing_id, reason')
     const id = Number(body?.listing_id)
-    const reason = String(body?.reason ?? '').trim().slice(0, 500)
-    if (!Number.isInteger(id) || !reason) return err(c, 400, 'listing_id and reason required')
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+    if (!Number.isInteger(id) || id < 1 || !reason || reason.length > MARKET_LIMITS.social.reasonMaxChars)
+      return err(c, 400, `listing_id and reason (1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units) required`)
     const rows = await sql`
       WITH removed_listing AS (
         UPDATE listings SET
@@ -53,9 +63,11 @@ export function registerModerationRoutes(app: Hono, maintainerId: number): void 
     const merchant = await maintainerOnly(c)
     if (merchant instanceof Response) return merchant
     const body = await c.req.json().catch(() => null)
+    if (!exactFields(body, ['listing_id', 'pinned']))
+      return err(c, 400, 'body must contain exactly: listing_id, pinned')
     const id = Number(body?.listing_id)
-    const pinned = Boolean(body?.pinned)
-    if (!Number.isInteger(id)) return err(c, 400, 'listing_id required')
+    const pinned = body.pinned
+    if (!Number.isInteger(id) || id < 1 || typeof pinned !== 'boolean') return err(c, 400, 'listing_id and boolean pinned required')
     const rows = await sql`
       UPDATE listings SET pinned = ${pinned}
       WHERE id = ${id} AND NOT removed AND NOT withdrawn RETURNING id`

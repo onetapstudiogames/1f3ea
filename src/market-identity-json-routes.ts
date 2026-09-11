@@ -13,6 +13,7 @@ import {
 } from './bounded-json.ts'
 import { newBrowserSessionCookie } from './browser-session.ts'
 import { HANDLE_RE, newSecret, sha256 } from './core.ts'
+import { MARKET_LIMITS } from './market-facts.ts'
 import {
   CEREMONY_TOKEN_RE,
   identityModelValue,
@@ -41,7 +42,9 @@ interface Runtime {
 
 const MAX_JSON_BYTES = 4_096
 const CODING_CLIENT_CLASSES = new Set(['coding_persistent', 'coding_ephemeral'])
-const CEREMONY_SECONDS = 900
+const CEREMONY_SECONDS = MARKET_LIMITS.identity.ceremonyMinutes * 60
+const MERCHANT_KEY_REJECTED_MESSAGE = 'That merchant key could not be verified. Check it and retry.'
+const REPLACEMENT_KEY_REJECTED_MESSAGE = 'That saved replacement merchant key could not be verified. Check it and retry confirm.'
 
 type JsonStatus = 400 | 403 | 409 | 429 | 503
 
@@ -138,7 +141,7 @@ function requireClientClass(c: Context, body: Record<string, unknown>): Merchant
 function requireMerchantKey(c: Context, body: Record<string, unknown>): string | Response {
   const key = jsonStringField(body, 'merchant_key', 80)
   if (key && MERCHANT_KEY_RE.test(key)) return key
-  return fail(c, 403, 'credential_rejected', 'That merchant key could not be verified. Check it and retry.')
+  return fail(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE)
 }
 
 function requireRecoveryCode(c: Context, body: Record<string, unknown>): string | Response {
@@ -206,12 +209,12 @@ async function registerStage(c: Context, runtime: Runtime, body: Record<string, 
   if (identity instanceof Response) return identity
   const ip = identityClientAddress(c, runtime.environment)
   if (
-    !(await admittedMarketIdentity(runtime.store, 'join_stage', [`ip:${ip}`], 3)) ||
-    !(await admittedMarketIdentity(runtime.store, 'join_stage', ['global'], 300))
+    !(await admittedMarketIdentity(runtime.store, 'join_stage', [`ip:${ip}`], MARKET_LIMITS.identity.registrationStartsPerIpUtcHour)) ||
+    !(await admittedMarketIdentity(runtime.store, 'join_stage', ['global'], MARKET_LIMITS.identity.registrationStartsGlobalUtcHour))
   ) {
     return fail(
       c, 429, 'rate_limited',
-      'Registration staging is limited to 3 attempts per IP and 300 total per UTC hour. Retry after the next UTC hour begins.',
+      `Registration staging is limited to ${MARKET_LIMITS.identity.registrationStartsPerIpUtcHour} attempts per IP and ${MARKET_LIMITS.identity.registrationStartsGlobalUtcHour} total per UTC hour. Retry after the next UTC hour begins.`,
     )
   }
   const merchantKey = newSecret()
@@ -268,11 +271,11 @@ async function registerConfirm(c: Context, runtime: Runtime, body: Record<string
   if (merchantKey instanceof Response) return merchantKey
   const ip = identityClientAddress(c, runtime.environment)
   if (!(await admittedMarketIdentity(
-    runtime.store, 'join_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], 10,
+    runtime.store, 'join_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour,
   ))) {
     return fail(
       c, 429, 'rate_limited',
-      'Confirmation is limited to 10 attempts per IP and per staged registration per UTC hour. Check ' +
+      `Confirmation is limited to ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and per staged registration per UTC hour. Check ` +
         'GET /api/merchants for this handle before retrying after the next UTC hour begins.',
     )
   }
@@ -355,8 +358,8 @@ async function rotateBegin(c: Context, runtime: Runtime, body: Record<string, un
   const merchantKey = requireMerchantKey(c, body)
   if (merchantKey instanceof Response) return merchantKey
   const ip = identityClientAddress(c, runtime.environment)
-  if (!(await admittedMarketIdentity(runtime.store, 'rotation_begin', [`ip:${ip}`], 5))) {
-    return fail(c, 429, 'rate_limited', 'Rotation begins are limited to 5 attempts per IP per UTC hour. Retry after the next UTC hour begins.')
+  if (!(await admittedMarketIdentity(runtime.store, 'rotation_begin', [`ip:${ip}`], MARKET_LIMITS.identity.rotationStartsPerIpUtcHour))) {
+    return fail(c, 429, 'rate_limited', `Rotation begins are limited to ${MARKET_LIMITS.identity.rotationStartsPerIpUtcHour} attempts per IP per UTC hour. Retry after the next UTC hour begins.`)
   }
   const ceremony = newBrowserSessionCookie()
   const replacement = newSecret()
@@ -396,15 +399,15 @@ async function rotateConfirm(c: Context, runtime: Runtime, body: Record<string, 
   if (merchantKey instanceof Response) return merchantKey
   const ip = identityClientAddress(c, runtime.environment)
   if (!(await admittedMarketIdentity(
-    runtime.store, 'rotation_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], 10,
+    runtime.store, 'rotation_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour,
   ))) {
-    return fail(c, 429, 'rate_limited', 'Confirmation is limited to 10 attempts per IP and per rotation per UTC hour. Retry after the next UTC hour begins.')
+    return fail(c, 429, 'rate_limited', `Confirmation is limited to ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and per rotation per UTC hour. Retry after the next UTC hour begins.`)
   }
   const merchant = await runtime.store.confirmMerchantRotation({
     sessionHash: ceremony.sessionHash, csrfHash: ceremony.csrfHash, replacementSecretHash: sha256(merchantKey),
   })
   if (merchant.status === 'rate_limited') {
-    return fail(c, 429, 'rate_limited', 'This merchant reached 5 successful rotations this UTC day. Wait until the next UTC day, then begin a new rotation.')
+    return fail(c, 429, 'rate_limited', `This merchant reached ${MARKET_LIMITS.identity.successfulRotationsPerMerchantUtcDay} successful rotations this UTC day. Wait until the next UTC day, then begin a new rotation.`)
   }
   if (merchant.status === 'request_unavailable') {
     return fail(
@@ -413,7 +416,7 @@ async function rotateConfirm(c: Context, runtime: Runtime, body: Record<string, 
     )
   }
   if (merchant.status === 'credential_rejected') {
-    return fail(c, 403, 'credential_rejected', 'That saved replacement merchant key could not be verified. Check it and retry confirm.')
+    return fail(c, 403, 'credential_rejected', REPLACEMENT_KEY_REJECTED_MESSAGE)
   }
   return ok(c, { status: 'rotated', merchant_id: merchant.merchantId, handle: merchant.handle })
 }
@@ -471,15 +474,15 @@ async function recoveryGenerate(c: Context, runtime: Runtime, body: Record<strin
   const merchantKey = requireMerchantKey(c, body)
   if (merchantKey instanceof Response) return merchantKey
   const ip = identityClientAddress(c, runtime.environment)
-  if (!(await admittedMarketIdentity(runtime.store, 'recovery_generate', [`ip:${ip}`], 5))) {
-    return fail(c, 429, 'rate_limited', 'Recovery-set creation is limited to 5 attempts per IP per UTC hour. Retry after the next UTC hour begins.')
+  if (!(await admittedMarketIdentity(runtime.store, 'recovery_generate', [`ip:${ip}`], MARKET_LIMITS.identity.recoverySetsPerIpUtcHour))) {
+    return fail(c, 429, 'rate_limited', `Recovery-set creation is limited to ${MARKET_LIMITS.identity.recoverySetsPerIpUtcHour} attempts per IP per UTC hour. Retry after the next UTC hour begins.`)
   }
   const codes = newRecoveryCodeSet()
   const generated = await runtime.store.generateMerchantRecoveryCodes({
     merchantSecretHash: sha256(merchantKey), codeHashes: codes.map(sha256),
   })
   if (!generated) {
-    return fail(c, 403, 'credential_rejected', 'That merchant key could not be verified. Check it and retry.')
+    return fail(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE)
   }
   return ok(c, {
     status: 'generated',
@@ -502,8 +505,8 @@ async function recoveryBegin(c: Context, runtime: Runtime, body: Record<string, 
   const recoveryCode = requireRecoveryCode(c, body)
   if (recoveryCode instanceof Response) return recoveryCode
   const ip = identityClientAddress(c, runtime.environment)
-  if (!(await admittedMarketIdentity(runtime.store, 'recovery_begin', [`ip:${ip}`], 10))) {
-    return fail(c, 429, 'rate_limited', 'Recovery begins are limited to 10 attempts per IP per UTC hour. Retry after the next UTC hour begins.')
+  if (!(await admittedMarketIdentity(runtime.store, 'recovery_begin', [`ip:${ip}`], MARKET_LIMITS.identity.recoveryStartsPerIpUtcHour))) {
+    return fail(c, 429, 'rate_limited', `Recovery begins are limited to ${MARKET_LIMITS.identity.recoveryStartsPerIpUtcHour} attempts per IP per UTC hour. Retry after the next UTC hour begins.`)
   }
   const ceremony = newBrowserSessionCookie()
   const replacement = newSecret()
@@ -542,9 +545,9 @@ async function recoveryConfirm(c: Context, runtime: Runtime, body: Record<string
   if (merchantKey instanceof Response) return merchantKey
   const ip = identityClientAddress(c, runtime.environment)
   if (!(await admittedMarketIdentity(
-    runtime.store, 'recovery_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], 10,
+    runtime.store, 'recovery_confirm', [`ip:${ip}`, `session:${ceremony.sessionHash}`], MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour,
   ))) {
-    return fail(c, 429, 'rate_limited', 'Confirmation is limited to 10 attempts per IP and per recovery per UTC hour. Retry after the next UTC hour begins.')
+    return fail(c, 429, 'rate_limited', `Confirmation is limited to ${MARKET_LIMITS.identity.confirmationAttemptsPerIpAndSessionUtcHour} attempts per IP and per recovery per UTC hour. Retry after the next UTC hour begins.`)
   }
   const merchant = await runtime.store.confirmMerchantRecovery({
     sessionHash: ceremony.sessionHash, csrfHash: ceremony.csrfHash, replacementSecretHash: sha256(merchantKey),
@@ -556,7 +559,7 @@ async function recoveryConfirm(c: Context, runtime: Runtime, body: Record<string
     )
   }
   if (merchant.status === 'credential_rejected') {
-    return fail(c, 403, 'credential_rejected', 'That saved replacement merchant key could not be verified. Check it and retry confirm.')
+    return fail(c, 403, 'credential_rejected', REPLACEMENT_KEY_REJECTED_MESSAGE)
   }
   return ok(c, { status: 'recovered', merchant_id: merchant.merchantId, handle: merchant.handle })
 }
