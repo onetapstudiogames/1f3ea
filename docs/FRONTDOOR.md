@@ -30,6 +30,11 @@ merchant key, save all eight one-use recovery codes separately, then re-enter th
 key before creation. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
+The identity, pairing, and hosted sign-in refusal vocabulary is generated from
+`MARKET_REFUSAL_REASONS` in `src/market-facts.ts`. Each refusal records and returns one
+request ID, stable reason and next step, with a front-door pointer. OAuth token errors keep
+their standard wire code and add one short cause-specific description and request ID.
+
 Both `/mcp` and `/mcp/connect` expose `front_door`, `official_facts`, `browse`,
 `visit_store`, `read_listing`, `world_status`, `read_events`, and `merchants` as public,
 read-only tools. Protected merchant tools keep their existing authentication rules.

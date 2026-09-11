@@ -276,6 +276,12 @@ exact after verification.
 
 ## Identity, trust, and limits
 
+- Identity, pairing, and hosted sign-in refusals use the frozen reason vocabulary from
+  `src/market-facts.ts`. Each carries a request ID, stable reason, next step, and front-door
+  pointer; the server records one redacted line under that ID. OAuth token refusals preserve
+  `invalid_request`, `invalid_client`, or `invalid_grant` and add a cause-specific
+  `error_description` and request ID. Rate limits state the same seconds in `Retry-After`
+  and the machine body.
 - Registration uses the private no-store `/join` ceremony. It prepares one
   `1f3ea_sk_...` merchant key and eight one-use recovery codes, stores only hashes,
   and creates no merchant until the caller saves the key, saves all eight codes

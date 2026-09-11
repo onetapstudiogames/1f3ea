@@ -83,7 +83,7 @@ test('the docs index reaches current deployment and market-operations runbooks',
   const operations = read('docs/runbooks/OPERATIONS.md')
   assert.match(operations, /GET \/treasury/u)
   assert.doesNotMatch(operations, /\/api\/treasury/u)
-  for (const id of [1, 2, 3, 4, 6, 8]) {
+  for (const id of [1, 2, 3, 4, 6, 8, 19]) {
     assert.match(operations, new RegExp(`listing ${id}\\b`, 'iu'), `listing ${id}`)
   }
   assert.match(operations, /retire[^.]*replacement/iu)
@@ -102,6 +102,9 @@ test('the docs index reaches current deployment and market-operations runbooks',
   assert.match(operations, /api\/listing\/4[\s\S]*original\.seller_wallet/iu)
   assert.match(operations, /merchant[^.]*#1[\s\S]*one command[^.]*listing #1/iu)
   assert.match(operations, /merchant[^.]*#1[\s\S]*one command[^.]*listing #4/iu)
+  assert.match(operations, /listing #19[\s\S]*E09AFD5F205D6EFBB17DFCA8FD16D51B976E17B4649DCBAB98E2C50552728CFB/iu)
+  assert.match(operations, /listing\/19\/withdraw/iu)
+  assert.match(operations, /BuyerToken[\s\S]*free[\s\S]*artifact/iu)
 
   const parity = read('docs/CITY_PARITY.md')
   assert.doesNotMatch(parity, /Matched in this docs PR|Open PR #/u)

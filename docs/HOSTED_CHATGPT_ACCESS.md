@@ -81,6 +81,10 @@ adding a custom connector may still vary independently of those responsive pages
 
 ## Fix or reconnect
 
+- A stopped sign-in page names a stable reason and request ID. Follow its next step; if it
+  fails again, report only the request ID. Token errors add a short cause-specific
+    description. A pairing refusal keeps the protected retry form on the same page; enter a
+    corrected or freshly minted code there.
 - Wrong address: remove or delete the hosted connection that uses
   `https://1f3ea.com/mcp`, then add or create one with
   `https://1f3ea.com/mcp/connect`.
