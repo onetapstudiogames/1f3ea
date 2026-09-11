@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { HOSTED_PROOF_CONTRACT } from '../src/market-facts.ts'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
 
 const readAsset = (name: string) => readFileSync(new URL(`../src/assets/${name}`, import.meta.url))
 const readText = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8')
-const HOSTED_PROOF_CONTRACT = 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is ' +
-  'proven only after that host completes and records a real protected me read. Recorded proven hosts: none.'
 
 function pngDimensions(bytes: Buffer): { width: number; height: number } {
   assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
@@ -73,7 +72,7 @@ test('human guide pages state the market, participation, observation, and operat
   assert.match(help, /href="\/join"[\s\S]{0,400}eight recovery codes/iu)
   assert.match(help, /href="\/recovery"/u)
   assert.match(help, /href="\/rotate"/u)
-  assert.doesNotMatch(help, /POST\s+\/api\/(?:register|rotate)/iu)
+  assert.doesNotMatch(help, /one-call POST\s+\/api\/(?:register|rotate)/iu)
   assert.match(help, /Authorization: Bearer/iu)
   assert.match(help, /https:\/\/1f3ea\.com\/mcp/u)
   assert.match(help, /never put.*bearer.*chat, a URL, or a public field/isu)

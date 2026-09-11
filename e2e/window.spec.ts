@@ -64,7 +64,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     merchants: [
       { id: 1, handle: 'safe-store', line: LONG_STOREFRONT, model: 'test-model', listings: 2 },
     ],
-    merchant_total: 1,
+    merchants_total: 1,
     aisles: aisleVector({ tools: 2 }),
     listings: [
       {
@@ -89,7 +89,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
   const listingsTotal = Number(overrides.listings_total ?? aisles.reduce(
     (sum, row) => sum + (Number.isSafeInteger(row.count) ? Number(row.count) : 0), 0,
   ))
-  const merchantTotal = Number(payload.merchant_total)
+  const merchantTotal = Number(payload.merchants_total)
   const eventsHaveMore = eventsTotal > events.length
   const listingsHaveMore = listingsTotal > listings.length
   const merchantsHaveMore = merchantTotal > merchants.length
@@ -632,7 +632,7 @@ test('every snapshot panel distinguishes loading, failure, retry, and completed 
 
   second.resolve({
     body: snapshot({
-      events: [], events_has_more: false, merchants: [], merchant_total: 0,
+      events: [], events_has_more: false, merchants: [], merchants_total: 0,
       aisles: aisleVector(), listings: [],
     }),
   })
@@ -666,7 +666,7 @@ test('filter empties name only bounds that can hide another matching record', as
             id: index + 1, handle: `store-${index + 1}`,
             line: 'Patient tools', model: 'test-model', listings: 1,
           })),
-          merchant_total: 501,
+          merchants_total: 501,
           aisles: aisleVector({ tools: 51 }),
           listings: Array.from({ length: 50 }, (_, index) => ({
             id: index + 1, merchant: `store-${index + 1}`, title: `Patient tool ${index + 1}`,

@@ -3790,7 +3790,7 @@ test('the cached human window snapshot is exact at each bound and honest past ev
       listingsMore: exactBody.listings_has_more,
       listingsUrl: exactBody.listings_more_url,
       merchants: (exactBody.merchants as unknown[]).length,
-      merchantsTotal: exactBody.merchant_total,
+      merchantsTotal: exactBody.merchants_total,
       merchantsMore: exactBody.merchants_has_more,
       merchantsUrl: exactBody.merchants_more_url,
     }, {
@@ -3815,14 +3815,14 @@ test('the cached human window snapshot is exact at each bound and honest past ev
     const body = await past.json() as {
       events: Array<{ id: number; detail: Record<string, unknown> }>; events_total: number
       events_has_more: boolean; events_more_url: string
-      merchants: Record<string, unknown>[]; merchant_total: number; merchants_more_url: string
+      merchants: Record<string, unknown>[]; merchants_total: number; merchants_more_url: string
       listings: Record<string, unknown>[]; listings_total: number; listings_more_url: string
       aisles: Record<string, unknown>[]; refreshed_at: string
     }
     assert.deepEqual({
       events: body.events.length, eventsTotal: body.events_total, eventsMore: body.events_has_more,
       listings: body.listings.length, listingsTotal: body.listings_total,
-      merchants: body.merchants.length, merchantsTotal: body.merchant_total,
+      merchants: body.merchants.length, merchantsTotal: body.merchants_total,
     }, { events: 100, eventsTotal: 101, eventsMore: true, listings: 50, listingsTotal: 51,
       merchants: 500, merchantsTotal: 501 })
     assert.match(body.events_more_url, /^\/api\/events\?scope=window&before_id=\d+$/)
@@ -4033,7 +4033,7 @@ test('/api/official states the dormant private-identity and hosted-sign-in contr
     hosted_connector: null,
     hosted_status: 'dormant',
     hosted_proven_hosts: [],
-    legacy_registration: 'retired',
+    legacy_registration: 'retired: the former one-call POST /api/register and POST /api/rotate secret-returning flow; current staged coding-client doors reuse those addresses only when coding_client_doors is published',
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
   })

@@ -17,7 +17,7 @@ test('store lines are one short, trimmed line and may be cleared', () => {
   assert.deepEqual(parseStoreLine('safe\u202Egpj.exe'), { ok: false, error: 'line contains unsafe direction controls' })
   assert.deepEqual(parseStoreLine('x'.repeat(STORE_LINE_MAX + 1)), {
     ok: false,
-    error: `line: max ${STORE_LINE_MAX} chars`,
+    error: `line: max ${STORE_LINE_MAX} characters measured as UTF-16 code units`,
   })
 })
 

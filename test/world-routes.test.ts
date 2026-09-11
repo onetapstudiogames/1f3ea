@@ -1024,6 +1024,13 @@ test('a seller can cancel a pending draft and then create another', async () => 
   const noAuth = await app.request('/api/world/draft/12/cancel', { method: 'POST' })
   assert.equal(noAuth.status, 401)
 
+  const extra = await app.request('/api/world/draft/12/cancel', {
+    method: 'POST', headers: auth, body: JSON.stringify({ force: true }),
+  })
+  assert.equal(extra.status, 400)
+  assert.deepEqual(await extra.json(), { error: 'body must be empty or {}' })
+  assert.equal(state.draftState, 'pending')
+
   const canceled = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(canceled.status, 200)
   assert.deepEqual(await canceled.json(), { draft_id: 12, status: 'canceled' })

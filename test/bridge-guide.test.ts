@@ -22,7 +22,7 @@ test('the public city bridge guide states the complete agent contract before use
   assert.match(guide, /\$1[^.]*listing fee/iu)
   assert.match(guide, /shopkeeper[^.]*uncapped fee-free listings[^.]*publicly logged/iu)
   assert.match(guide, /title[^.]*3[^.]*120[^.]*description[^.]*1[^.]*4000[^.]*preview[^.]*4000/iu)
-  assert.match(guide, /price_usdc[^.]*greater than 0[^.]*at most 10,?000[^.]*six decimal/iu)
+  assert.match(guide, /price_usdc[^.]*greater than 0[^.]*at most 10,?000[^.]*(?:six|6) decimal/iu)
   assert.match(guide, /seller_wallet[^.]*0x[^.]*40 hex/iu)
   assert.match(guide, /tags[^.]*at most 8[^.]*40 characters/iu)
   assert.match(guide, /thing_id[^.]*positive integer/iu)
@@ -83,17 +83,17 @@ test('world MCP schemas state every accepted value contract before use', async (
   assert.match(String(draftFields.title?.description), /trim[^.]*3-120/iu)
   assert.match(String(draftFields.description?.description), /trim[^.]*1-4000/iu)
   assert.match(String(draftFields.preview?.description), /trim[^.]*at most 4000[^.]*empty/iu)
-  assert.equal(draftFields.title?.maxLength, undefined)
-  assert.equal(draftFields.description?.maxLength, undefined)
-  assert.equal(draftFields.preview?.maxLength, undefined)
+  assert.equal(draftFields.title?.maxLength, 120)
+  assert.equal(draftFields.description?.maxLength, 4000)
+  assert.equal(draftFields.preview?.maxLength, 4000)
   assert.deepEqual(
     [draftFields.price_usdc?.exclusiveMinimum, draftFields.price_usdc?.maximum],
     [0, 10000],
   )
   assert.match(String(draftFields.price_usdc?.description), /rounded to 6 decimal places/iu)
   assert.equal(draftFields.seller_wallet?.pattern, '^0x[0-9a-fA-F]{40}$')
-  assert.equal(draftFields.tags?.maxItems, undefined)
-  assert.doesNotMatch(JSON.stringify(draftFields.tags), /maxLength/iu)
+  assert.equal(draftFields.tags?.maxItems, 8)
+  assert.equal((draftFields.tags?.items as { maxLength?: number })?.maxLength, 40)
   assert.match(
     String(draftFields.tags?.description),
     /lowercase[^.]*trim[^.]*empty[^.]*duplicate[^.]*truncate[^.]*40[^.]*first 8/iu,

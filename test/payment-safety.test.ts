@@ -50,8 +50,8 @@ test('public payment contracts state both parsing limits before use', () => {
     readFileSync(new URL('../docs/SPEC.md', import.meta.url), 'utf8'),
   ]
   for (const contract of contracts) {
-    assert.match(contract, /16,000[\s\S]{0,100}X-PAYMENT/iu)
-    assert.match(contract, /65,536[\s\S]{0,120}facilitator/iu)
+    assert.match(contract, /(?:16,?000[\s\S]{0,100}X-PAYMENT|X-PAYMENT[\s\S]{0,100}16,?000)/iu)
+    assert.match(contract, /(?:65,?536[\s\S]{0,120}facilitator|facilitator[\s\S]{0,120}65,?536)/iu)
     assert.match(contract, /X-PAYMENT-RESPONSE[\s\S]{0,160}512 bytes/iu)
   }
 })
