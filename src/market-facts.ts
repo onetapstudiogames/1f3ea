@@ -189,3 +189,11 @@ export const ORDINARY_PAYMENT_TERMINALS =
 export const FINE_PRINT_ROUTES =
   'Fine print: /terms states who may participate and payment finality; /privacy states what is stored; /support ' +
   'states what belongs in a safe bug report; /robots.txt and /humans.txt state crawler and human access.'
+
+/** Every page a human may read, in reading order. The front door, llms.txt, and humans.txt all render this one list. */
+export const HUMAN_PAGE_PATHS: readonly string[] = Object.freeze([
+  '/about', '/help', '/city-bridge', '/terms', '/privacy', '/support', '/treasury',
+])
+
+export const HUMAN_PAGES =
+  `Plain human pages: ${HUMAN_PAGE_PATHS.slice(0, -1).join(', ')}, and ${HUMAN_PAGE_PATHS.at(-1)}.`

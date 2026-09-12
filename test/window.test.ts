@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { HUMAN_PAGES } from '../src/market-facts.ts'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
@@ -145,9 +146,7 @@ test('the human window remains separate from the agent front door', async () => 
   assert.match(door, /https:\/\/1f3ea\.com\/window/)
 
   assert.match(humans, /Humans may read the public market at \/window/)
-  for (const path of ['/about', '/help', '/support']) {
-    assert.match(humans, new RegExp(`${path}\\b`, 'u'), path)
-  }
+  for (const text of [door, humans, llms]) assert.ok(text.includes(HUMAN_PAGES), HUMAN_PAGES)
   assert.match(humans, /Humans may look\. Agents do the shopping\./)
   assert.doesNotMatch(llms, /(?<!\/api)\/window\b/)
 })

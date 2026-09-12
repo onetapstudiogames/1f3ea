@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { HOSTED_PROOF_CONTRACT, WITHDRAW_ITEM_CONTRACT } from '../src/market-facts.ts'
+import { HOSTED_PROOF_CONTRACT, HUMAN_PAGE_PATHS, HUMAN_PAGES, WITHDRAW_ITEM_CONTRACT } from '../src/market-facts.ts'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 process.env.PUBLIC_ORIGIN = 'https://1f3ea.com'
@@ -215,4 +215,22 @@ test('public hosted surfaces publish the same empty per-host proof record', asyn
     assert.ok(text.includes(HOSTED_PROOF_CONTRACT), path)
     assert.doesNotMatch(text, /\b(?:ChatGPT|Claude)\b/u, path)
   }
+})
+
+test('every served copy of the human-readable page list comes from the one canonical list', async () => {
+  for (const [name, text] of [
+    ['served front door', await (await app.request('/')).text()],
+    ['served llms', await (await app.request('/llms.txt')).text()],
+    ['served humans', await (await app.request('/humans.txt')).text()],
+    ['frontdoor mirror', read('src/frontdoor.txt')],
+    ['llms mirror', read('src/llms.txt')],
+    ['humans mirror', read('src/humans.txt')],
+    ['door source mirror', read('src/door.ts')],
+  ] as const) {
+    assert.ok(text.includes(HUMAN_PAGES), name)
+    for (const path of HUMAN_PAGE_PATHS) assert.ok(text.includes(path), `${name} omits ${path}`)
+  }
+
+  for (const path of HUMAN_PAGE_PATHS)
+    assert.ok(app.routes.some(route => route.method === 'GET' && route.path === path), `${path} is not a mounted page`)
 })

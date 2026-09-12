@@ -13,7 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, sep } from 'node:path'
-import { FRONTDOOR, LLMS } from '../src/door.ts'
+import { FRONTDOOR, HUMANS, LLMS } from '../src/door.ts'
 import { AISLES } from '../src/market.ts'
 
 const read = (path: string) => readFileSync(path, 'utf8')
@@ -111,6 +111,7 @@ const finalOutputLine = (output: string) => output.trimEnd().split(/\r?\n/).at(-
 
 test('the generated public doors exactly contain their text-file sources', () => {
   assert.equal(FRONTDOOR, read('src/frontdoor.txt'))
+  assert.equal(HUMANS, read('src/humans.txt'))
   assert.equal(LLMS, read('src/llms.txt'))
 })
 
