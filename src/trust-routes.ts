@@ -13,6 +13,9 @@ export function registerTrustRoutes(
 ): void {
   app.get('/api/official', c => c.json({
     domain: config.domain,
+    deployment_commit: /^[0-9a-f]{40}$/u.test(process.env.VERCEL_GIT_COMMIT_SHA ?? '')
+      ? process.env.VERCEL_GIT_COMMIT_SHA
+      : null,
     treasury: TREASURY,
     network: NETWORK,
     usdc_contract: USDC,

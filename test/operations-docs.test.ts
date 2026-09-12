@@ -24,6 +24,7 @@ const RUNTIME_NAMES = [
   'TREASURY_ADDRESS',
   'VERCEL',
   'VERCEL_ENV',
+  'VERCEL_GIT_COMMIT_SHA',
 ] as const
 
 const MIGRATION_NAMES = [
