@@ -17,6 +17,15 @@ const SECRET = '1f3ea_sk_' + 'ab'.repeat(24)
 const TX_LOWER = '0x' + 'ab'.repeat(32)
 const TX_UPPER = '0x' + 'AB'.repeat(32)
 const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function assertInternalFailure(body: unknown): void {
+  const failure = body as Record<string, unknown>
+  assert.match(String(failure.error), /could not complete this request.*request_id/iu)
+  assert.equal(failure.error_class, 'market_fault')
+  assert.equal(failure.error_name, 'Error')
+  assert.match(String(failure.request_id), REQUEST_ID)
+}
 
 interface IntentRow {
   id: number
@@ -493,7 +502,7 @@ test('intent retries recover only from the two committed open-intent constraints
   try {
     const unrelated = await openIntent()
     assert.equal(unrelated.status, 500)
-    assert.deepEqual(await unrelated.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await unrelated.json())
   } finally {
     console.error = originalConsoleError
   }

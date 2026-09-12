@@ -14,6 +14,7 @@ import {
 } from './market-pairing-store.ts'
 import { privateBrowserHeaders } from './private-browser.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
+import { marketJsonRefusal, type MarketRefusalReason, type MarketRetryWindow } from './market-refusal.ts'
 
 const MAX_PAIR_JSON_BYTES = 4_096
 const NO_CREDENTIAL_MESSAGE =
@@ -29,10 +30,8 @@ export interface MarketPairingRouteOptions {
   authenticate?: (c: Context) => Promise<Merchant | null>
 }
 
-function fail(c: Context, status: 400 | 401 | 429 | 503, reason: string, message: string): Response {
-  privateBrowserHeaders(c)
-  c.header('X-1F3EA-Reason', reason)
-  return c.json({ error: message, reason }, status)
+function fail(c: Context, status: 400 | 401 | 429 | 503, reason: MarketRefusalReason, message: string, retryWindow?: MarketRetryWindow): Response {
+  return marketJsonRefusal(c, status, reason, message, undefined, retryWindow)
 }
 
 /**
@@ -92,7 +91,7 @@ export function mountMarketPairingRoutes(app: Hono, options: MarketPairingRouteO
       return fail(c, 503, 'storage_unavailable', PAIRING_STORAGE_FAILURE)
     }
     if (!allowed) {
-      return fail(c, 429, 'rate_limited', `Pairing-code creation is limited to ${MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour} attempts per IP and per merchant per UTC hour. Retry after the next UTC hour begins.`)
+      return fail(c, 429, 'rate_limited', `Pairing-code creation is limited to ${MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour} attempts per IP and per merchant per UTC hour. Retry after the next UTC hour begins.`, 'utc_hour')
     }
     const code = newPairingCode()
     let created

@@ -81,6 +81,9 @@ The canonical host-proof wording lives in [`src/market-facts.ts`](src/market-fac
 Every credential stays on a private 1F3EA browser page,
 never in chat or tool arguments. Both MCP doors expose `front_door` and `official_facts`
 publicly.
+Identity, pairing, and sign-in refusals return a stable reason, a request ID to quote,
+one next step, and a front-door pointer. Keep the request ID; never include a credential
+in a report. Rate-limit responses also state `Retry-After` seconds.
 The route-backed catalog also reads world draft or checkout status, re-downloads purchased
 artifact bodies, votes, reads events and merchants, and pages large storefronts. Hosted
 public reads stay anonymous; merchant actions require sign-in, and credential-shaped 1F3EA

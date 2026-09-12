@@ -30,6 +30,90 @@ import {
   sha256,
 } from './support/market-oauth-flow-harness.ts'
 
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function assertOAuthError(
+  body: Record<string, unknown>,
+  expected: Record<string, unknown>,
+) {
+  const { request_id: requestId, ...rest } = body
+  assert.match(String(requestId), REQUEST_ID)
+  assert.deepEqual(rest, expected)
+}
+
+async function tokenRefusal(
+  app: Hono,
+  fields: Record<string, string>,
+  cause: string,
+  expected: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<void> {
+  const response = await app.request('/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    body: new URLSearchParams(fields),
+  })
+  assert.equal(response.status, 400)
+  assert.equal(response.headers.get('x-1f3ea-cause'), cause)
+  assertOAuthError(await response.json() as Record<string, unknown>, expected)
+}
+
+test('each OAuth token refusal branch has a stable private cause and short public description', async () => {
+  const { app, store } = fixture()
+  const shapedCode = `1f3ea_ac_${'ab'.repeat(32)}`
+  const shapedRefresh = `1f3ea_rt_${'ab'.repeat(32)}`
+  await tokenRefusal(app, { grant_type: 'refresh_token' }, 'unsupported_client_authentication', {
+    error: 'invalid_request', error_description: 'Send one form body without Authorization or client_secret.',
+  }, { authorization: 'Basic deliberately-not-a-secret' })
+  await tokenRefusal(app, { grant_type: 'unknown' }, 'invalid_grant_fields', {
+    error: 'invalid_request', error_description: 'Send only the fields allowed for authorization_code or refresh_token.',
+  })
+  await tokenRefusal(app, {
+    grant_type: 'refresh_token', client_id: CLIENT_ID, resource: `${RESOURCE}/wrong`,
+    refresh_token: shapedRefresh,
+  }, 'client_contract_mismatch', {
+    error: 'invalid_client', error_description: 'client_id, resource, and scope must match the original authorization.',
+  })
+  await tokenRefusal(app, {
+    grant_type: 'authorization_code', client_id: CLIENT_ID, redirect_uri: CALLBACK,
+    resource: RESOURCE, code: 'short', code_verifier: VERIFIER,
+  }, 'authorization_code_fields', {
+    error: 'invalid_grant', error_description: 'code, redirect_uri, and code_verifier must have the required form.',
+  })
+  await tokenRefusal(app, {
+    grant_type: 'authorization_code', client_id: CLIENT_ID, redirect_uri: CALLBACK,
+    resource: RESOURCE, code: shapedCode, code_verifier: VERIFIER,
+  }, 'authorization_code_mismatch', {
+    error: 'invalid_grant',
+    error_description: 'The code, client, redirect_uri, resource, scope, or PKCE verifier did not match.',
+  })
+  await tokenRefusal(app, {
+    grant_type: 'refresh_token', client_id: CLIENT_ID, resource: RESOURCE, refresh_token: 'short',
+  }, 'refresh_token_shape', {
+    error: 'invalid_grant', error_description: 'refresh_token must be the long pass issued by this authorization server.',
+  })
+  await tokenRefusal(app, {
+    grant_type: 'refresh_token', client_id: CLIENT_ID, resource: RESOURCE, refresh_token: shapedRefresh,
+  }, 'refresh_token_rejected', {
+    error: 'invalid_grant',
+    error_description: 'The refresh token was expired, revoked, reused, or did not match this client.',
+  })
+
+  const approved = await approve(app)
+  const spentApp = new Hono()
+  mountMarketOAuthRoutes(spentApp, {
+    environment,
+    store: { ...store.api, exchangeAuthorizationCode: async () => false },
+  })
+  await tokenRefusal(spentApp, {
+    grant_type: 'authorization_code', client_id: CLIENT_ID, redirect_uri: CALLBACK,
+    resource: RESOURCE, code: approved.code, code_verifier: VERIFIER,
+  }, 'authorization_code_spent', {
+    error: 'invalid_grant',
+    error_description: 'The one-use authorization code was expired, already used, or unavailable.',
+  })
+})
+
 test('OAuth discovery advertises the exact hosted resource, public PKCE, refresh, and issuer callbacks', async () => {
   const { app } = fixture()
   const resource = await app.request('/.well-known/oauth-protected-resource/mcp/connect')
@@ -286,7 +370,10 @@ test('OAuth form limits use actual bytes and ignore misleading Content-Length', 
     body: validSized,
   })
   assert.equal(misleading.status, 400)
-  assert.deepEqual(await misleading.json(), { error: 'invalid_grant' })
+  assertOAuthError(await misleading.json() as Record<string, unknown>, {
+    error: 'invalid_grant',
+    error_description: 'The code, client, redirect_uri, resource, scope, or PKCE verifier did not match.',
+  })
 
   const oversized = await app.request('/oauth/token', {
     method: 'POST',
@@ -294,7 +381,10 @@ test('OAuth form limits use actual bytes and ignore misleading Content-Length', 
     body: `grant_type=${'x'.repeat(8_193)}`,
   })
   assert.equal(oversized.status, 400)
-  assert.deepEqual(await oversized.json(), { error: 'invalid_request' })
+  assertOAuthError(await oversized.json() as Record<string, unknown>, {
+    error: 'invalid_request',
+    error_description: 'Send one form body without Authorization or client_secret.',
+  })
 })
 
 test('authorization and token routes distinguish broken streams from caller-invalid forms', async () => {
@@ -311,7 +401,7 @@ test('authorization and token routes distinguish broken streams from caller-inva
   assert.equal(token.status, 503)
   assert.equal(token.headers.get('retry-after'), '1')
   assert.match(token.headers.get('cache-control') ?? '', /no-store/iu)
-  assert.deepEqual(await token.json(), {
+  assertOAuthError(await token.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'token request could not be read; retry later',
   })
@@ -355,7 +445,10 @@ test('approval, code exchange, refresh rotation, reuse revocation, and reconnect
     }),
   })
   assert.equal(reuse.status, 400)
-  assert.deepEqual(await reuse.json(), { error: 'invalid_grant' })
+  assertOAuthError(await reuse.json() as Record<string, unknown>, {
+    error: 'invalid_grant',
+    error_description: 'The refresh token was expired, revoked, reused, or did not match this client.',
+  })
   assert.equal(await merchantByOAuthAccessToken(newAccess, environment, store.api), null)
 
   const reconnected = await approve(app)

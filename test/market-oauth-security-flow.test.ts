@@ -30,6 +30,17 @@ import {
   sha256,
 } from './support/market-oauth-flow-harness.ts'
 
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function assertOAuthError(
+  body: Record<string, unknown>,
+  expected: Record<string, unknown>,
+) {
+  const { request_id: requestId, ...rest } = body
+  assert.match(String(requestId), REQUEST_ID)
+  assert.deepEqual(rest, expected)
+}
+
 test('deny callbacks include state and issuer while exact redirect, resource, and S256 checks fail closed', async () => {
   const { app } = fixture()
   const started = await app.request(authorizationUrl())
@@ -64,7 +75,10 @@ test('wrong PKCE and hostile browser forms fail without logging or echoing crede
   const approved = await approve(app)
   const wrongPkce = await exchange(app, approved.code, `${VERIFIER}x`)
   assert.equal(wrongPkce.response.status, 400)
-  assert.deepEqual(wrongPkce.body, { error: 'invalid_grant' })
+  assertOAuthError(wrongPkce.body, {
+    error: 'invalid_grant',
+    error_description: 'The code, client, redirect_uri, resource, scope, or PKCE verifier did not match.',
+  })
 
   const hostileFixture = fixture()
   const hostileStart = await hostileFixture.app.request(authorizationUrl())
@@ -176,7 +190,10 @@ test('OAuth revocation disconnects the full token family and keeps its response 
     }),
   })
   assert.equal(refreshAfterRevoke.status, 400)
-  assert.deepEqual(await refreshAfterRevoke.json(), { error: 'invalid_grant' })
+  assertOAuthError(await refreshAfterRevoke.json() as Record<string, unknown>, {
+    error: 'invalid_grant',
+    error_description: 'The refresh token was expired, revoked, reused, or did not match this client.',
+  })
 })
 
 test('OAuth revocation names retryable operational failures without revealing token state', async () => {
@@ -196,12 +213,14 @@ test('OAuth revocation names retryable operational failures without revealing to
     body: new URLSearchParams({ token: access, client_id: CLIENT_ID }),
   })
   assert.equal(limited.status, 429)
-  assert.equal(limited.headers.get('retry-after'), '3600')
+  const revocationRetry = Number(limited.headers.get('retry-after'))
+  assert.ok(Number.isInteger(revocationRetry) && revocationRetry >= 1 && revocationRetry <= 3600)
   assert.match(limited.headers.get('cache-control') ?? '', /no-store/i)
-  assert.deepEqual(await limited.json(), {
+  assertOAuthError(await limited.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'revocation allows 120 attempts per UTC hour for each IP and each client; ' +
       'retry after the next UTC hour begins',
+    retry_after_seconds: revocationRetry,
   })
   assert.deepEqual(await merchantByOAuthAccessToken(access, environment, store.api), merchant())
 
@@ -221,7 +240,7 @@ test('OAuth revocation names retryable operational failures without revealing to
   assert.equal(failed.status, 503)
   assert.equal(failed.headers.get('retry-after'), '1')
   assert.match(failed.headers.get('cache-control') ?? '', /no-store/i)
-  assert.deepEqual(await failed.json(), {
+  assertOAuthError(await failed.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'revocation could not be completed; retry later',
   })
@@ -247,12 +266,14 @@ test('OAuth token throttling names the hourly rule without revealing grant state
   })
 
   assert.equal(response.status, 429)
-  assert.equal(response.headers.get('retry-after'), '3600')
+  const tokenRetry = Number(response.headers.get('retry-after'))
+  assert.ok(Number.isInteger(tokenRetry) && tokenRetry >= 1 && tokenRetry <= 3600)
   assert.match(response.headers.get('cache-control') ?? '', /no-store/i)
-  assert.deepEqual(await response.json(), {
+  assertOAuthError(await response.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'token requests allow 120 attempts per UTC hour for each IP and each client; ' +
       'retry after the next UTC hour begins',
+    retry_after_seconds: tokenRetry,
   })
 })
 
@@ -278,7 +299,7 @@ test('OAuth token operational failures name a retryable cause without revealing 
 
   assert.equal(response.status, 503)
   assert.equal(response.headers.get('retry-after'), '1')
-  assert.deepEqual(await response.json(), {
+  assertOAuthError(await response.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'token request could not be completed; retry later',
   })
@@ -306,7 +327,7 @@ test('OAuth revoke distinguishes an unreadable request from an opaque malformed 
   const unreadable = await app.request(request)
   assert.equal(unreadable.status, 503)
   assert.equal(unreadable.headers.get('retry-after'), '1')
-  assert.deepEqual(await unreadable.json(), {
+  assertOAuthError(await unreadable.json() as Record<string, unknown>, {
     error: 'temporarily_unavailable',
     error_description: 'revocation request could not be read; retry later',
   })

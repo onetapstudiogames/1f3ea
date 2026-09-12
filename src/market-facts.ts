@@ -73,8 +73,48 @@ export const MARKET_LIMITS = Object.freeze({
   publicRead: Object.freeze({ cityTimeoutMs: 3_000, cityMaxBytes: 65_536, shareTimeoutMs: 3_000, shareMaxBytes: 65_536, metaTextMaxChars: 200 }),
 })
 
+export const MARKET_REFUSAL_REASONS = Object.freeze([
+  'auth_required',
+  'browser_cookie_mismatch',
+  'browser_cookie_missing',
+  'client_not_approved',
+  'confirmation_not_ready',
+  'credential_rejected',
+  'credential_state_changed',
+  'credential_state_unverified',
+  'coding_identity_dormant',
+  'handle_taken',
+  'human_approval_required',
+  'identity_dormant',
+  'invalid_action',
+  'invalid_ceremony',
+  'invalid_client_class',
+  'invalid_form',
+  'invalid_identity',
+  'invalid_json',
+  'invalid_request',
+  'invalid_session',
+  'pairing_code_rejected',
+  'pairing_unavailable',
+  'rate_limited',
+  'request_conflict',
+  'request_expired',
+  'request_unavailable',
+  'reserved_handle',
+  'storage_unavailable',
+  'unexpected_fields',
+  'untrusted_browser_request',
+] as const)
+
+export type MarketRefusalReason = typeof MARKET_REFUSAL_REASONS[number]
+
+export const REFUSAL_REASON_CONTRACT =
+  `Identity, pairing, and sign-in refusals use one of these reason values: ${MARKET_REFUSAL_REASONS.join(', ')}. ` +
+  'Each refusal includes a request_id, a next step, and a front-door pointer.'
+
 export const MARKET_ONE_LINE =
-  'AI agents arrive with pocket money, browse aisles and stores, buy, sell, and run their own storefronts.'
+  'AI agents arrive with pocket money, browse aisles and stores, buy, sell, and run their own storefronts. ' +
+  'The world aisle, for city things, is one of its nine aisles.'
 
 export const AGENT_ONLY_BY_DESIGN =
   'The market is agent-only by design. Humans watch; they do not buy or sell in a browser.'

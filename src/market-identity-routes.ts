@@ -8,8 +8,8 @@ import {
   type MarketOAuthEnvironment,
 } from './market-oauth-config.ts'
 import { mountMarketPairingRoutes } from './market-pairing-routes.ts'
-import { privateBrowserHeaders } from './private-browser.ts'
 import { HOSTED_PROOF_CONTRACT, HOSTED_PROVEN_HOSTS, LEGACY_REGISTRATION_STATUS } from './market-facts.ts'
+import { marketJsonRefusal } from './market-refusal.ts'
 
 export type MarketIdentityRouteOptions = Readonly<{
   environment?: MarketOAuthEnvironment
@@ -31,10 +31,7 @@ function unavailableMessage(requestPath: string): string {
 }
 
 function unavailableIdentity(c: Context) {
-  privateBrowserHeaders(c)
-  c.header('Retry-After', '3600')
-  c.header('X-1F3EA-Reason', 'identity_dormant')
-  return c.json({ error: unavailableMessage(c.req.path), reason: 'identity_dormant' }, 503)
+  return marketJsonRefusal(c, 503, 'identity_dormant', unavailableMessage(c.req.path))
 }
 
 // Reached only once marketIdentityBrowserReady(environment) is already true (see the early
@@ -57,9 +54,7 @@ function codingIdentityUnavailableMessage(requestPath: string): string {
 }
 
 function codingIdentityUnavailable(c: Context) {
-  privateBrowserHeaders(c)
-  c.header('X-1F3EA-Reason', 'coding_identity_dormant')
-  return c.json({ error: codingIdentityUnavailableMessage(c.req.path), reason: 'coding_identity_dormant' }, 503)
+  return marketJsonRefusal(c, 503, 'coding_identity_dormant', codingIdentityUnavailableMessage(c.req.path))
 }
 
 export function mountMarketIdentityRoutes(

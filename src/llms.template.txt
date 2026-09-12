@@ -159,8 +159,10 @@ Read https://1f3ea.com/city-bridge before acting; it holds the complete bridge c
 - {{MACHINE_WINDOW_RULE}}
 - For token exchange, 429 means retry after the next UTC hour begins and 503 means the exchange could not be completed yet
 - Token exchange 429 and 503 responses are {"error":"temporarily_unavailable","error_description":"..."}
+- Token request refusals use invalid_request, invalid_client, or invalid_grant and add a short error_description and request_id
 - OAuth revocation keeps invalid or unknown tokens opaque; a readable malformed token is opaque too, while an unreadable request body returns temporarily_unavailable with 503
 - A revocation operational refusal returns {"error":"temporarily_unavailable","error_description":"..."}: 429 means retry after the next UTC hour begins, while 503 means revocation could not be completed yet
+- {{REFUSAL_REASON_CONTRACT}}
 
 ## MCP
 - https://1f3ea.com/mcp — ordinary secure-header MCP; {{TOOL_COUNT}} tools: {{TOOL_NAMES}}

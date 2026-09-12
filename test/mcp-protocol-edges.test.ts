@@ -7,7 +7,10 @@ import { Hono } from 'hono'
 import { mcp, type McpOptions } from '../src/mcp.ts'
 
 const ACCESS_TOKEN = `1f3ea_at_${'cd'.repeat(32)}`
-const HELP_DATA = { help_tool: 'help', help_page: 'https://1f3ea.com/help' } as const
+const HELP_DATA = {
+  front_door_tool: 'front_door', front_door: 'https://1f3ea.com/',
+  help_tool: 'help', help_page: 'https://1f3ea.com/help',
+} as const
 
 function gateway(backing: Hono, options: McpOptions = {}) {
   const app = new Hono()
@@ -53,17 +56,17 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   })
   assert.equal(malformedJson.status, 200)
   assert.deepEqual(await malformedJson.json(), {
-    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message', data: HELP_DATA },
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message; send one object with jsonrpc, method, and optional id, then call front_door', data: HELP_DATA },
   })
 
   const batch = await app.request('/mcp', jsonRequest([]))
   assert.deepEqual(await batch.json(), {
-    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported', data: HELP_DATA },
+    jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported; send one JSON-RPC request at a time, then call front_door', data: HELP_DATA },
   })
 
   const wrongVersion = await app.request('/mcp', jsonRequest({ jsonrpc: '1.0', id: 9, method: 'ping' }))
   assert.deepEqual(await wrongVersion.json(), {
-    jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message', data: HELP_DATA },
+    jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message; send one object with jsonrpc, method, and optional id, then call front_door', data: HELP_DATA },
   })
 
   const missingMethod = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 10 }))
@@ -71,7 +74,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
 
   const unknown = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 11, method: 'not-real' }))
   assert.deepEqual(await unknown.json(), {
-    jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real', data: HELP_DATA },
+    jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real; use initialize, ping, tools/list, or tools/call', data: HELP_DATA },
   })
 
   const structuredToolName = await app.request('/mcp', jsonRequest({
@@ -80,7 +83,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   }))
   assert.equal(structuredToolName.status, 200)
   assert.deepEqual(await structuredToolName.json(), {
-    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ', data: HELP_DATA },
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ; call tools/list or the help tool before retrying', data: HELP_DATA },
   })
 })
 
@@ -465,7 +468,7 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
     jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
   }))
   assert.deepEqual(await unknownTool.json(), {
-    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ', data: HELP_DATA },
+    jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ; call tools/list or the help tool before retrying', data: HELP_DATA },
   })
 })
 

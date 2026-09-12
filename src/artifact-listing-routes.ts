@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { sql } from './db.ts'
-import { auth, dupHash, err, sha256, WALLET_RE } from './core.ts'
+import { auth, authRequired, dupHash, err, sha256, WALLET_RE } from './core.ts'
 import {
   AISLES,
   EDITABLE_LISTING_FIELDS,
@@ -22,6 +22,7 @@ import {
 import { readX402PaymentAttempt, x402ProofDigest } from './x402-payment-attempts.ts'
 import { cityCancelUrl } from './world.ts'
 import { postgresErrorDetails, postgresUniqueConstraint } from './postgres-error.ts'
+import { safeMarketErrorName, safePostgresErrorCode } from './market-failure.ts'
 import {
   readListingFeeAttempt,
   resolveListingFeePayment,
@@ -139,7 +140,7 @@ export function registerArtifactListingRoutes(
 app.post('/api/listing', async c => {
   const requestStartedAt = new Date()
   const m = await auth(c)
-  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  if (!m) return authRequired(c)
   const v = validListing(await c.req.json().catch(() => null))
   if (typeof v === 'string') return err(c, 400, v)
   const paymentHeader = c.req.header('x-payment')
@@ -233,8 +234,8 @@ app.post('/api/listing', async c => {
       originalProof = stored != null && stored.proof_digest === x402ProofDigest(paymentHeader)
     } catch (error) {
       console.error('x402 saved listing payment record could not be read', {
-        error_class: error instanceof Error ? error.name : typeof error,
-        postgres_code: postgresErrorDetails(error).code,
+        error_class: safeMarketErrorName(error),
+        postgres_code: safePostgresErrorCode(error),
         merchant_id: m.id,
         operation: 'artifact_listing_fee',
       })
@@ -513,9 +514,9 @@ app.post('/api/listing', async c => {
 
 app.patch('/api/listing/:id', async c => {
   const m = await auth(c)
-  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  if (!m) return authRequired(c)
   const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+  if (!Number.isInteger(id)) return err(c, 400, 'id must be an integer listing identifier. Read GET /api/help for this door.')
 
   const body = await c.req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body))
@@ -532,7 +533,7 @@ app.patch('/api/listing/:id', async c => {
       EXISTS (SELECT 1 FROM purchases p WHERE p.listing_id = listings.id) AS has_purchases
     FROM listings WHERE id = ${id}`) as EditableListingRow[]
   const current = rows[0]
-  if (!current) return err(c, 404, 'no such listing')
+  if (!current) return err(c, 404, `listing id ${id} was not found. Read GET /api/shelves before retrying.`)
   if (current.merchant_id !== m.id) return err(c, 403, 'only the merchant that listed this item may edit it')
   if (current.delivery_kind === 'city_ownership')
     return err(c, 409, 'world listing terms are locked in the city and cannot be edited')
@@ -612,9 +613,9 @@ app.patch('/api/listing/:id', async c => {
 
 async function withdrawListing(c: Context) {
   const m = await auth(c)
-  if (!m) return err(c, 401, 'bad or missing bearer secret')
+  if (!m) return authRequired(c)
   const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id)) return err(c, 400, 'bad id')
+  if (!Number.isInteger(id)) return err(c, 400, 'id must be an integer listing identifier. Read GET /api/help for this door.')
 
   const rawBody = (await c.req.text()).trim()
   if (rawBody) {
@@ -634,7 +635,7 @@ async function withdrawListing(c: Context) {
       world_draft_id: number | null; world_state: string | null
     }[]
   const listing = existing[0]
-  if (!listing) return err(c, 404, 'no such listing')
+  if (!listing) return err(c, 404, `listing id ${id} was not found. Read GET /api/shelves before retrying.`)
   if (listing.merchant_id !== m.id)
     return err(c, 403, 'only the merchant that listed this item may withdraw it')
   if (listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold')

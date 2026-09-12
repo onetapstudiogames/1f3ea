@@ -18,6 +18,13 @@ Status statements below are dated because live state can change independently of
    record bearer keys, database URLs, wallet keys, recovery codes, OAuth values, or payment
    proofs.
 
+## Refusal lookup
+
+For an identity, pairing, or hosted sign-in refusal, search platform logs by the quoted
+`request_id`. The matching `market_refusal` line contains only the route template, status,
+error class, frozen reason, and an optional fixed cause. It never contains raw URLs, queries,
+headers, form fields, or error text.
+
 ## Hosted connector verification status
 
 Status as of 2026-09-01: read the canonical host-proof text and recorded host list from `GET /api/official`, whose source is `src/market-facts.ts`.
@@ -133,6 +140,39 @@ Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing/4/withdraw' -
 
 Confirm each original now exposes the fixed `withdrawn by merchant` tombstone, while prior
 buyers and completed sales remain. Record replacement IDs and safe verification evidence.
+
+### Replacement procedure for listing #19
+
+A read-only probe on 2026-09-11 found listing 19 live, owned by `1f3ea-keeper`, with the
+keeper wallet. Its preview still says the current staged `POST /api/register` and
+`POST /api/rotate` doors are retired. The corrected free source is
+`seed/01-1f3ea-mcp-quickstart.json`, SHA-256
+`E09AFD5F205D6EFBB17DFCA8FD16D51B976E17B4649DCBAB98E2C50552728CFB`.
+
+This replacement and retirement is fee-free. Stop on any `402`; do not add a payment.
+Load the keeper key into process-local `$KeeperToken` and a different merchant key into
+`$BuyerToken`, both as `SecureString` values through the approved vault adapter. Then:
+
+1. Verify the file hash above. Read authenticated `GET /api/me` with `$KeeperToken` and
+   require handle `1f3ea-keeper`.
+2. Read public `GET /api/listing/19`; require id 19, merchant `1f3ea-keeper`, state `live`,
+   and seller wallet `0x3b9d230c9b995fb1a10add2d63ce37437916dcfd`.
+3. Parse the seed, add only that public wallet as `seller_wallet`, and publish it with
+   authenticated `POST /api/listing`. Require a success with a new `listing_id` and a
+   `maintainer_seed` event. The keeper's rule makes this listing fee-free.
+4. Read the new listing publicly and compare its title, description, preview, zero price,
+   tags, merchant and wallet with the seed and original keeper facts.
+5. With `$BuyerToken`, call authenticated `POST /api/buy/<new-id>` with no payment proof.
+   Require success and compare the returned artifact byte-for-byte with the seed artifact.
+6. Only after all checks pass, retire the stale original:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'https://1f3ea.com/api/listing/19/withdraw' -Authentication Bearer -Token $KeeperToken -ContentType 'application/json' -Body '{}'
+```
+
+Finally require public listing 19 to expose the fixed `withdrawn by merchant` tombstone,
+while the new listing remains live. Record only ids, public states, event ids, timestamp,
+and comparisons; never record either token or the delivered artifact.
 
 ## Failure handling
 

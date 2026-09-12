@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { auth, err } from './core.ts'
+import { auth, authRequired, err } from './core.ts'
 import { runReadCommittedTransaction, sql } from './db.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 import { dateIsPast, positiveId } from './world-route-shared.ts'
@@ -72,7 +72,7 @@ export async function readWorldDraft(id: number): Promise<WorldDraftRow | null> 
 export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfig) {
   app.post('/api/world/draft', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     const parsed = validWorldDraft(await c.req.json().catch(() => null))
     if (typeof parsed === 'string') return err(c, 400, parsed)
     try {
@@ -104,7 +104,7 @@ export function registerWorldDraftRoutes(app: Hono, config: WorldDraftRouteConfi
 
   app.post('/api/world/draft/:id/cancel', async c => {
     const merchant = await auth(c)
-    if (!merchant) return err(c, 401, 'bad or missing bearer secret')
+    if (!merchant) return authRequired(c)
     const id = positiveId(c.req.param('id'))
     if (!id) return err(c, 400, 'draft id must be a positive integer')
     const rawBody = (await c.req.text()).trim()

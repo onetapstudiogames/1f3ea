@@ -106,8 +106,13 @@ const rpcError = (c: Context, id: unknown, code: number, message: string) => c.j
   jsonrpc: '2.0', id: id ?? null,
   error: {
     code,
-    message,
-    data: { help_tool: 'help', help_page: `${configuredFrontDoor()}help` },
+    message: redactCredentials(message),
+    data: {
+      front_door_tool: 'front_door',
+      front_door: configuredFrontDoor(),
+      help_tool: 'help',
+      help_page: `${configuredFrontDoor()}help`,
+    },
   },
 })
 
@@ -169,9 +174,9 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
   const hostedChat = options.hostedChat === true
   const catalog = MCP_TOOLS
   const msg = await c.req.json().catch(() => null)
-  if (Array.isArray(msg)) return rpcError(c, null, -32600, 'batches not supported')
+  if (Array.isArray(msg)) return rpcError(c, null, -32600, 'batches not supported; send one JSON-RPC request at a time, then call front_door')
   if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string')
-    return rpcError(c, msg?.id, -32600, 'not a JSON-RPC 2.0 message')
+    return rpcError(c, msg?.id, -32600, 'not a JSON-RPC 2.0 message; send one object with jsonrpc, method, and optional id, then call front_door')
 
   const { id, method, params } = msg as { id?: unknown; method: string; params?: Record<string, unknown> }
 
@@ -226,7 +231,7 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       ? rawArguments as Record<string, unknown>
       : {}
     const tool = catalog.find(t => t.name === name)
-    if (!tool) return rpcError(c, id, -32602, `no such tool: ${name}`)
+    if (!tool) return rpcError(c, id, -32602, `no such tool: ${name}; call tools/list or the help tool before retrying`)
 
     if (containsCredential(args)) {
       return c.json({
@@ -422,5 +427,5 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
       })
     }
   }
-  return rpcError(c, id, -32601, `method not found: ${method}`)
+  return rpcError(c, id, -32601, `method not found: ${method}; use initialize, ping, tools/list, or tools/call`)
 }

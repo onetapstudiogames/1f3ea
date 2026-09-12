@@ -40,7 +40,7 @@ import {
   isInitialAuthorizationRequest,
   isSameAuthorizationRequest,
   isStagedAuthorizationRequest,
-  oauthBrowserError as browserError,
+  oauthBrowserError as renderBrowserError,
   oauthConsentPage as consentPage,
   oauthHtml as html,
   oauthModelValue as modelValue,
@@ -78,6 +78,13 @@ import {
 } from './market-oauth-store.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
+import {
+  markMarketRefusal,
+  marketRefusalNextStep,
+  secondsUntilNextUtcHour,
+  type MarketRefusalDetail,
+  type MarketRefusalReason,
+} from './market-refusal.ts'
 
 export type { Runtime }
 
@@ -85,12 +92,15 @@ const ACCESS_TOKEN_SECONDS = MARKET_LIMITS.oauth.accessPassMinutes * 60
 const REFRESH_TOKEN_SECONDS = MARKET_LIMITS.oauth.refreshPassDays * 24 * 60 * 60
 const TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR = MARKET_LIMITS.oauth.tokenRequestsPerIpOrClientUtcHour
 const REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR = MARKET_LIMITS.oauth.revocationsPerIpOrClientUtcHour
-const OAUTH_RATE_RETRY_AFTER_SECONDS = 60 * 60
 const SIGN_IN_START_FAILURE = '1F3EA could not start sign-in. Try again in a moment.'
 const INVALID_SIGN_IN_REQUEST = 'The sign-in request was not valid.'
 const MERCHANT_NOT_WAITING = 'This merchant is not waiting for key confirmation.'
+const SAVED_KEY_REJECTED_MESSAGE = 'That saved merchant key could not be verified.'
+const SAVED_KEY_RETRY = 'Reload this page, re-enter the saved key, and try again.'
 const SAVED_KEY_WARNING = '<p class="warning">That saved merchant key could not be verified. Check it and try again.</p>'
 const SIGN_IN_UNAVAILABLE = 'This sign-in request is no longer available.'
+const MERCHANT_KEY_REJECTED_MESSAGE = 'That merchant key could not be verified.'
+const MERCHANT_KEY_RETRY = 'Reload this page and try the current merchant key again.'
 const MERCHANT_KEY_WARNING = '<p class="warning">That merchant key could not be verified. Check it and try again.</p>'
 const AUTHORIZATION_FIELDS = new Set([
   'response_type', 'client_id', 'redirect_uri', 'resource', 'scope', 'state',
@@ -131,9 +141,51 @@ function queryObject(url: URL): Record<string, string> | null {
   return result
 }
 
-function tokenError(c: Context, error: 'invalid_request' | 'invalid_client' | 'invalid_grant') {
+function browserError(
+  c: Context,
+  status: 400 | 403 | 409 | 429 | 503,
+  reason: MarketRefusalReason,
+  message: string,
+  nextStep = marketRefusalNextStep(reason),
+  detail?: MarketRefusalDetail,
+): Response {
+  return renderBrowserError(c, status, reason, message, nextStep, detail)
+}
+
+type TokenRefusalDetail = Extract<MarketRefusalDetail,
+  | 'authorization_code_fields'
+  | 'authorization_code_mismatch'
+  | 'authorization_code_spent'
+  | 'client_contract_mismatch'
+  | 'invalid_grant_fields'
+  | 'refresh_token_rejected'
+  | 'refresh_token_shape'
+  | 'unsupported_client_authentication'
+>
+
+const TOKEN_CAUSE_DESCRIPTIONS: Record<TokenRefusalDetail, string> = Object.freeze({
+  unsupported_client_authentication: 'Send one form body without Authorization or client_secret.',
+  invalid_grant_fields: 'Send only the fields allowed for authorization_code or refresh_token.',
+  client_contract_mismatch: 'client_id, resource, and scope must match the original authorization.',
+  authorization_code_fields: 'code, redirect_uri, and code_verifier must have the required form.',
+  authorization_code_mismatch: 'The code, client, redirect_uri, resource, scope, or PKCE verifier did not match.',
+  authorization_code_spent: 'The one-use authorization code was expired, already used, or unavailable.',
+  refresh_token_shape: 'refresh_token must be the long pass issued by this authorization server.',
+  refresh_token_rejected: 'The refresh token was expired, revoked, reused, or did not match this client.',
+})
+
+function tokenError(
+  c: Context,
+  error: 'invalid_request' | 'invalid_client' | 'invalid_grant',
+  cause: TokenRefusalDetail,
+) {
   privateHeaders(c)
-  return c.json({ error }, 400)
+  const reference = markMarketRefusal(c, 400, 'invalid_request', undefined, cause)
+  return c.json({
+    error,
+    error_description: TOKEN_CAUSE_DESCRIPTIONS[cause],
+    request_id: reference.requestId,
+  }, 400)
 }
 
 function oauthUnavailable(
@@ -144,9 +196,12 @@ function oauthUnavailable(
 ) {
   privateHeaders(c)
   c.header('Retry-After', String(retryAfter))
+  const reference = markMarketRefusal(c, status, status === 429 ? 'rate_limited' : 'storage_unavailable')
   return c.json({
     error: 'temporarily_unavailable',
     error_description: description,
+    request_id: reference.requestId,
+    ...(status === 429 ? { retry_after_seconds: retryAfter } : {}),
   }, status)
 }
 
@@ -200,12 +255,12 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
   app.get('/oauth/authorize', async c => {
     const query = queryObject(new URL(c.req.url))
-    if (!query) return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
+    if (!query) return browserError(c, 400, 'invalid_request', 'The sign-in URL contains repeated or unsupported fields.', undefined, 'signin_query_fields')
     const rawClientId = query.client_id
     if (
       !rawClientId || Buffer.byteLength(rawClientId, 'utf8') > 2_048 ||
       marketTokenLooksSensitive(rawClientId)
-    ) return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
+    ) return browserError(c, 400, 'invalid_request', 'The client_id field was missing or not valid.', undefined, 'signin_client_id')
     try {
       const allowed = await admitted(
         oauth,
@@ -213,10 +268,10 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         'authorize',
         MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour,
       )
-      if (!allowed) return browserError(c, 429, `Sign-in metadata checks are limited to ${MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour} per IP per UTC hour. Try again after the next UTC hour.`)
+      if (!allowed) return browserError(c, 429, 'rate_limited', `Sign-in metadata checks are limited to ${MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour} per IP per UTC hour. Try again after the next UTC hour.`)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, SIGN_IN_START_FAILURE)
+      return browserError(c, 503, 'storage_unavailable', '1F3EA could not check the sign-in metadata limit. Try again in a moment.')
     }
     let client
     try {
@@ -225,12 +280,13 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       )
     } catch (error) {
       if (error instanceof MarketOAuthClientError && error.status === 400) {
-        return browserError(c, 400, 'The requesting chat app is not approved.')
+        return browserError(c, 400, 'client_not_approved', 'The requesting chat app is not approved.')
       }
       c.header('Retry-After', '1')
       return browserError(
         c,
         503,
+        'storage_unavailable',
         "1F3EA could not read the requesting chat app's client metadata. Try again in a moment.",
       )
     }
@@ -238,7 +294,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
     try {
       request = validateMarketAuthorizationRequest(query, [client], oauth.resource)
     } catch {
-      return browserError(c, 400, INVALID_SIGN_IN_REQUEST)
+      return browserError(c, 400, 'invalid_request', 'The redirect_uri, resource, scope, state, response_type, or PKCE fields were not valid.', undefined, 'signin_contract')
     }
     const authorizationInput = (cookie: BrowserSessionCookie): AuthorizationRequestInput => ({
       sessionHash: sha256(cookie.session),
@@ -276,6 +332,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       return browserError(
         c,
         403,
+        'request_unavailable',
         'This sign-in already advanced. If a merchant creation response disappeared, restart sign-in and use the saved key as an existing merchant. Do not register again.',
       )
     }
@@ -302,6 +359,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
             return browserError(
               c,
               409,
+              'request_conflict',
               'This browser is already continuing a different sign-in. Return to the original sign-in and cancel it, or wait up to 15 minutes for it to expire before starting this one.',
             )
           }
@@ -311,16 +369,16 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         if (terminal) return terminal
       } catch {
         c.header('Retry-After', '1')
-        return browserError(c, 503, '1F3EA could not resume sign-in. Try again in a moment.')
+        return browserError(c, 503, 'storage_unavailable', '1F3EA could not resume sign-in. Try again in a moment.')
       }
     }
 
     try {
       const allowed = await admitted(oauth, [`client:${request.clientId}`], 'authorize', MARKET_LIMITS.oauth.validRequestsPerClientUtcHour)
-      if (!allowed) return browserError(c, 429, `Valid sign-in requests are limited to ${MARKET_LIMITS.oauth.validRequestsPerClientUtcHour} per client per UTC hour. Try again after the next UTC hour.`)
+      if (!allowed) return browserError(c, 429, 'rate_limited', `Valid sign-in requests are limited to ${MARKET_LIMITS.oauth.validRequestsPerClientUtcHour} per client per UTC hour. Try again after the next UTC hour.`)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, SIGN_IN_START_FAILURE)
+      return browserError(c, 503, 'storage_unavailable', SIGN_IN_START_FAILURE, undefined, 'signin_rate_store')
     }
 
     const createFreshAuthorization = async (
@@ -351,32 +409,32 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       return await createFreshAuthorization(newBrowserSessionCookie(), true)
     } catch {
       c.header('Retry-After', '1')
-      return browserError(c, 503, SIGN_IN_START_FAILURE)
+      return browserError(c, 503, 'storage_unavailable', SIGN_IN_START_FAILURE, undefined, 'signin_request_create')
     }
   })
 
   app.post('/oauth/authorize', async c => {
     try {
       if (!trustedBrowserForm(c, oauth.origin)) {
-        return browserError(c, 403, 'This approval did not come from the 1F3EA sign-in page.')
+        return browserError(c, 403, 'untrusted_browser_request', 'This approval did not come from the 1F3EA sign-in page.')
       }
       const formRead = await readBoundedFormResult(c)
       if (formRead.kind === 'unreadable') {
         c.header('Retry-After', '1')
-        return browserError(c, 503, 'The sign-in form could not be read. Try again in a moment.')
+        return browserError(c, 503, 'storage_unavailable', 'The sign-in form could not be read. Try again in a moment.')
       }
       const values = formRead.kind === 'form' ? formRead.values : null
       const action = values ? oneFormValue(values, 'action', 20) : null
       const csrf = values ? oneFormValue(values, 'csrf', 128) : null
       if (!values || !csrf || !['link', 'pair', 'confirm_pair', 'register', 'confirm', 'cancel'].includes(action ?? '')) {
-        return browserError(c, 403, 'This sign-in page expired or is incomplete.')
+        return browserError(c, 403, 'invalid_form', 'This sign-in page expired or is incomplete.')
       }
       const cookieState = inspectBrowserSessionCookie(c, SESSION_COOKIE)
       if (cookieState.kind === 'missing') {
-        return browserError(c, 403, 'This form was submitted without its private browser cookie. Start again from the chat app.')
+        return browserError(c, 403, 'browser_cookie_missing', 'This form was submitted without its private browser cookie. Start again from the chat app.')
       }
       if (cookieState.kind === 'invalid' || cookieState.cookie.csrf !== csrf) {
-        return browserError(c, 403, 'This form and its private browser cookie did not match. Start again from the chat app.')
+        return browserError(c, 403, 'browser_cookie_mismatch', 'This form and its private browser cookie did not match. Start again from the chat app.')
       }
       const allowedFields = {
         link: ['action', 'csrf', 'merchant_key'],
@@ -387,7 +445,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         cancel: ['action', 'csrf'],
       } as const
       if (!exactFormFields(values, allowedFields[action as keyof typeof allowedFields])) {
-        return browserError(c, 403, 'This sign-in form contained unexpected information.')
+        return browserError(c, 403, 'unexpected_fields', 'This sign-in form contained unexpected information.')
       }
       const sessionHash = sha256(cookieState.cookie.session)
       const csrfHash = sha256(csrf)
@@ -400,6 +458,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         return await terminalProgress() ?? browserError(
           c,
           403,
+          'request_expired',
           'This sign-in request expired, was already used, or lost its browser state. Start again from the chat app.',
         )
       }
@@ -411,7 +470,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       if (action === 'cancel') {
         const canceled = await oauth.store.cancelAuthorizationRequest({ sessionHash, csrfHash })
         if (!canceled) {
-          return await terminalProgress() ?? browserError(c, 403, 'This sign-in request expired or was already used.')
+          return await terminalProgress() ?? browserError(c, 403, 'request_expired', 'This sign-in request expired or was already used.')
         }
         return redirect(c, callbackUrl(canceled.redirectUri, canceled.state, oauth.origin, {
           error: 'access_denied',
@@ -420,17 +479,11 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
       if (action === 'confirm') {
         if (!isStagedAuthorizationRequest(pending)) {
-          return browserError(c, 403, MERCHANT_NOT_WAITING)
+          return browserError(c, 403, 'confirmation_not_ready', MERCHANT_NOT_WAITING)
         }
         const merchantKey = oneFormValue(values, 'merchant_key', 80)
         if (!merchantKey || !/^1f3ea_sk_[0-9a-f]{48}$/.test(merchantKey)) {
-          return html(
-            c,
-            403,
-            'Merchant key not verified',
-            SAVED_KEY_WARNING +
-              resumedMerchantKeyPage(pending.new_handle!, csrf),
-          )
+          return browserError(c, 403, 'credential_rejected', SAVED_KEY_REJECTED_MESSAGE, SAVED_KEY_RETRY)
         }
         const allowed = await admitted(
           oauth,
@@ -442,7 +495,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           MARKET_LIMITS.oauth.newMerchantConfirmsPerIpAndSessionUtcHour,
         )
         if (!allowed) {
-          return browserError(c, 429, 'Too many key attempts. This sign-in expires before the one-hour wait ends; start again after the next UTC hour.')
+          return browserError(c, 429, 'rate_limited', 'Too many key attempts. This sign-in expires before the one-hour wait ends; start again after the next UTC hour.')
         }
         const code = opaque(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX)
         const approved = await oauth.store.confirmNewMerchantAndIssueAuthorizationCode({
@@ -452,24 +505,19 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           authorizationCodeHash: sha256(code),
         })
         if (approved.status === 'request_unavailable') {
-          return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
+          return await terminalProgress() ?? browserError(c, 403, 'request_unavailable', SIGN_IN_UNAVAILABLE)
         }
         if (approved.status === 'confirmation_not_ready') {
-          return browserError(c, 403, MERCHANT_NOT_WAITING)
+          return browserError(c, 403, 'confirmation_not_ready', MERCHANT_NOT_WAITING)
         }
         if (approved.status === 'confirmation_rejected') {
-          return html(
-            c,
-            403,
-            'Merchant key not verified',
-            SAVED_KEY_WARNING +
-              resumedMerchantKeyPage(pending.new_handle!, csrf),
-          )
+          return browserError(c, 403, 'credential_rejected', SAVED_KEY_REJECTED_MESSAGE, SAVED_KEY_RETRY)
         }
         if (approved.status === 'handle_taken') {
           return browserError(
             c,
             409,
+            'handle_taken',
             'That handle was taken before confirmation. This losing signup is closed; its saved key and recovery codes are inactive. Check whether the existing store belongs to this agent before choosing another handle.',
           )
         }
@@ -478,17 +526,11 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
 
       if (action === 'link') {
         if (!isInitialAuthorizationRequest(pending)) {
-          return browserError(c, 403, 'This sign-in is already preparing a new merchant. Continue that signup or cancel it first.')
+          return browserError(c, 403, 'request_conflict', 'This sign-in is already preparing a new merchant. Continue that signup or cancel it first.')
         }
         const merchantKey = oneFormValue(values, 'merchant_key', 80)
         if (!merchantKey || !/^1f3ea_sk_[0-9a-f]{48}$/.test(merchantKey)) {
-          return html(
-            c,
-            403,
-            'Merchant key not verified',
-            MERCHANT_KEY_WARNING +
-              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
-          )
+          return browserError(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE, MERCHANT_KEY_RETRY)
         }
         const allowed = await admitted(
           oauth,
@@ -496,7 +538,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           'merchant_key',
           MARKET_LIMITS.oauth.keyAttemptsPerIpAndClientUtcHour,
         )
-        if (!allowed) return browserError(c, 429, 'Too many key attempts. Try again after the next UTC hour.')
+        if (!allowed) return browserError(c, 429, 'rate_limited', 'Too many key attempts. Try again after the next UTC hour.')
         const code = opaque(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX)
         const approved = await oauth.store.approveExistingMerchantAndIssueAuthorizationCode({
           sessionHash,
@@ -505,16 +547,10 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           authorizationCodeHash: sha256(code),
         })
         if (approved.status === 'request_unavailable') {
-          return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
+          return await terminalProgress() ?? browserError(c, 403, 'request_unavailable', SIGN_IN_UNAVAILABLE)
         }
         if (approved.status === 'merchant_key_rejected') {
-          return html(
-            c,
-            403,
-            'Merchant key not verified',
-            MERCHANT_KEY_WARNING +
-              consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
-          )
+          return browserError(c, 403, 'credential_rejected', MERCHANT_KEY_REJECTED_MESSAGE, MERCHANT_KEY_RETRY)
         }
         return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))
       }
@@ -533,6 +569,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           return browserError(
             c,
             503,
+            'pairing_unavailable',
             'The coding-client pairing door is unavailable on this deployment; no merchant or key ' +
               'was created or changed. The operator must apply the reviewed coding-client-identity ' +
               'migration and set MARKET_CODING_IDENTITY_ENABLED=true before this door opens. Use ' +
@@ -548,18 +585,12 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       }
 
       if (!isInitialAuthorizationRequest(pending)) {
-        return browserError(c, 403, 'This sign-in already advanced. Continue it or cancel it before starting another merchant.')
+        return browserError(c, 403, 'request_unavailable', 'This sign-in already advanced. Continue it or cancel it before starting another merchant.')
       }
       const handle = String(values.get('handle') ?? '').toLowerCase().trim()
       const model = modelValue(values)
       if (!HANDLE_RE.test(handle) || model === null) {
-        return html(
-          c,
-          400,
-          'Merchant details not valid',
-          '<p class="warning">The handle must be 3–32 lowercase letters, numbers, or hyphens; the model label is optional and limited to 120 ordinary characters.</p>' +
-            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
-        )
+        return browserError(c, 400, 'invalid_identity', 'The handle must be 3–32 lowercase letters, numbers, or hyphens; the model label is optional and limited to 120 ordinary characters.', 'Reload this page and correct the handle or model label.')
       }
       const registrationLimits: ReadonlyArray<readonly [string, number]> = [
         [`signup-ip:${clientAddress(c, oauth.environment)}`, MARKET_LIMITS.oauth.newMerchantStartsPerIpUtcHour],
@@ -568,7 +599,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       ]
       for (const [bucket, maximum] of registrationLimits) {
         if (!(await admitted(oauth, [bucket], 'authorize', maximum))) {
-          return browserError(c, 429, 'New-merchant preparation is at its stated hourly limit. This sign-in expires before the wait ends; start again after the next UTC hour.')
+          return browserError(c, 429, 'rate_limited', 'New-merchant preparation is at its stated hourly limit. This sign-in expires before the wait ends; start again after the next UTC hour.')
         }
       }
       const merchantKey = newSecret()
@@ -586,16 +617,10 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         if (resumed && isStagedAuthorizationRequest(resumed)) {
           return stagedAuthorizationResponse(c, resumed, csrf)
         }
-        return await terminalProgress() ?? browserError(c, 403, SIGN_IN_UNAVAILABLE)
+        return await terminalProgress() ?? browserError(c, 403, 'request_unavailable', SIGN_IN_UNAVAILABLE)
       }
       if (staged.status === 'handle_taken') {
-        return html(
-          c,
-          409,
-          'Handle already taken',
-          '<p class="warning">That merchant handle is already taken. Check whether it belongs to this agent before choosing another one.</p>' +
-            consentPage(pending.client_display_name, csrf, true, oauth.codingIdentityReady),
-        )
+        return browserError(c, 409, 'handle_taken', 'That merchant handle is already taken.', 'Check GET /api/merchants, then reload this page and choose another handle if needed.')
       }
       return html(
         c,
@@ -608,6 +633,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       return browserError(
         c,
         503,
+        'storage_unavailable',
         '1F3EA could not return the sign-in result. Reload this page to resume. If merchant creation may have completed, restart sign-in and use the saved key as an existing merchant; do not register again.',
       )
     }
@@ -621,7 +647,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
       }
       const values = formRead.kind === 'form' ? formRead.values : null
       if (!values || c.req.header('authorization') || values.has('client_secret')) {
-        return tokenError(c, 'invalid_request')
+        return tokenError(c, 'invalid_request', 'unsupported_client_authentication')
       }
       const grantType = oneFormValue(values, 'grant_type', 64)
       const allowedFields = grantType === 'authorization_code'
@@ -630,13 +656,13 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           ? ['grant_type', 'client_id', 'resource', 'refresh_token', 'scope']
           : []
       if (!allowedFields.length || !exactFormFields(values, allowedFields)) {
-        return tokenError(c, 'invalid_request')
+        return tokenError(c, 'invalid_request', 'invalid_grant_fields')
       }
       const clientId = oneFormValue(values, 'client_id', 2_048)
       const resource = oneFormValue(values, 'resource', 2_048)
       const scope = values.has('scope') ? oneFormValue(values, 'scope', 128) : MARKET_OAUTH_SCOPE
       if (!clientId || resource !== oauth.resource || scope !== MARKET_OAUTH_SCOPE) {
-        return tokenError(c, 'invalid_client')
+        return tokenError(c, 'invalid_client', 'client_contract_mismatch')
       }
       const allowed = await admitted(
         oauth,
@@ -650,7 +676,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           429,
           `token requests allow ${TOKEN_REQUESTS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
             'for each IP and each client; retry after the next UTC hour begins',
-          OAUTH_RATE_RETRY_AFTER_SECONDS,
+          secondsUntilNextUtcHour(),
         )
       }
 
@@ -659,7 +685,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         const redirectUri = oneFormValue(values, 'redirect_uri', 4_096)
         const verifier = oneFormValue(values, 'code_verifier', 128)
         if (!code || !/^1f3ea_ac_[0-9a-f]{64}$/.test(code) || !redirectUri || !verifier) {
-          return tokenError(c, 'invalid_grant')
+          return tokenError(c, 'invalid_grant', 'authorization_code_fields')
         }
         const codeHash = sha256(code)
         const stored = await oauth.store.getAuthorizationCode(codeHash)
@@ -667,20 +693,20 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
           !stored || stored.clientId !== clientId || stored.redirectUri !== redirectUri ||
           stored.resource !== resource || stored.scope !== MARKET_OAUTH_SCOPE ||
           !verifyMarketPkceS256(verifier, stored.codeChallenge)
-        ) return tokenError(c, 'invalid_grant')
+        ) return tokenError(c, 'invalid_grant', 'authorization_code_mismatch')
         const accessToken = opaque(MARKET_OAUTH_ACCESS_TOKEN_PREFIX)
         const refreshToken = opaque(MARKET_OAUTH_REFRESH_TOKEN_PREFIX)
         const exchanged = await oauth.store.exchangeAuthorizationCode({
           codeHash, clientId, redirectUri, resource,
           accessTokenHash: sha256(accessToken), refreshTokenHash: sha256(refreshToken),
         })
-        if (!exchanged) return tokenError(c, 'invalid_grant')
+        if (!exchanged) return tokenError(c, 'invalid_grant', 'authorization_code_spent')
         return tokenResponse(c, accessToken, refreshToken)
       }
 
       const presented = oneFormValue(values, 'refresh_token', 100)
       if (!presented || !/^1f3ea_rt_[0-9a-f]{64}$/.test(presented)) {
-        return tokenError(c, 'invalid_grant')
+        return tokenError(c, 'invalid_grant', 'refresh_token_shape')
       }
       const accessToken = opaque(MARKET_OAUTH_ACCESS_TOKEN_PREFIX)
       const refreshToken = opaque(MARKET_OAUTH_REFRESH_TOKEN_PREFIX)
@@ -688,7 +714,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         presentedRefreshTokenHash: sha256(presented), clientId, resource,
         accessTokenHash: sha256(accessToken), newRefreshTokenHash: sha256(refreshToken),
       })
-      if (rotated !== 'rotated') return tokenError(c, 'invalid_grant')
+      if (rotated !== 'rotated') return tokenError(c, 'invalid_grant', 'refresh_token_rejected')
       return tokenResponse(c, accessToken, refreshToken)
     } catch {
       return oauthUnavailable(c, 503, 'token request could not be completed; retry later')
@@ -731,7 +757,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         429,
         `revocation allows ${REVOCATIONS_PER_IP_OR_CLIENT_UTC_HOUR} attempts per UTC hour ` +
           'for each IP and each client; retry after the next UTC hour begins',
-        OAUTH_RATE_RETRY_AFTER_SECONDS,
+        secondsUntilNextUtcHour(),
       )
     }
 

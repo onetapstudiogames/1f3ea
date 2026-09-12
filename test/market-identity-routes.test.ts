@@ -29,8 +29,14 @@ test('dormant identity routes return one private caller-worded refusal without c
     assert.equal(response.headers.get('cache-control'), 'no-store', path)
     assert.equal(response.headers.get('access-control-allow-origin'), null, path)
     assert.equal(response.headers.get('x-1f3ea-reason'), 'identity_dormant', path)
-    const parsed = await response.clone().json() as { error: string; reason: string }
+    assert.equal(response.headers.get('retry-after'), null, path)
+    const parsed = await response.clone().json() as Record<string, unknown>
     assert.equal(parsed.reason, 'identity_dormant', path)
+    assert.equal(parsed.error_class, 'market_fault', path)
+    assert.equal(parsed.http_status, 503, path)
+    assert.match(String(parsed.request_id), /^[0-9a-f-]{36}$/u, path)
+    assert.equal(parsed.front_door_tool, 'front_door', path)
+    assert.match(String(parsed.next_step), /operator|migration|identity flags/iu, path)
     const text = await response.text()
     assert.match(text, /private merchant identity.*unavailable.*no merchant or key was (?:created|changed)/iu)
     assert.match(text, new RegExp(`retry ${retryPath.replace('/', '\\/')}`, 'iu'), path)
@@ -131,8 +137,13 @@ test('the browser pages go live without the coding-client doors when only the id
     // The browser doors ARE live in this scenario, so a wait cannot fix a coding-identity door
     // that needs an operator migration and flag — no Retry-After is offered for it.
     assert.equal(response.headers.get('retry-after'), null, path)
-    const parsed = await response.clone().json() as { error: string; reason: string }
+    const parsed = await response.clone().json() as Record<string, unknown>
     assert.equal(parsed.reason, 'coding_identity_dormant', path)
+    assert.equal(parsed.error_class, 'market_fault', path)
+    assert.equal(parsed.http_status, 503, path)
+    assert.match(String(parsed.request_id), /^[0-9a-f-]{36}$/u, path)
+    assert.equal(parsed.front_door_tool, 'front_door', path)
+    assert.match(String(parsed.next_step), /operator|migration|MARKET_CODING_IDENTITY_ENABLED/iu, path)
     const text = await response.text()
     assert.match(text, /coding-client identity doors are unavailable/iu, path)
     assert.match(text, /no merchant or key was created or changed/iu, path)

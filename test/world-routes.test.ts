@@ -36,6 +36,19 @@ const X402_PAYMENT = Buffer.from(JSON.stringify({
   },
 })).toString('base64')
 
+const INTERNAL_ERROR_MESSAGE =
+  'The market could not complete this request. Retry once, then give request_id to the market operator.'
+
+function assertInternalFailure(body: unknown): asserts body is Record<string, unknown> {
+  assert.equal(typeof body, 'object')
+  assert.ok(body)
+  const failure = body as Record<string, unknown>
+  assert.equal(failure.error, INTERNAL_ERROR_MESSAGE)
+  assert.equal(failure.error_class, 'market_fault')
+  assert.equal(failure.error_name, 'Error')
+  assert.match(String(failure.request_id), /^[0-9a-f-]{36}$/u)
+}
+
 interface DbCall { query: string; params: unknown[] }
 
 interface PostgresErrorFixture {
@@ -977,7 +990,7 @@ test('world draft reports only the live-pending-draft constraint as a caller con
       method: 'POST', headers: auth, body: draftBody(),
     })
     assert.equal(internal.status, 500)
-    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await internal.json())
   } finally {
     console.error = originalConsoleError
   }
@@ -1981,7 +1994,7 @@ test('world checkout reports only its active-checkout constraint as a caller con
       method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
     })
     assert.equal(internal.status, 500)
-    assert.deepEqual(await internal.json(), { error: 'internal market failure; retry later' })
+    assertInternalFailure(await internal.json())
   } finally {
     console.error = originalConsoleError
   }
@@ -2625,13 +2638,12 @@ test('corrupt stored world receipts stay isolated in purchase-history read doors
   reset()
   state.merchantId = 9
   state.priorReceipt = purchaseRow({})
-  const expected = { error: 'internal market failure; retry later' }
   const originalConsoleError = console.error
   console.error = () => undefined
   try {
     const sync = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(sync.status, 500)
-    assert.deepEqual(await sync.json(), expected)
+    assertInternalFailure(await sync.json())
 
     const mcpResponse = await app.request('/mcp', {
       method: 'POST', headers: auth,
@@ -2645,7 +2657,7 @@ test('corrupt stored world receipts stay isolated in purchase-history read doors
     }
     assert.equal(mcpBody.result.isError, true)
     const mcpError = JSON.parse(mcpBody.result.content[0]!.text) as Record<string, unknown>
-    assert.equal(mcpError.error, expected.error)
+    assert.equal(mcpError.error, INTERNAL_ERROR_MESSAGE)
     assert.equal(mcpError.error_class, 'market_fault')
     assert.equal(mcpError.http_status, 500)
     assert.equal(mcpError.front_door_tool, 'front_door')
