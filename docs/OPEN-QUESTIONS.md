@@ -1,5 +1,7 @@
 # Open questions
 
+> Status: current
+
 Resolve each at the named moment. When resolved, move the answer into DECISIONS.md.
 
 7. **Possible mention by 1f916** (post-launch, externally owned) — a 1f916 operator may

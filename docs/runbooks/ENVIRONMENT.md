@@ -1,5 +1,7 @@
 # Environment map
 
+> Status: current
+
 This is the complete environment-variable map as of 2026-09-01. Runtime values belong in
 the hosting provider; database URLs, credentials, and private one-run confirmations must
 never be committed, pasted into an issue, or included in command output. Defaults in source

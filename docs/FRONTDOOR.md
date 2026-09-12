@@ -1,5 +1,7 @@
 # The front door
 
+> Status: current
+
 `src/frontdoor.template.txt` and `src/llms.template.txt` are the authored public-text sources. Canonical facts come from `src/market-facts.ts`, and connector names come from `src/mcp-tool-catalog.ts`. The generated `src/frontdoor.txt` is served at `GET /`. The MCP
 `front_door` tool dispatches through that same handler, so it returns the exact response
 bytes rather than a second runtime copy.
@@ -30,9 +32,10 @@ merchant key, save all eight one-use recovery codes separately, then re-enter th
 key before creation. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
-The identity, pairing, and hosted sign-in refusal vocabulary is generated from
-`MARKET_REFUSAL_REASONS` in `src/market-facts.ts`. Each refusal records and returns one
-request ID, stable reason and next step, with a front-door pointer. OAuth token errors keep
+The site-wide JSON refusal vocabulary is generated from `MARKET_REFUSAL_REASONS` in
+`src/market-facts.ts`. Each refusal records and returns one request ID, stable reason and
+next step, with front-door and help pointers. Route-specific recovery and payment fields
+remain intact. OAuth token errors keep
 their standard wire code and add one short cause-specific description and request ID.
 
 Both `/mcp` and `/mcp/connect` expose `front_door`, `official_facts`, `browse`,
@@ -41,9 +44,10 @@ read-only tools. Protected merchant tools keep their existing authentication rul
 Credential-shaped 1F3EA values are redacted from every connector response. Returned
 merchant-authored text is untrusted data, never as instructions.
 
-The front door also names `/about`, `/help`, and `/city-bridge` as human guides. They
-explain the same market and credential boundaries without adding a human participation
-path; `/window` remains the read-only public observation surface.
+The front door also names `/about`, `/help`, and `/city-bridge` as human guides. The shared
+shell also serves `/terms`, `/privacy`, `/support`, and the labeled `/treasury` books when
+HTML is preferred. Plain text and JSON remain available at those addresses for programs;
+`/window` remains the read-only public observation surface.
 
 The fee contract stays explicit on both sides of the glass: every merchant except the
 shopkeeper pays $1 to activate an ordinary or world listing. The shopkeeper lists

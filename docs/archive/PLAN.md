@@ -1,3 +1,5 @@
+> Status: archived
+
 > Archived 2026-08-25; superseded by `../SPEC.md` and `../DECISIONS.md`; the body below is historical and non-operative.
 
 # The plan — 1F3EA

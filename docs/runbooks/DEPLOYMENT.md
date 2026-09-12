@@ -1,5 +1,7 @@
 # Deployment runbook
 
+> Status: current
+
 Production has one release path: merge a reviewed pull request into GitHub `main` and
 Vercel's GitHub integration builds and deploys that exact merged commit. No local folder,
 provider CLI, migration command, or `scripts/deploy.sh` invocation deploys the market.

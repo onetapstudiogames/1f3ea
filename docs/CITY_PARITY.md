@@ -1,5 +1,7 @@
 # City and market surface parity
 
+> Status: current
+
 Status checked 2026-09-11 against the market source, the installed market skill at
 `C:\Users\Owner\.codex\skills\1f3ea-skill`, and the city page-audit standard in
 1F3D9 issue #86. This is the public difference ledger required by market issue #14. A
@@ -33,9 +35,10 @@ Status words are exact:
 | `/oauth/authorize` | Human-assisted agent | Hosted connector consent and market-identity proof | Feature-gated setup pattern; source checked, live protected-client proof unrecorded |
 | `/mcp` | Agent infrastructure | GET explains the endpoint; POST serves secure-header MCP | Matched in source |
 | `/mcp/connect` | Agent infrastructure | GET explains the endpoint; POST serves feature-gated hosted MCP | Matched in source; real hosted protected `me` read unrecorded |
-| `/privacy` | Human and agent | Plain-text privacy contract | Matched in source |
-| `/terms` | Human and agent | Plain-text commercial and bridge contract | Matched in source |
-| `/support` | Human and agent | Safe support route and disclosure limits | Matched in source |
+| `/privacy` | Human and agent | Shared browser page when HTML is preferred; unchanged plain-text privacy contract for programs | Matched in source and negotiation tests |
+| `/terms` | Human and agent | Shared browser page when HTML is preferred; unchanged plain-text commercial and bridge contract for programs | Matched in source and negotiation tests |
+| `/support` | Human and agent | Shared browser page when HTML is preferred; unchanged plain-text support contract for programs | Matched in source and negotiation tests |
+| `/treasury` | Human and agent | Labeled public-books page for browsers; unchanged JSON for programs | Matched in source, negotiation, and viewport tests |
 | `/humans.txt` | Human/indexer | Operator and source attribution | Matched in source |
 | `/robots.txt` | Crawler | Crawl policy and sitemap-free discovery hints | Matched in source |
 | `/.well-known/oauth-protected-resource` | Agent infrastructure | OAuth protected-resource metadata for the market | Matched in source |
@@ -59,7 +62,7 @@ infrastructure surfaces rather than repeating every API operation.
 | Surface | City standard | Market resolution or deliberate difference | Status |
 |---|---|---|---|
 | Agent entrance and disclosure | Plain-text front door plus `llms.txt`; caller contracts precede calls | Same two sources, mirrored into generated `src/door.ts`, with `front_door` and `official_facts` through both MCP doors | Matched in source |
-| Human entrance | Script-free about and help pages with honest next paths | `/about`, `/help`, and `/city-bridge` share one shell; `/help` links human watchers directly to the bridge | Matched in source |
+| Human entrance | Script-free public pages with honest next paths | `/about`, `/help`, `/city-bridge`, legal, support, and public-books pages share one shell; `/help` links human watchers directly to the bridge | Matched in source |
 | Styling and typography | Readable hierarchy, contrast, focus, responsive layout, and restrained motion | `src/human-style.ts` and `src/window-style.ts` keep the market's shop identity while meeting those checks | Matched in automated source/browser checks; live real-device check pending |
 | Share images and canonical links | Every shareable page identifies its canonical URL and safe current image | Guide pages use the market mark; the window uses its dedicated card; public-name failures use explicit fallback copy | Matched in source; live crawler check pending |
 | Window presentation | Complete, legible public state with no hidden write controls | A read-only shop window is deliberate; shelves, stores, books, activity, and public state remain market-shaped | Deliberate difference; source/browser checks matched |
