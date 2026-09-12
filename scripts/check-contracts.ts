@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 
 process.env.TREASURY_ADDRESS ??= '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 
-const [{ default: app }, { FRONTDOOR, LLMS }, facts, { CONNECTOR_TOOL_HELP }, { MCP_TOOLS }, { registerTrustRoutes }, { formatActivity }, { WINDOW_JS }] = await Promise.all([
+const [{ default: app }, { FRONTDOOR, HUMANS, LLMS }, facts, { CONNECTOR_TOOL_HELP }, { MCP_TOOLS }, { registerTrustRoutes }, { formatActivity }, { WINDOW_JS }] = await Promise.all([
   import('../src/index.ts'),
   import('../src/door.ts'),
   import('../src/market-facts.ts'),
@@ -38,12 +38,17 @@ const publicDoorFacts = [
   facts.WORLD_ACTIVATION_FIELDS,
   facts.ORDINARY_PAYMENT_TERMINALS,
   facts.HOSTED_PROOF_CONTRACT,
+  facts.HUMAN_PAGES,
   facts.FINE_PRINT_ROUTES,
 ] as const
 for (const value of publicDoorFacts) {
   assert(FRONTDOOR.includes(value), `front door omits canonical fact: ${value.slice(0, 60)}`)
   assert(LLMS.includes(value), `machine index omits canonical fact: ${value.slice(0, 60)}`)
 }
+
+assert(HUMANS.includes(facts.HUMAN_PAGES), 'humans.txt omits the canonical human-page list')
+for (const path of facts.HUMAN_PAGE_PATHS)
+  assert(facts.HUMAN_PAGES.includes(path), `canonical human-page sentence omits ${path}`)
 
 assert(Buffer.byteLength(FRONTDOOR) <= 36 * 1024, 'front door exceeds its 36 KiB public-text budget')
 const maxActivity = formatActivity(Array.from({ length: 5 }, () => ({
@@ -67,6 +72,7 @@ const servedFrontDoor = await (await app.request('/')).text()
 assert(servedFrontDoor.startsWith(FRONTDOOR.trimEnd()), 'GET / does not serve the generated front door')
 assert(Buffer.byteLength(servedFrontDoor) <= 36 * 1024, 'served front door exceeds its 36 KiB budget')
 assert(await (await app.request('/llms.txt')).text() === LLMS, 'GET /llms.txt does not serve the generated machine index')
+assert(await (await app.request('/humans.txt')).text() === HUMANS, 'GET /humans.txt does not serve the generated human notice')
 const servedHelp = await (await app.request('/api/help')).json() as { tools?: unknown }
 assert(JSON.stringify(servedHelp.tools) === JSON.stringify(CONNECTOR_TOOL_HELP), 'GET /api/help differs from the connector catalog')
 const humanHelp = await (await app.request('/help')).text()
@@ -178,7 +184,7 @@ for (const tool of MCP_TOOLS) {
     assert(dispatched.some(actual => matchesTemplate(actual, template)), `${tool.name} route template lacks a dispatch branch: ${template.path}`)
 }
 
-const generated = new Set(['src/door.ts', 'src/frontdoor.txt', 'src/llms.txt', 'src/changelog-source.ts'])
+const generated = new Set(['src/door.ts', 'src/frontdoor.txt', 'src/humans.txt', 'src/llms.txt', 'src/changelog-source.ts'])
 const roots = ['src', 'docs', 'seed', 'README.md', 'CHANGELOG.md']
 function filesUnder(path: string): string[] {
   const absolute = resolve(path)

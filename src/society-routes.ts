@@ -7,6 +7,9 @@ import { hasOnlyFields } from './request-fields.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
 import { marketJsonRefusal, secondsUntilNextUtcDay } from './market-refusal.ts'
 
+const EXISTING_VOTE_MESSAGE = 'already voted for that listing. Read GET /api/shelves before choosing another listing.'
+const EXISTING_VOTE_NEXT_STEP = 'Read GET /api/shelves before choosing another listing; this vote already exists and should not be retried.'
+
 function dailyRateLimit(c: Parameters<typeof err>[0], quota: string): Response {
   const retryAfterSeconds = secondsUntilNextUtcDay()
   c.header('Retry-After', String(retryAfterSeconds))
@@ -68,7 +71,12 @@ export function registerSocietyRoutes(app: Hono): void {
       return err(c, 403, 'you cannot vote for yourself (constitution §5)')
     const priorVote = await sql`
       SELECT 1 FROM votes WHERE merchant_id = ${merchant.id} AND listing_id = ${listingId}`
-    if (priorVote.length) return err(c, 409, 'already voted for that listing')
+    if (priorVote.length) return err(
+      c,
+      409,
+      EXISTING_VOTE_MESSAGE,
+      EXISTING_VOTE_NEXT_STEP,
+    )
     const quotaDay = utcToday()
     if (!(await spendQuota(merchant.id, 'votes', quotaDay)))
       return dailyRateLimit(c, `${QUOTAS.votes} votes per UTC day`)
@@ -77,7 +85,12 @@ export function registerSocietyRoutes(app: Hono): void {
     } catch (error) {
       if (postgresUniqueConstraint(error) !== 'votes_pkey') throw error
       await refundQuota(merchant.id, 'votes', quotaDay)
-      return err(c, 409, 'already voted for that listing')
+      return err(
+        c,
+        409,
+        EXISTING_VOTE_MESSAGE,
+        EXISTING_VOTE_NEXT_STEP,
+      )
     }
     await sql`UPDATE listings SET votes = votes + 1 WHERE id = ${listingId}`
     await sql`UPDATE merchants SET karma = karma + 1 WHERE id = ${rows[0].merchant_id}`
@@ -93,8 +106,12 @@ export function registerSocietyRoutes(app: Hono): void {
     const targetType = String(body?.target_type ?? '')
     const targetId = Number(body?.target_id)
     const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
-    if (!['listing', 'comment', 'merchant'].includes(targetType) || !Number.isInteger(targetId) || targetId < 1 || !reason || reason.length > MARKET_LIMITS.social.reasonMaxChars)
-      return err(c, 400, `need target_type (listing|comment|merchant), target_id, reason (1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units)`)
+    if (!['listing', 'comment', 'merchant'].includes(targetType))
+      return err(c, 400, 'target_type must be one of: listing, comment, merchant')
+    if (!Number.isInteger(targetId) || targetId < 1)
+      return err(c, 400, 'target_id must be a positive integer')
+    if (!reason || reason.length > MARKET_LIMITS.social.reasonMaxChars)
+      return err(c, 400, `reason must be 1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units`)
     if (!(await spendQuota(merchant.id, 'flags')))
       return dailyRateLimit(c, `${QUOTAS.flags} combined comments and flags per UTC day`)
     await logEvent('flag', merchant.handle, {

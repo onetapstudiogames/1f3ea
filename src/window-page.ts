@@ -17,7 +17,6 @@ export function renderWindowHtml(share: WindowShare = GENERIC_WINDOW_SHARE): str
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex, nofollow, noarchive">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0d1210">
   <title>${title}</title>

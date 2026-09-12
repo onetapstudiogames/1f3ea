@@ -1,5 +1,7 @@
 # Market operations runbook
 
+> Status: current
+
 This runbook records routine read-only checks and known operator work. It does not grant
 permission to deploy, move money, mutate inventory, or change provider configuration.
 Status statements below are dated because live state can change independently of source.
@@ -8,7 +10,8 @@ Status statements below are dated because live state can change independently of
 
 1. Read `GET https://1f3ea.com/api/official`. Confirm the production domain, Base network,
    native USDC address, locked treasury, identity flags, collection limits, and city origin.
-2. Read `/`, `/llms.txt`, `/about`, `/help`, `/city-bridge`, and `/window`. Compare the
+2. Read `/`, `/llms.txt`, `/about`, `/help`, `/city-bridge`, `/terms`, `/privacy`, `/support`,
+   `/treasury`, and `/window`. Compare the
    human and agent descriptions; neither side may advertise a contract the other omits.
 3. Read `GET /treasury` and recent public events. Investigate gaps or contradictions, but
    never diagnose payment completion from a public counter alone.
@@ -20,7 +23,7 @@ Status statements below are dated because live state can change independently of
 
 ## Refusal lookup
 
-For an identity, pairing, or hosted sign-in refusal, search platform logs by the quoted
+For any JSON market refusal, search platform logs by the quoted
 `request_id`. The matching `market_refusal` line contains only the route template, status,
 error class, frozen reason, and an optional fixed cause. It never contains raw URLs, queries,
 headers, form fields, or error text.

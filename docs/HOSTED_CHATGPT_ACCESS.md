@@ -1,5 +1,7 @@
 # Hosted connector access
 
+> Status: current
+
 `https://1f3ea.com/mcp/connect` is the feature-gated OAuth address for a hosted
 surface that supports custom MCP apps or connectors. A new merchant can sign up there,
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials

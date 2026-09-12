@@ -135,6 +135,20 @@ h2,
 h3,
 p { overflow-wrap: anywhere; }
 
+dl,
+dl > div,
+dt,
+dd {
+  min-width: 0;
+  max-width: 100%;
+}
+
+dd {
+  margin-inline-start: 2.5rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 h1,
 h2,
 h3 { line-height: 1.08; text-wrap: balance; }
@@ -276,6 +290,7 @@ code {
   .guide-nav { width: 100%; justify-content: space-between; gap: 0.4rem; }
   .button-link { width: 100%; text-align: center; }
   .fact-card, .step-card, .plain-card { padding: 1rem; }
+  dd { margin-inline-start: 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -19,6 +19,22 @@ const TX_UPPER = '0x' + 'AB'.repeat(32)
 const SIGNATURE = `0x${'01'.padStart(64, '0')}${'02'.padStart(64, '0')}1b`
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
+function routeFields(body: unknown): Record<string, unknown> {
+  assert.ok(body && typeof body === 'object' && !Array.isArray(body))
+  const record = body as Record<string, unknown>
+  if (!('error_class' in record)) return record
+  assert.match(String(record.request_id), REQUEST_ID)
+  assert.equal(record.front_door, 'https://1f3ea.com/')
+  assert.equal(record.help_page, 'https://1f3ea.com/help')
+  const {
+    error_class: _errorClass, http_status: _httpStatus, reason: _reason,
+    next_step: _nextStep, request_id: _requestId, front_door_tool: _frontDoorTool,
+    front_door: _frontDoor, help_page: _helpPage, retry_after_seconds: _retryAfterSeconds,
+    ...fields
+  } = record
+  return fields
+}
+
 function assertInternalFailure(body: unknown): void {
   const failure = body as Record<string, unknown>
   assert.match(String(failure.error), /could not complete this request.*request_id/iu)
@@ -628,7 +644,7 @@ test('direct reservation reports both exact transaction ownership races without 
     const intent = (await (await openIntent()).json() as { purchase_intent: IntentRow }).purchase_intent
     const response = await claim(1, intent.id)
     assert.equal(response.status, 409, constraint)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'this transaction hash was already used or reserved by another market payment; do not pay again',
       do_not_pay_again: true,
     }, constraint)
@@ -684,7 +700,7 @@ test('a direct review write outage keeps the same-payment no-pay instruction', a
   try {
     const response = await claim(1, intent.id)
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not confirm this purchase review; retry this same claim; do not pay again',
       retry: 'retry this same claim with the same intent, transaction, and signature',
       do_not_pay_again: true,
@@ -705,7 +721,7 @@ test('a direct review write with no confirmed state keeps the same-payment no-pa
   try {
     const response = await claim(1, intent.id)
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not confirm this purchase review; retry this same claim; do not pay again',
       retry: 'retry this same claim with the same intent, transaction, and signature',
       do_not_pay_again: true,

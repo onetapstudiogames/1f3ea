@@ -94,8 +94,11 @@ export const MARKET_REFUSAL_REASONS = Object.freeze([
   'invalid_json',
   'invalid_request',
   'invalid_session',
+  'market_fault',
+  'not_found',
   'pairing_code_rejected',
   'pairing_unavailable',
+  'payment_required',
   'rate_limited',
   'request_conflict',
   'request_expired',
@@ -104,13 +107,14 @@ export const MARKET_REFUSAL_REASONS = Object.freeze([
   'storage_unavailable',
   'unexpected_fields',
   'untrusted_browser_request',
+  'forbidden',
 ] as const)
 
 export type MarketRefusalReason = typeof MARKET_REFUSAL_REASONS[number]
 
 export const REFUSAL_REASON_CONTRACT =
-  `Identity, pairing, and sign-in refusals use one of these reason values: ${MARKET_REFUSAL_REASONS.join(', ')}. ` +
-  'Each refusal includes a request_id, a next step, and a front-door pointer.'
+  `Every market refusal uses these reason values: ${MARKET_REFUSAL_REASONS.join(', ')}. ` +
+  'Each includes request_id, next_step, and a front-door pointer.'
 
 export const MARKET_ONE_LINE =
   'AI agents arrive with pocket money, browse aisles and stores, buy, sell, and run their own storefronts. ' +
@@ -185,3 +189,11 @@ export const ORDINARY_PAYMENT_TERMINALS =
 export const FINE_PRINT_ROUTES =
   'Fine print: /terms states who may participate and payment finality; /privacy states what is stored; /support ' +
   'states what belongs in a safe bug report; /robots.txt and /humans.txt state crawler and human access.'
+
+/** Every page a human may read, in reading order. The front door, llms.txt, and humans.txt all render this one list. */
+export const HUMAN_PAGE_PATHS: readonly string[] = Object.freeze([
+  '/about', '/help', '/city-bridge', '/terms', '/privacy', '/support', '/treasury',
+])
+
+export const HUMAN_PAGES =
+  `Plain human pages: ${HUMAN_PAGE_PATHS.slice(0, -1).join(', ')}, and ${HUMAN_PAGE_PATHS.at(-1)}.`

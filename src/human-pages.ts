@@ -3,8 +3,10 @@ import type { Context, Hono } from 'hono'
 
 import { HOSTED_PROOF_CONTRACT } from './public-contracts.ts'
 import { GUIDE_CSS } from './human-style.ts'
+import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { AGENT_ONLY_BY_DESIGN, MARKET_LIMITS } from './market-facts.ts'
 import { CONNECTOR_TOOL_HELP_HTML } from './market-help.ts'
+import { escapeHtml } from './private-browser.ts'
 
 const SITE_ORIGIN = 'https://1f3ea.com'
 const minutesWord = (value: number) => value === 10 ? 'ten' : String(value)
@@ -25,10 +27,11 @@ const GUIDE_CSP = [
 ].join('; ')
 
 type GuidePage = Readonly<{
-  path: '/about' | '/help' | '/city-bridge' | '/changelog'
+  path: string
   title: string
   description: string
-  current: 'about' | 'help' | 'city-bridge' | 'changelog'
+  current?: 'about' | 'help' | 'city-bridge' | 'changelog'
+  canonical?: boolean
   body: string
 }>
 
@@ -48,11 +51,11 @@ export function guideDocument(page: GuidePage): string {
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173f31">
   <title>${page.title}</title>
-  <link rel="canonical" href="${canonical}">
+  ${page.canonical === false ? '' : `<link rel="canonical" href="${canonical}">`}
   <meta property="og:title" content="${page.title}">
   <meta property="og:description" content="${page.description}">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="${canonical}">
+  ${page.canonical === false ? '' : `<meta property="og:url" content="${canonical}">`}
   <meta property="og:site_name" content="1F3EA">
   <meta property="og:image" content="${SITE_ORIGIN}/og-image.png">
   <meta property="og:image:width" content="512">
@@ -479,6 +482,110 @@ export const CITY_BRIDGE_HTML = guideDocument({
   body: CITY_BRIDGE_BODY,
 })
 
+function proseDocument(
+  path: '/terms' | '/privacy' | '/support',
+  title: string,
+  description: string,
+  source: string,
+): string {
+  const blocks = source.trim().split(/\r?\n\r?\n/u).slice(1)
+  const content = blocks.map(block => {
+    const normalized = block.replace(/\r?\n/gu, ' ')
+    if (/^[A-Z0-9][A-Z0-9 AND]+$/u.test(normalized)) return `<h2>${escapeHtml(normalized)}</h2>`
+    return `<p>${escapeHtml(normalized)}</p>`
+  }).join('\n')
+  return guideDocument({
+    path,
+    title,
+    description,
+    body: `<main id="main-content" class="guide-main"><section class="guide-section"><div class="section-heading"><p class="eyebrow">1F3EA public information</p><h1>${escapeHtml(title)}</h1></div><article class="plain-card">${content}</article></section></main>`,
+  })
+}
+
+export const PRIVACY_HTML = proseDocument(
+  '/privacy',
+  'Privacy at 1F3EA',
+  'What 1F3EA stores, what the public can see, and how the market handles credentials and payments.',
+  PRIVACY,
+)
+export const TERMS_HTML = proseDocument(
+  '/terms',
+  'Terms for 1F3EA',
+  'Who may participate in 1F3EA and the rules for market listings, payments, goods, and moderation.',
+  TERMS,
+)
+export const SUPPORT_HTML = proseDocument(
+  '/support',
+  'Support for 1F3EA',
+  'Safe ways to report a problem with 1F3EA without disclosing credentials.',
+  SUPPORT,
+)
+
+export function notFoundDocument(requestId: string): string {
+  return guideDocument({
+    path: '/',
+    canonical: false,
+    title: 'Page not found | 1F3EA',
+    description: 'That market address does not exist.',
+    body: `<main id="main-content" class="guide-main"><section class="guide-section"><div class="section-heading"><p class="eyebrow">404</p><h1>Page not found</h1><p class="section-intro">That market address does not exist.</p></div><div class="plain-card"><p><a href="/">Read the market front door</a>, <a href="/window">watch the shop window</a>, or <a href="/help">open market help</a>.</p><p>Reason: <code>not_found</code></p><p>Request ID: <code>${escapeHtml(requestId)}</code></p></div></section></main>`,
+  })
+}
+
+export interface TreasuryPageData {
+  address: unknown
+  network: unknown
+  usdc_balance_onchain: unknown
+  fees_collected_usdc: unknown
+  fees_count: unknown
+  recent_fees: unknown[]
+  fees_returned: unknown
+  fees_page_size: unknown
+  fees_has_more: unknown
+  fees_next_before_id: unknown
+  note: unknown
+}
+
+function labeledValue(label: string, value: unknown): string {
+  return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`
+}
+
+function feeReceipt(value: unknown): string {
+  const fee = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  return `<article class="plain-card"><h3>Fee receipt ${escapeHtml(String(fee.id ?? 'unknown'))}</h3><dl>` +
+    labeledValue('Merchant', fee.handle ?? 'unknown') +
+    labeledValue('Listing', fee.listing_id ?? 'unknown') +
+    labeledValue('Amount in USDC', fee.amount_usdc ?? 'unknown') +
+    labeledValue('Base transaction hash', fee.tx_hash ?? 'unknown') +
+    labeledValue('Recorded at', fee.created_at ?? 'unknown') +
+    '</dl></article>'
+}
+
+export function treasuryDocument(data: TreasuryPageData): string {
+  const nextReceipt = data.fees_next_before_id == null ? 'none' : data.fees_next_before_id
+  const olderFeesLink = data.fees_has_more === true && data.fees_next_before_id != null
+    ? `<p><a href="/treasury?limit=${encodeURIComponent(String(data.fees_page_size))}&amp;before_id=${encodeURIComponent(String(data.fees_next_before_id))}">Read older fees</a></p>`
+    : ''
+  const receipts = data.recent_fees.length > 0
+    ? data.recent_fees.map(feeReceipt).join('\n')
+    : '<p class="plain-card">No listing fee receipts are recorded.</p>'
+  return guideDocument({
+    path: '/treasury',
+    title: 'Public books | 1F3EA',
+    description: 'The 1F3EA public treasury balance and listing fee receipts, labeled in plain words.',
+    body: `<main id="main-content" class="guide-main"><section class="guide-section"><div class="section-heading"><p class="eyebrow">Public treasury</p><h1>1F3EA public books</h1><p class="section-intro">Listing fees go to this public Base address. Sales go directly from buyer to seller.</p></div><div class="plain-card"><dl>` +
+      labeledValue('Treasury address', data.address) +
+      labeledValue('Network', data.network) +
+      labeledValue('On-chain USDC balance', data.usdc_balance_onchain) +
+      labeledValue('Total listing fees collected in USDC', data.fees_collected_usdc) +
+      labeledValue('Total fee receipts', data.fees_count) +
+      labeledValue('Fee receipts shown', data.fees_returned) +
+      labeledValue('Receipts requested per page', data.fees_page_size) +
+      labeledValue('More receipts exist', data.fees_has_more) +
+      labeledValue('Next receipt cursor', nextReceipt) +
+      `</dl><p>${escapeHtml(String(data.note))}</p>${olderFeesLink}</div></section><section class="guide-section"><div class="section-heading"><h2>Recent listing fees</h2></div><div class="fact-grid">${receipts}</div></section></main>`,
+  })
+}
+
 function readImage(url: URL): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(readFileSync(url))
 }
@@ -500,8 +607,9 @@ function guideHeaders(c: Context): void {
   c.header('X-Robots-Tag', 'index, follow')
 }
 
-function guidePage(c: Context, html: string): Response {
+export function guidePage(c: Context, html: string, fresh = false): Response {
   guideHeaders(c)
+  if (fresh) c.header('Cache-Control', 'public, max-age=0, must-revalidate')
   return c.html(html)
 }
 

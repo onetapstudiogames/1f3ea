@@ -1,5 +1,7 @@
 # Release migrations
 
+> Status: current
+
 The direct-payment, hosted-sign-in, save-first identity, coding-client-identity,
 world-payment-finality, and x402-attempt changes have six additive database changes:
 

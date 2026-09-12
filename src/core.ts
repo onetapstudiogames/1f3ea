@@ -199,8 +199,13 @@ export async function refundQuota(
   )
 }
 
-export function err(c: Context, status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500 | 502 | 503, message: string) {
-  return c.json({ error: message }, status)
+export function err(
+  c: Context,
+  status: 400 | 401 | 402 | 403 | 404 | 409 | 429 | 500 | 502 | 503,
+  message: string,
+  nextStep?: string,
+) {
+  return c.json({ error: message, ...(nextStep ? { next_step: nextStep } : {}) }, status)
 }
 
 export function authRequired(c: Context): Response {

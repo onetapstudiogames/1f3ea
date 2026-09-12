@@ -38,6 +38,23 @@ const X402_PAYMENT = Buffer.from(JSON.stringify({
 
 const INTERNAL_ERROR_MESSAGE =
   'The market could not complete this request. Retry once, then give request_id to the market operator.'
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function routeFields(body: unknown): Record<string, unknown> {
+  assert.ok(body && typeof body === 'object' && !Array.isArray(body))
+  const record = body as Record<string, unknown>
+  if (!('error_class' in record)) return record
+  assert.match(String(record.request_id), REQUEST_ID)
+  assert.equal(record.front_door, 'https://1f3ea.com/')
+  assert.equal(record.help_page, 'https://1f3ea.com/help')
+  const {
+    error_class: _errorClass, http_status: _httpStatus, reason: _reason,
+    next_step: _nextStep, request_id: _requestId, front_door_tool: _frontDoorTool,
+    front_door: _frontDoor, help_page: _helpPage, retry_after_seconds: _retryAfterSeconds,
+    ...fields
+  } = record
+  return fields
+}
 
 function assertInternalFailure(body: unknown): asserts body is Record<string, unknown> {
   assert.equal(typeof body, 'object')
@@ -977,7 +994,7 @@ test('world draft reports only the live-pending-draft constraint as a caller con
     method: 'POST', headers: auth, body: draftBody(),
   })
   assert.equal(conflict.status, 409)
-  assert.deepEqual(await conflict.json(), {
+  assert.deepEqual(routeFields(await conflict.json()), {
     error: 'you already have a live pending draft; activate it, POST /api/world/draft/:id/cancel, or wait for expiry',
   })
 
@@ -1041,12 +1058,12 @@ test('a seller can cancel a pending draft and then create another', async () => 
     method: 'POST', headers: auth, body: JSON.stringify({ force: true }),
   })
   assert.equal(extra.status, 400)
-  assert.deepEqual(await extra.json(), { error: 'body must be empty or {}' })
+  assert.deepEqual(routeFields(await extra.json()), { error: 'body must be empty or {}' })
   assert.equal(state.draftState, 'pending')
 
   const canceled = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(canceled.status, 200)
-  assert.deepEqual(await canceled.json(), { draft_id: 12, status: 'canceled' })
+  assert.deepEqual(routeFields(await canceled.json()), { draft_id: 12, status: 'canceled' })
   assert.equal(state.draftState, 'canceled')
 
   const created = await app.request('/api/world/draft', {
@@ -1062,7 +1079,7 @@ test('canceling a world draft twice returns the documented terminal refusal', as
 
   const second = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(second.status, 409)
-  assert.deepEqual(await second.json(), { error: 'world draft is not pending' })
+  assert.deepEqual(routeFields(await second.json()), { error: 'world draft is not pending' })
 })
 
 test('a publicly expired world draft cannot be canceled after its hour lapses', async () => {
@@ -1071,7 +1088,7 @@ test('a publicly expired world draft cannot be canceled after its hour lapses', 
 
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), { error: 'world draft is not pending' })
+  assert.deepEqual(routeFields(await response.json()), { error: 'world draft is not pending' })
   assert.equal(state.draftState, 'pending')
 })
 
@@ -1087,7 +1104,7 @@ test('a recorded world listing fee still reaching finality blocks draft cancella
 
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
   })
   assert.equal(state.draftState, 'pending')
@@ -1114,7 +1131,7 @@ test('a settled x402 world listing fee still reaching finality blocks draft canc
 
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
   })
   assert.equal(state.draftState, 'pending')
@@ -1142,7 +1159,7 @@ test('a world listing fee already preserved for review does not block draft canc
 
   const response = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), { draft_id: 12, status: 'canceled' })
+  assert.deepEqual(routeFields(await response.json()), { draft_id: 12, status: 'canceled' })
   assert.equal(state.draftState, 'canceled')
   assert.equal(state.listingFeeAttempt, reviewedFee)
 })
@@ -1151,7 +1168,7 @@ test('world draft cancellation hides ownership and refuses an activated draft', 
   reset()
   const malformed = await app.request('/api/world/draft/0/cancel', { method: 'POST', headers: auth })
   assert.equal(malformed.status, 400)
-  assert.deepEqual(await malformed.json(), { error: 'draft id must be a positive integer' })
+  assert.deepEqual(routeFields(await malformed.json()), { error: 'draft id must be a positive integer' })
 
   reset()
   state.draftOwner = 8
@@ -1163,7 +1180,7 @@ test('world draft cancellation hides ownership and refuses an activated draft', 
   state.draftListingId = 70
   const active = await app.request('/api/world/draft/12/cancel', { method: 'POST', headers: auth })
   assert.equal(active.status, 409)
-  assert.deepEqual(await active.json(), { error: 'world draft is already activated' })
+  assert.deepEqual(routeFields(await active.json()), { error: 'world draft is already activated' })
   assert.equal(state.draftState, 'active')
 })
 
@@ -1297,7 +1314,7 @@ test('a canceled draft cannot record a direct fee after the city read', async ()
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     error: 'world draft is not pending and unexpired',
     retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
   })
@@ -1317,7 +1334,7 @@ test('a direct fee can be reused when the world draft ended before the request s
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     error: 'world draft is not pending and unexpired',
     retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
   })
@@ -1454,7 +1471,7 @@ test('world activation distinguishes unavailable x402 and Base verification from
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(facilitator.status, 503)
-  assert.deepEqual(await facilitator.json(), {
+  assert.deepEqual(routeFields(await facilitator.json()), {
     error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
     retry: 'retry this same request with the same X-PAYMENT proof',
     do_not_pay_again: true,
@@ -1481,7 +1498,7 @@ test('world activation distinguishes unavailable x402 and Base verification from
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
   assert.equal(chain.status, 503)
-  assert.deepEqual(await chain.json(), {
+  assert.deepEqual(routeFields(await chain.json()), {
     error: 'the market could not check this payment on Base; retry the same proof later',
     retry: 'retry the same listing request with the same fee transaction',
     do_not_pay_again: true,
@@ -1494,7 +1511,7 @@ test('world activation distinguishes unavailable x402 and Base verification from
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33, fee_tx_hash: TX }),
   })
   assert.equal(pendingChain.status, 503)
-  assert.deepEqual(await pendingChain.json(), {
+  assert.deepEqual(routeFields(await pendingChain.json()), {
     error: 'the market could not check this payment on Base; retry the same proof later',
     retry: 'retry the same listing request with the same fee transaction',
     do_not_pay_again: true,
@@ -1820,7 +1837,7 @@ test('an activated draft sentinel does not hide an x402 fee outside the original
     method: 'POST', headers: auth, body: requestBody,
   })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     error: 'the recorded world listing fee was not accepted and transferred inside this draft window',
     retry: 'do not pay again; ask the market owner to review the recorded fee for this same world listing request',
     do_not_pay_again: true,
@@ -1880,7 +1897,7 @@ test('an expired world draft keeps its recorded x402 fee in same-request review'
     body: JSON.stringify({ draft_id: 12, city_offer_id: 33 }),
   })
   assert.equal(repeated.status, 409)
-  assert.deepEqual(await repeated.json(), body)
+  assert.deepEqual(routeFields(await repeated.json()), routeFields(body))
   assert.equal(state.x402Attempt?.status, 'verified')
   assert.equal(state.rpcCalls, rpcCallsAfterTerminalReview)
   assert.equal(state.facilitatorSettleCalls, 1)
@@ -1979,7 +1996,7 @@ test('world checkout reports only its active-checkout constraint as a caller con
     method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
   })
   assert.equal(conflict.status, 409)
-  assert.deepEqual(await conflict.json(), {
+  assert.deepEqual(routeFields(await conflict.json()), {
     error: 'you already have an active checkout for this listing; wait for its ten-minute expiry',
   })
 
@@ -2021,7 +2038,7 @@ test('world sync rejects mismatches and outages without terminal local writes', 
   state.cityMode = 'mismatch'
   const mismatch = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(mismatch.status, 409)
-  assert.deepEqual(await mismatch.json(), {
+  assert.deepEqual(routeFields(await mismatch.json()), {
     error: 'city thing does not match the listing',
     retry: 'retry this same sync request; do not make another payment',
     do_not_pay_again: true,
@@ -2065,7 +2082,7 @@ test('a claimed checkout read outage keeps a same-sync no-pay instruction', asyn
   try {
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not confirm this paid checkout binding; retry this same sync request; do not make another payment',
       retry: 'retry this same sync request; do not make another payment',
       do_not_pay_again: true,
@@ -2106,7 +2123,7 @@ test('world sync waits for canonical finality and later completes the same in-wi
     method: 'POST', headers: auth, body: '{}',
   })
   assert.equal(waiting.status, 202, await waiting.clone().text())
-  assert.deepEqual(await waiting.json(), {
+  assert.deepEqual(routeFields(await waiting.json()), {
     listing_id: 70,
     status: 'payment_pending',
     do_not_pay_again: true,
@@ -2250,7 +2267,7 @@ test('a world review write outage keeps the same-sync no-pay instruction', async
       method: 'POST', headers: auth, body: '{}',
     })
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not confirm this paid checkout review; retry this same sync request; do not make another payment',
       retry: 'retry this same sync request',
       do_not_pay_again: true,
@@ -2275,7 +2292,7 @@ test('a world review write with no confirmed state keeps the same-sync no-pay in
       method: 'POST', headers: auth, body: '{}',
     })
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not confirm this paid checkout review; retry this same sync request; do not make another payment',
       retry: 'retry this same sync request',
       do_not_pay_again: true,
@@ -2299,7 +2316,7 @@ test('a world attempt reservation outage keeps the same-sync no-pay instruction'
       method: 'POST', headers: auth, body: '{}',
     })
     assert.equal(response.status, 503)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       error: 'the market could not preserve this paid checkout; retry this same sync request; do not make another payment',
       retry: 'retry this same sync request; do not make another payment',
       do_not_pay_again: true,
@@ -2319,7 +2336,7 @@ test('world sync distinguishes committed replays, used payment transactions, and
     state.purchaseInsertError = { code: '23505', constraint, nested: constraint === 'purchases_world_checkout_unique' }
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 409, constraint)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       listing_id: 70,
       status: 'needs_review',
       do_not_pay_again: true,
@@ -2346,7 +2363,7 @@ test('world sync distinguishes committed replays, used payment transactions, and
     state.purchaseInsertError = { code: '23505', constraint, nested: constraint === 'payment_uses_pkey' }
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 409, constraint)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       listing_id: 70,
       status: 'needs_review',
       do_not_pay_again: true,
@@ -2380,7 +2397,7 @@ test('world sync distinguishes committed replays, used payment transactions, and
   try {
     const internal = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(internal.status, 503)
-    assert.deepEqual(await internal.json(), {
+    assert.deepEqual(routeFields(await internal.json()), {
       error: 'the market could not confirm whether this paid checkout was recorded; retry this same sync request; do not make another payment',
       retry: 'retry this same sync request',
       do_not_pay_again: true,
@@ -2395,7 +2412,7 @@ test('world withdrawal is market-first and truthfully requires a separate city u
   state.draftListingId = 70
   const response = await app.request('/api/listing/70/withdraw', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     ok: true,
     listing_id: 70,
     status: 'withdrawn',
@@ -2785,7 +2802,7 @@ test('payment_pending remains locked to its city buyer until the city reports cl
 
   const synced = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(synced.status, 200)
-  assert.deepEqual(await synced.json(), {
+  assert.deepEqual(routeFields(await synced.json()), {
     listing_id: 70,
     status: 'active',
     city_phase: 'payment_pending',
@@ -2839,7 +2856,7 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
 
   const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeFields(await response.json()), {
     listing_id: 70,
     status: 'stale',
     city_phase: 'payment_invalid',
@@ -2866,7 +2883,7 @@ test('payment_invalid closes the market lane without inventing a sale', async ()
 
   const repeated = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
   assert.equal(repeated.status, 200)
-  assert.deepEqual(await repeated.json(), {
+  assert.deepEqual(routeFields(await repeated.json()), {
     listing_id: 70,
     status: 'stale',
     city_phase: 'payment_invalid',
@@ -2903,7 +2920,7 @@ test('terminal city payment outcomes close the market lane without inventing a s
 
     const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
     assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), {
+    assert.deepEqual(routeFields(await response.json()), {
       listing_id: 70,
       status: 'stale',
       city_phase: outcome.phase,

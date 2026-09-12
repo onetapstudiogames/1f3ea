@@ -5,9 +5,12 @@ import { registerArtifactListingRoutes, validListing } from './artifact-listing-
 import { registerArtifactPurchaseRoutes } from './artifact-purchase-routes.ts'
 import { registerCollectionRoutes } from './collection-routes.ts'
 import { registerDoorRoutes } from './door-routes.ts'
+import { acceptsHtml } from './http-accept.ts'
+import { notFoundDocument } from './human-pages.ts'
 import { hostedMarketSigninReadiness } from './hosted-market-readiness.ts'
 import { mountMarketIdentityRoutes } from './market-identity-routes.ts'
 import { unexpectedMarketFailure } from './market-failure.ts'
+import { ensureMarketJsonRefusal, marketJsonRefusal, markMarketRefusal } from './market-refusal.ts'
 import {
   configureMarketOAuthMerchantResolver,
   mountMarketOAuthRoutes,
@@ -34,46 +37,12 @@ const missingShelf = () => ({
   front_door: `${DOMAIN.replace(/\/+$/u, '')}/`,
 })
 
-function acceptedQuality(accept: string, mediaType: string): number {
-  const [wantedType, wantedSubtype] = mediaType.toLowerCase().split('/')
-  let best = { specificity: -1, quality: 0 }
-  for (const rawRange of accept.split(',')) {
-    const [rawMedia = '', ...parameters] = rawRange.trim().split(';')
-    const [rangeType, rangeSubtype] = rawMedia.trim().toLowerCase().split('/')
-    if (!rangeType || !rangeSubtype) continue
-    const specificity = rangeType === wantedType && rangeSubtype === wantedSubtype
-      ? 2
-      : rangeType === wantedType && rangeSubtype === '*'
-        ? 1
-        : rangeType === '*' && rangeSubtype === '*'
-          ? 0
-          : -1
-    if (specificity < 0) continue
-    const qualityMatch = parameters
-      .map(parameter => /^\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\s*$/iu.exec(parameter))
-      .find(match => match !== null)
-    const quality = qualityMatch ? Number(qualityMatch[1]) : 1
-    if (specificity > best.specificity || (specificity === best.specificity && quality > best.quality)) {
-      best = { specificity, quality }
-    }
-  }
-  return best.quality
-}
-
-function acceptsHtml(accept: string | undefined): boolean {
-  if (!accept) return false
-  const htmlQuality = Math.max(
-    acceptedQuality(accept, 'text/html'),
-    acceptedQuality(accept, 'application/xhtml+xml'),
-  )
-  return htmlQuality > 0 && htmlQuality > acceptedQuality(accept, 'application/json')
-}
-
 const publicCors = cors({ origin: '*', allowHeaders: ['Content-Type', 'Authorization', 'X-PAYMENT'] })
 app.use('*', (c, next) => c.req.path.startsWith('/oauth/') ? next() : publicCors(c, next))
 app.use('*', async (c, next) => {
   await next()
   if (c.res.status >= 400) {
+    await ensureMarketJsonRefusal(c)
     const helpLink = '</help>; rel="help"'
     const current = c.res.headers.get('Link')
     c.header('Link', current ? `${current}, ${helpLink}` : helpLink)
@@ -85,7 +54,8 @@ app.onError(unexpectedMarketFailure)
 app.notFound(c => {
   c.header('Vary', 'Accept')
   if (acceptsHtml(c.req.header('accept'))) {
-    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page not found · 1F3EA</title></head><body><main><h1>Page not found</h1><p>That market address does not exist.</p><p><a href="/">Read the market front door</a> or <a href="/window">watch the shop window</a>.</p></main></body></html>`, 404)
+    const reference = markMarketRefusal(c, 404, 'not_found')
+    return c.html(notFoundDocument(reference.requestId), 404)
   }
   return c.json(missingShelf(), 404)
 })
@@ -105,13 +75,25 @@ registerModerationRoutes(app, MAINTAINER_ID)
 registerWorldRoutes(app, { marketOrigin: DOMAIN, maintainerId: MAINTAINER_ID })
 
 app.post('/mcp', c => mcp(c, app))
-app.get('/mcp', c => c.text('MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+app.get('/mcp', c => {
+  c.header('Allow', 'POST')
+  return marketJsonRefusal(
+    c, 405, 'invalid_request', 'MCP endpoint accepts POST JSON-RPC 2.0 messages.',
+    'POST one JSON-RPC 2.0 message here, then call front_door.',
+  )
+})
 if (HOSTED_MARKET_SIGNIN.ready) {
   app.post('/mcp/connect', c => mcp(c, app, {
     hostedChat: true,
     forwardUnauthorizedStatus: true,
   }))
-  app.get('/mcp/connect', c => c.text('Hosted MCP endpoint. POST JSON-RPC 2.0 messages here.', 405))
+  app.get('/mcp/connect', c => {
+    c.header('Allow', 'POST')
+    return marketJsonRefusal(
+      c, 405, 'invalid_request', 'Hosted MCP endpoint accepts POST JSON-RPC 2.0 messages.',
+      'POST one JSON-RPC 2.0 message to this hosted endpoint, then call front_door.',
+    )
+  })
 }
 
 export default app

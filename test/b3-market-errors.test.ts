@@ -10,6 +10,7 @@ const { default: app } = await import('../src/index.ts')
 const { MCP_TOOLS } = await import('../src/mcp-tool-catalog.ts')
 const {
   MARKET_REFUSAL_REASONS,
+  ensureMarketJsonRefusal,
   marketJsonRefusal,
   secondsUntilNextUtcDay,
   secondsUntilNextUtcHour,
@@ -75,6 +76,50 @@ test('market refusals return a quoteable reference and log only fixed redacted f
   assert.doesNotMatch(lines[0]!, /token=/u)
 })
 
+test('the global refusal envelope preserves route fields and headers without stale body lengths', async () => {
+  const refusalApp = new Hono()
+  refusalApp.use('*', async (c, next) => {
+    await next()
+    await ensureMarketJsonRefusal(c)
+  })
+  refusalApp.get('/paid', c => {
+    c.header('Content-Length', '2')
+    c.header('X-PAYMENT-REQUIRED', 'challenge-value')
+    return c.json({
+      error: 'payment is required',
+      retry: 'retry this exact request',
+      do_not_pay_again: true,
+      payment_preserved: true,
+      accepts: [{ network: 'base' }],
+    }, 402)
+  })
+
+  const response = await refusalApp.request('/paid')
+  const body = await response.json() as Record<string, unknown>
+  assert.equal(response.headers.get('content-length'), null)
+  assert.equal(response.headers.get('x-payment-required'), 'challenge-value')
+  assert.equal(body.do_not_pay_again, true)
+  assert.equal(body.payment_preserved, true)
+  assert.deepEqual(body.accepts, [{ network: 'base' }])
+  assert.equal(body.next_step, 'retry this exact request')
+  assert.equal(body.error_class, 'payment_required')
+  assert.equal(body.reason, 'payment_required')
+  assert.match(String(body.request_id), UUID)
+})
+
+test('connector GET refusals use the shared JSON shape and advertise POST', async () => {
+  const response = await app.request('/mcp')
+  assert.equal(response.status, 405)
+  assert.equal(response.headers.get('allow'), 'POST')
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/iu)
+  const body = await response.json() as Record<string, unknown>
+  assert.equal(body.error_class, 'bad_input')
+  assert.equal(body.reason, 'invalid_request')
+  assert.match(String(body.request_id), UUID)
+  assert.equal(response.headers.get('x-request-id'), body.request_id)
+  assert.equal(body.help_page, 'https://1f3ea.com/help')
+})
+
 test('unexpected failures return a safe name and request id without logging raw errors', async t => {
   const secret = `1f3ea_sk_${'b'.repeat(48)}`
   const lines: string[] = []
@@ -113,13 +158,21 @@ test('unknown browser paths render links while agent calls keep the JSON contrac
   assert.match(page, /Page not found/iu)
   assert.match(page, /href="\/"/u)
   assert.match(page, /href="\/window"/u)
+  assert.match(page, /href="\/help"/u)
+  assert.match(page, /Request ID/iu)
 
   const agent = await app.request('/this-page-does-not-exist', {
     headers: { accept: 'application/json' },
   })
   assert.equal(agent.status, 404)
   assert.match(agent.headers.get('content-type') ?? '', /application\/json/iu)
-  assert.equal((await agent.json() as { front_door_tool?: string }).front_door_tool, 'front_door')
+  const agentBody = await agent.json() as Record<string, unknown>
+  assert.equal(agentBody.front_door_tool, 'front_door')
+  assert.equal(agentBody.error_class, 'not_found')
+  assert.equal(agentBody.reason, 'not_found')
+  assert.match(String(agentBody.request_id), UUID)
+  assert.equal(agent.headers.get('x-request-id'), agentBody.request_id)
+  assert.equal(agentBody.help_page, 'https://1f3ea.com/help')
 
   const refused = await app.request('/this-page-does-not-exist', {
     headers: { accept: 'text/html;q=0,application/json' },
@@ -139,7 +192,62 @@ test('unknown browser paths render links while agent calls keep the JSON contrac
   assert.match(exactHtmlRefusal.headers.get('content-type') ?? '', /application\/json/iu)
   const noAccept = await app.request('/this-page-does-not-exist')
   assert.match(noAccept.headers.get('content-type') ?? '', /application\/json/iu)
+  const xhtml = await app.request('/this-page-does-not-exist', {
+    headers: { accept: 'application/xhtml+xml,application/json;q=0.5' },
+  })
+  assert.match(xhtml.headers.get('content-type') ?? '', /text\/html/iu)
   assert.equal(browser.headers.get('vary'), 'Accept')
+})
+
+test('OAuth authorization refusals honor explicit JSON Accept headers', async () => {
+  const response = await oauthFixture().app.request('/oauth/authorize', {
+    headers: { accept: 'application/json' },
+  })
+  assert.equal(response.status, 400)
+  assert.equal(response.headers.get('vary'), 'Accept')
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/iu)
+  const body = await response.json() as Record<string, unknown>
+  assert.equal(body.reason, 'invalid_request')
+  assert.equal(body.cause, 'signin_client_id')
+  assert.match(String(body.request_id), UUID)
+  assert.equal(response.headers.get('x-request-id'), body.request_id)
+  assert.equal(body.help_page, 'https://1f3ea.com/help')
+})
+
+test('OAuth POST form refusals preserve JSON and HTML negotiation', async () => {
+  const invalidFormRequest = (accept: string) => new Request(`${oauthEnvironment.PUBLIC_ORIGIN}/oauth/authorize`, {
+    method: 'POST',
+    headers: {
+      accept,
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: oauthEnvironment.PUBLIC_ORIGIN,
+    },
+    body: 'action=link',
+  })
+  const [jsonResponse, htmlResponse] = await Promise.all([
+    oauthFixture().app.request(invalidFormRequest('application/json')),
+    oauthFixture().app.request(invalidFormRequest('text/html')),
+  ])
+
+  assert.equal(jsonResponse.status, 403)
+  assert.equal(jsonResponse.headers.get('vary'), 'Accept')
+  assert.match(jsonResponse.headers.get('content-type') ?? '', /application\/json/iu)
+  const json = await jsonResponse.json() as Record<string, unknown>
+  assert.equal(json.error_class, 'forbidden')
+  assert.equal(json.reason, 'invalid_form')
+  assert.match(String(json.request_id), UUID)
+
+  assert.equal(htmlResponse.status, 403)
+  assert.equal(htmlResponse.headers.get('vary'), 'Accept')
+  assert.match(htmlResponse.headers.get('content-type') ?? '', /text\/html/iu)
+  assert.match(await htmlResponse.text(), /expired or is incomplete/isu)
+})
+
+test('an exact zero-quality HTML range overrides a positive wildcard', async () => {
+  const response = await oauthFixture().app.request('/oauth/authorize', {
+    headers: { accept: 'application/json;q=0.5,text/html;q=0,*/*;q=1' },
+  })
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/iu)
 })
 
 test('front door tool names and refusal reasons come from their canonical lists', () => {
