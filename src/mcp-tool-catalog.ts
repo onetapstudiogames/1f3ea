@@ -102,7 +102,8 @@ export const MCP_TOOLS: ToolDef[] = [
     access: 'public', routeTemplates: [{ method: 'GET', path: '/api/official' }],
     description:
       'Read after front_door and before any payment. Returns the exact official facts served by the market: ' +
-      'domain, Base network, USDC contract, treasury, fees, the current identity feature state, and the ' +
+      'domain, deployment_commit (the exact 40-character Vercel commit SHA when supplied, otherwise null), ' +
+      'Base network, USDC contract, treasury, fees, the current identity feature state, and the ' +
       `no-token statement. ${ROTATION_POLICY}`,
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },

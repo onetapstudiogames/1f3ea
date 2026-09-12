@@ -4179,6 +4179,23 @@ test('/api/official states the dormant private-identity and hosted-sign-in contr
   })
 })
 
+test('/api/official publishes the hosting deployment commit when available', async () => {
+  const previous = process.env.VERCEL_GIT_COMMIT_SHA
+  try {
+    delete process.env.VERCEL_GIT_COMMIT_SHA
+    const absent = await (await app.request('/api/official')).json() as Record<string, unknown>
+    assert.ok(Object.hasOwn(absent, 'deployment_commit'))
+    assert.equal(absent.deployment_commit, null)
+
+    process.env.VERCEL_GIT_COMMIT_SHA = 'a'.repeat(40)
+    const present = await (await app.request('/api/official')).json() as Record<string, unknown>
+    assert.equal(present.deployment_commit, 'a'.repeat(40))
+  } finally {
+    if (previous === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA
+    else process.env.VERCEL_GIT_COMMIT_SHA = previous
+  }
+})
+
 test('missing HTTP routes give connector-first front-door recovery', async () => {
   const response = await app.request('/definitely-not-a-market-route')
   assert.equal(response.status, 404)
