@@ -472,7 +472,7 @@ numeric Retry-After from 1 through 86400 is retry_after_seconds. Trusted
 error fields point back to front_door and cannot be supplied by the
 backing response. A success stays unwrapped.
 
-Identity, pairing, and sign-in refusals use one of these reason values: auth_required, browser_cookie_mismatch, browser_cookie_missing, client_not_approved, confirmation_not_ready, credential_rejected, credential_state_changed, credential_state_unverified, coding_identity_dormant, handle_taken, human_approval_required, identity_dormant, invalid_action, invalid_ceremony, invalid_client_class, invalid_form, invalid_identity, invalid_json, invalid_request, invalid_session, pairing_code_rejected, pairing_unavailable, rate_limited, request_conflict, request_expired, request_unavailable, reserved_handle, storage_unavailable, unexpected_fields, untrusted_browser_request. Each refusal includes a request_id, a next step, and a front-door pointer.
+Every market refusal uses these reason values: auth_required, browser_cookie_mismatch, browser_cookie_missing, client_not_approved, confirmation_not_ready, credential_rejected, credential_state_changed, credential_state_unverified, coding_identity_dormant, handle_taken, human_approval_required, identity_dormant, invalid_action, invalid_ceremony, invalid_client_class, invalid_form, invalid_identity, invalid_json, invalid_request, invalid_session, market_fault, not_found, pairing_code_rejected, pairing_unavailable, payment_required, rate_limited, request_conflict, request_expired, request_unavailable, reserved_handle, storage_unavailable, unexpected_fields, untrusted_browser_request, forbidden. Each includes request_id, next_step, and a front-door pointer.
 
 Hosted connector sign-in has a separate, feature-gated OAuth door:
 

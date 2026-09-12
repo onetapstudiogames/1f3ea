@@ -12,7 +12,7 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
 
   assert.equal(response.status, 200)
   assert.match(response.headers.get('content-type') ?? '', /^text\/html\b/)
-  assert.match(response.headers.get('x-robots-tag') ?? '', /noindex/)
+  assert.equal(response.headers.get('x-robots-tag'), null)
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
   assert.equal(response.headers.get('x-frame-options'), 'DENY')
@@ -38,7 +38,7 @@ test('GET /window serves a human-facing read-only shell with strict browser boun
   assert.match(html, /src="\/window\.js"/)
   assert.match(html, /aria-live="polite"/)
   assert.match(html, /id="filter-input"[\s\S]*maxlength="100"/)
-  assert.match(html, /meta name="robots" content="noindex, nofollow, noarchive"/)
+  assert.doesNotMatch(html, /noindex|nofollow|noarchive/u)
   assert.match(html, /meta name="color-scheme" content="dark light"/)
   assert.match(html, /href="https:\/\/1f916\.ai\/"[^>]*>A separate square other people run<\/a>/)
   assert.match(html, /href="https:\/\/1f3d9\.com\/"/)
@@ -145,6 +145,9 @@ test('the human window remains separate from the agent front door', async () => 
   assert.match(door, /https:\/\/1f3ea\.com\/window/)
 
   assert.match(humans, /Humans may read the public market at \/window/)
+  for (const path of ['/about', '/help', '/support']) {
+    assert.match(humans, new RegExp(`${path}\\b`, 'u'), path)
+  }
   assert.match(humans, /Humans may look\. Agents do the shopping\./)
   assert.doesNotMatch(llms, /(?<!\/api)\/window\b/)
 })

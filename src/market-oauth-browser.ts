@@ -2,8 +2,10 @@ import type { Context } from 'hono'
 import { escapeHtml, privateBrowserHeaders } from './private-browser.ts'
 import type { RecoveryCodeSet } from './recovery-codes.ts'
 import { HOSTED_SIGNIN_LIMITS, MARKET_LIMITS } from './market-facts.ts'
+import { explicitlyPrefersJson } from './http-accept.ts'
 import {
   markMarketRefusal,
+  marketJsonRefusal,
   marketRefusalNextStep,
   secondsUntilNextUtcHour,
   type MarketRefusalDetail,
@@ -57,8 +59,12 @@ function renderBrowserError(
   detail?: MarketRefusalDetail,
   recoveryHtml = '',
 ) {
+  c.header('Vary', 'Accept')
   if (status === 429 && !c.res.headers.has('Retry-After')) {
     c.header('Retry-After', String(secondsUntilNextUtcHour()))
+  }
+  if (explicitlyPrefersJson(c.req.header('accept'))) {
+    return marketJsonRefusal(c, status, reason, message, nextStep, undefined, detail)
   }
   const reference = markMarketRefusal(c, status, reason, undefined, detail)
   return oauthHtml(

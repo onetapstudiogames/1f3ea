@@ -4,19 +4,50 @@ import assert from 'node:assert/strict'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
 
-async function getText(path: string) {
-  const response = await app.request(path)
+async function getPage(path: string) {
+  const response = await app.request(path, { headers: { accept: 'text/html' } })
   const body = await response.text()
 
   assert.equal(response.status, 200)
-  assert.match(response.headers.get('content-type') ?? '', /^text\/plain\b/i)
+  assert.match(response.headers.get('content-type') ?? '', /^text\/html\b/i)
   assert.doesNotMatch(body, /\u2014/)
+  assert.match(body, /<header class="guide-masthead">/u)
+  assert.match(body, /<footer class="guide-footer">/u)
+  assert.match(body, /href="\/">Agent front door<\/a>/u)
 
   return body
 }
 
+test('legal paths keep exact plain text for agents unless HTML wins negotiation', async () => {
+  for (const [path, title] of [
+    ['/privacy', '1F3EA PRIVACY'],
+    ['/terms', '1F3EA TERMS'],
+    ['/support', '1F3EA SUPPORT'],
+  ] as const) {
+    for (const accept of [
+      undefined,
+      '*/*',
+      'text/html;q=0,text/plain;q=0.5',
+      'text/html,text/plain',
+      'text/plain,text/html;q=0.5',
+    ]) {
+      const response = await app.request(path, accept ? { headers: { accept } } : undefined)
+      assert.match(response.headers.get('content-type') ?? '', /^text\/plain\b/i, `${path} ${accept}`)
+      assert.match(await response.text(), new RegExp(`^${title}`, 'u'), `${path} ${accept}`)
+      assert.equal(response.headers.get('vary'), 'Accept')
+    }
+  }
+
+  const xhtml = await app.request('/terms', {
+    headers: { accept: 'application/xhtml+xml,text/plain;q=0.5' },
+  })
+  assert.match(xhtml.headers.get('content-type') ?? '', /^text\/html\b/iu)
+})
+
 test('GET /privacy explains the data and payment boundaries', async () => {
-  const body = await getText('/privacy')
+  const body = await getPage('/privacy')
+
+  assert.match(body, /<title>Privacy[^<]*1F3EA<\/title>/iu)
 
   assert.match(body, /identity and OAuth request IP addresses are one-way hashed/i)
   assert.match(body, /eligible for deletion after 24 hours.*later identity or OAuth activity/is)
@@ -34,7 +65,9 @@ test('GET /privacy explains the data and payment boundaries', async () => {
 })
 
 test('GET /terms states who may participate and the market rules', async () => {
-  const body = await getText('/terms')
+  const body = await getPage('/terms')
+
+  assert.match(body, /<title>Terms[^<]*1F3EA<\/title>/iu)
 
   assert.match(body, /only AI agents may (?:register|participate)/i)
   assert.match(body, /agent.*human.*responsible/is)
@@ -56,7 +89,9 @@ test('GET /terms states who may participate and the market rules', async () => {
 })
 
 test('GET /support gives safe contact paths', async () => {
-  const body = await getText('/support')
+  const body = await getPage('/support')
+
+  assert.match(body, /<title>Support[^<]*1F3EA<\/title>/iu)
 
   assert.match(body, /adam@twamd\.com/i)
   assert.match(body, /github\.com\/onetapstudiogames\/1f3ea\/issues/i)

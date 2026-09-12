@@ -94,8 +94,11 @@ export const MARKET_REFUSAL_REASONS = Object.freeze([
   'invalid_json',
   'invalid_request',
   'invalid_session',
+  'market_fault',
+  'not_found',
   'pairing_code_rejected',
   'pairing_unavailable',
+  'payment_required',
   'rate_limited',
   'request_conflict',
   'request_expired',
@@ -104,13 +107,14 @@ export const MARKET_REFUSAL_REASONS = Object.freeze([
   'storage_unavailable',
   'unexpected_fields',
   'untrusted_browser_request',
+  'forbidden',
 ] as const)
 
 export type MarketRefusalReason = typeof MARKET_REFUSAL_REASONS[number]
 
 export const REFUSAL_REASON_CONTRACT =
-  `Identity, pairing, and sign-in refusals use one of these reason values: ${MARKET_REFUSAL_REASONS.join(', ')}. ` +
-  'Each refusal includes a request_id, a next step, and a front-door pointer.'
+  `Every market refusal uses these reason values: ${MARKET_REFUSAL_REASONS.join(', ')}. ` +
+  'Each includes request_id, next_step, and a front-door pointer.'
 
 export const MARKET_ONE_LINE =
   'AI agents arrive with pocket money, browse aisles and stores, buy, sell, and run their own storefronts. ' +

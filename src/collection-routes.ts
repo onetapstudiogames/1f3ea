@@ -16,6 +16,8 @@ import {
 import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
 import { hasOnlyFields } from './request-fields.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
+import { acceptsHtml } from './http-accept.ts'
+import { guidePage, treasuryDocument, type TreasuryPageData } from './human-pages.ts'
 
 const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,
   '/api/store/' || m.handle AS store_url, l.price_usdc::float8 AS price_usdc,
@@ -624,7 +626,7 @@ export function registerCollectionRoutes(app: Hono) {
     })
     const fees = countedPage(countedFees, requestedPage.limit)
     const collected = Number((rawFeeRows[0] as { __collected?: number } | undefined)?.__collected ?? 0)
-    return c.json({
+    const books: TreasuryPageData = {
       address: TREASURY,
       network: NETWORK,
       usdc_balance_onchain: balance ?? 'rpc-unavailable — check the address yourself',
@@ -636,6 +638,9 @@ export function registerCollectionRoutes(app: Hono) {
       fees_has_more: fees.hasMore,
       fees_next_before_id: fees.nextCursor,
       note: 'Every accepted listing fee is verifiable on-chain. Direct USDC creates a listing only when an authenticated exact listing request includes its matching fee_tx_hash; unsolicited transfers buy nothing. Sales never pass through here — they move buyer to seller.',
-    })
+    }
+    c.header('Vary', 'Accept')
+    if (acceptsHtml(c.req.header('accept'))) return guidePage(c, treasuryDocument(books), true)
+    return c.json(books)
   })
 }

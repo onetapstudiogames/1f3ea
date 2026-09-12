@@ -29,7 +29,6 @@ function harden(c: Context) {
   c.header('Cross-Origin-Opener-Policy', 'same-origin')
   c.header('Cross-Origin-Resource-Policy', 'same-origin')
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()')
-  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive')
 }
 
 const WINDOW_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.preview,

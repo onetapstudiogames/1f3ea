@@ -11,6 +11,27 @@ const HELP_DATA = {
   front_door_tool: 'front_door', front_door: 'https://1f3ea.com/',
   help_tool: 'help', help_page: 'https://1f3ea.com/help',
 } as const
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+function withoutSharedRefusal(value: unknown): Record<string, unknown> {
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value))
+  const record = value as Record<string, unknown>
+  if (!('error_class' in record)) return record
+  assert.match(String(record.request_id), REQUEST_ID)
+  assert.equal(record.reason, 'invalid_request')
+  assert.equal(record.next_step, 'Read GET /help, correct the named field or state, then retry.')
+  const {
+    error_class: _errorClass, reason: _reason, next_step: _nextStep, request_id: _requestId,
+    ...legacy
+  } = record
+  return legacy
+}
+
+function rpcWithoutSharedRefusal(value: unknown): Record<string, unknown> {
+  const response = value as Record<string, unknown>
+  const error = response.error as Record<string, unknown>
+  return { ...response, error: { ...error, data: withoutSharedRefusal(error.data) } }
+}
 
 function gateway(backing: Hono, options: McpOptions = {}) {
   const app = new Hono()
@@ -48,6 +69,26 @@ async function callTool(
   return { response, body, text: body.result.content[0]?.text ?? '' }
 }
 
+test('local MCP refusal logs report the real transport status', async t => {
+  const lines: unknown[][] = []
+  const original = console.error
+  console.error = (...values: unknown[]) => lines.push(values)
+  t.after(() => { console.error = original })
+
+  const ordinary = gateway(new Hono())
+  const malformed = await ordinary.request('/mcp', jsonRequest({ jsonrpc: '1.0', method: 'ping' }))
+  assert.equal(malformed.status, 200)
+
+  const hosted = gateway(new Hono(), { hostedChat: true, forwardUnauthorizedStatus: true })
+  const missingCredential = await callTool(hosted, 'me')
+  assert.equal(missingCredential.response.status, 401)
+
+  assert.equal(lines.length, 2)
+  const logged = lines.map(values => JSON.parse(String(values[1])) as Record<string, unknown>)
+  assert.deepEqual(logged.map(value => value.transport_status), [200, 401])
+  assert.ok(logged.every(value => !Object.prototype.hasOwnProperty.call(value, 'status')))
+})
+
 test('MCP rejects malformed envelopes, batches, missing methods, and unknown methods', async () => {
   const app = gateway(new Hono())
 
@@ -55,17 +96,20 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
   })
   assert.equal(malformedJson.status, 200)
-  assert.deepEqual(await malformedJson.json(), {
+  const malformedBody = await malformedJson.json() as Record<string, unknown>
+  const malformedData = ((malformedBody.error as Record<string, unknown>).data) as Record<string, unknown>
+  assert.equal(malformedJson.headers.get('x-request-id'), malformedData.request_id)
+  assert.deepEqual(rpcWithoutSharedRefusal(malformedBody), {
     jsonrpc: '2.0', id: null, error: { code: -32600, message: 'not a JSON-RPC 2.0 message; send one object with jsonrpc, method, and optional id, then call front_door', data: HELP_DATA },
   })
 
   const batch = await app.request('/mcp', jsonRequest([]))
-  assert.deepEqual(await batch.json(), {
+  assert.deepEqual(rpcWithoutSharedRefusal(await batch.json()), {
     jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batches not supported; send one JSON-RPC request at a time, then call front_door', data: HELP_DATA },
   })
 
   const wrongVersion = await app.request('/mcp', jsonRequest({ jsonrpc: '1.0', id: 9, method: 'ping' }))
-  assert.deepEqual(await wrongVersion.json(), {
+  assert.deepEqual(rpcWithoutSharedRefusal(await wrongVersion.json()), {
     jsonrpc: '2.0', id: 9, error: { code: -32600, message: 'not a JSON-RPC 2.0 message; send one object with jsonrpc, method, and optional id, then call front_door', data: HELP_DATA },
   })
 
@@ -73,7 +117,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
   assert.equal((await missingMethod.json() as { error: { code: number } }).error.code, -32600)
 
   const unknown = await app.request('/mcp', jsonRequest({ jsonrpc: '2.0', id: 11, method: 'not-real' }))
-  assert.deepEqual(await unknown.json(), {
+  assert.deepEqual(rpcWithoutSharedRefusal(await unknown.json()), {
     jsonrpc: '2.0', id: 11, error: { code: -32601, message: 'method not found: not-real; use initialize, ping, tools/list, or tools/call', data: HELP_DATA },
   })
 
@@ -82,7 +126,7 @@ test('MCP rejects malformed envelopes, batches, missing methods, and unknown met
     params: { name: JSON.parse('{"toString":null,"valueOf":null}'), arguments: {} },
   }))
   assert.equal(structuredToolName.status, 200)
-  assert.deepEqual(await structuredToolName.json(), {
+  assert.deepEqual(rpcWithoutSharedRefusal(await structuredToolName.json()), {
     jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ; call tools/list or the help tool before retrying', data: HELP_DATA },
   })
 })
@@ -301,13 +345,12 @@ test('both MCP doors redact Unicode-escaped credentials in JSON keys and nested 
       const parsed = JSON.parse(result.text) as Record<string, unknown>
       assert.doesNotMatch(JSON.stringify(parsed), new RegExp(secret, 'iu'))
       assert.doesNotMatch(result.text, /1f3ea_sk_/iu)
-      assert.deepEqual(parsed, {
+      assert.deepEqual(withoutSharedRefusal(parsed), {
         '[redacted 1F3EA credential]': {
           nested: '[redacted 1F3EA credential]',
           direct: '[redacted 1F3EA credential]',
         },
         ...(status === 400 ? {
-          error_class: 'bad_input',
           front_door_tool: 'front_door',
           front_door: 'https://1f3ea.com/',
           help_tool: 'help',
@@ -350,11 +393,17 @@ test('MCP preflight failures are classified without leaking credentials or losin
     const credential = await callTool(app, 'comment', { body: `keep ${ACCESS_TOKEN}` })
     const credentialError = JSON.parse(credential.text) as Record<string, unknown>
     assert.equal(credentialError.error_class, 'bad_input')
+    assert.match(String(credentialError.request_id), REQUEST_ID)
+    assert.equal(credential.response.headers.get('x-request-id'), credentialError.request_id)
+    assert.equal(credentialError.reason, 'invalid_request')
+    assert.match(String(credentialError.next_step), /GET \/help/iu)
     assert.doesNotMatch(credential.text, new RegExp(ACCESS_TOKEN, 'iu'))
     assert.equal(credentialError.http_status, undefined)
 
     const invalidArguments = await callTool(app, 'browse', [])
-    assert.equal((JSON.parse(invalidArguments.text) as Record<string, unknown>).error_class, 'bad_input')
+    const invalidArgumentError = JSON.parse(invalidArguments.text) as Record<string, unknown>
+    assert.equal(invalidArgumentError.error_class, 'bad_input')
+    assert.equal(invalidArguments.response.headers.get('x-request-id'), invalidArgumentError.request_id)
   }
 
   const hosted = gateway(new Hono(), { hostedChat: true, forwardUnauthorizedStatus: true })
@@ -467,7 +516,7 @@ test('MCP tool routing handles empty arguments, filters, validated stores, and e
   const unknownTool = await app.request('/mcp', jsonRequest({
     jsonrpc: '2.0', id: 12, method: 'tools/call', params: { arguments: null },
   }))
-  assert.deepEqual(await unknownTool.json(), {
+  assert.deepEqual(rpcWithoutSharedRefusal(await unknownTool.json()), {
     jsonrpc: '2.0', id: 12, error: { code: -32602, message: 'no such tool: ; call tools/list or the help tool before retrying', data: HELP_DATA },
   })
 })

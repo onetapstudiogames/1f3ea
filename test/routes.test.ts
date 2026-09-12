@@ -44,6 +44,23 @@ function assertInternalFailure(body: unknown): void {
   assert.match(String(failure.request_id), REQUEST_ID)
 }
 
+function routeRefusalFields(body: unknown): Record<string, unknown> {
+  assert.ok(body && typeof body === 'object' && !Array.isArray(body))
+  const {
+    error_class: _errorClass,
+    http_status: _httpStatus,
+    reason: _reason,
+    next_step: _nextStep,
+    request_id: _requestId,
+    front_door_tool: _frontDoorTool,
+    front_door: _frontDoor,
+    help_page: _helpPage,
+    retry_after_seconds: _retryAfterSeconds,
+    ...routeFields
+  } = body as Record<string, unknown>
+  return routeFields
+}
+
 async function assertDailyRateLimit(response: Response, quota: RegExp): Promise<void> {
   assert.equal(response.status, 429)
   const retryAfter = Number(response.headers.get('retry-after'))
@@ -1244,8 +1261,46 @@ test('voting reports a unique vote conflict as a caller-correctable refusal', as
     method: 'POST', headers: authed, body: JSON.stringify({ listing_id: 1 }),
   })
   assert.equal(res.status, 409)
-  assert.deepEqual(await res.json(), { error: 'already voted for that listing' })
+  const refusal = await res.json() as Record<string, unknown>
+  assert.match(String(refusal.error), /already voted.*GET \/api\/shelves/iu)
+  assert.equal(refusal.error_class, 'conflict')
+  assert.equal(refusal.reason, 'request_conflict')
+  assert.match(String(refusal.next_step), /GET \/api\/shelves/iu)
+  assert.match(String(refusal.request_id), REQUEST_ID)
+  assert.equal(res.headers.get('x-request-id'), refusal.request_id)
   assert.equal(hasSql(/votes_today\s*=\s*GREATEST/iu), true)
+})
+
+test('ordinary comment and flag refusals name recovery and the exact bad field', async () => {
+  reset()
+  state.listingExists = false
+  const comment = await app.request('/api/comment', {
+    method: 'POST', headers: authed,
+    body: JSON.stringify({ listing_id: 999, body: 'Where did it go?' }),
+  })
+  assert.equal(comment.status, 404)
+  const missing = await comment.json() as Record<string, unknown>
+  assert.equal(missing.error_class, 'not_found')
+  assert.equal(missing.reason, 'not_found')
+  assert.match(String(missing.next_step), /GET \/help/iu)
+  assert.match(String(missing.request_id), REQUEST_ID)
+
+  const cases = [
+    [{ target_id: 1, reason: 'copied' }, /target_type/iu],
+    [{ target_type: 'listing', reason: 'copied' }, /target_id/iu],
+    [{ target_type: 'listing', target_id: 1 }, /reason/iu],
+  ] as const
+  for (const [body, namedField] of cases) {
+    const response = await app.request('/api/flag', {
+      method: 'POST', headers: authed, body: JSON.stringify(body),
+    })
+    assert.equal(response.status, 400)
+    const refusal = await response.json() as Record<string, unknown>
+    assert.match(String(refusal.error), namedField)
+    assert.equal(refusal.error_class, 'bad_input')
+    assert.equal(refusal.reason, 'invalid_request')
+    assert.match(String(refusal.request_id), REQUEST_ID)
+  }
 })
 
 test('flagging requires a signed-in merchant and attributes the public event', async () => {
@@ -1614,7 +1669,7 @@ test('claiming a free listing refuses before reading or recording a claim', asyn
     method: 'POST', headers: authed, body: '{not valid json',
   })
   assert.equal(response.status, 409)
-  assert.deepEqual(await response.json(), { error: 'this listing is free; use POST /api/buy/:id' })
+  assert.deepEqual(routeRefusalFields(await response.json()), { error: 'this listing is free; use POST /api/buy/:id' })
   assert.equal(inserted('purchases'), 0)
 
   state.listingWithdrawn = true
@@ -1622,7 +1677,7 @@ test('claiming a free listing refuses before reading or recording a claim', asyn
     method: 'POST', headers: authed, body: '{not valid json',
   })
   assert.equal(withdrawn.status, 404)
-  assert.deepEqual(await withdrawn.json(), { error: 'listing was withdrawn and is not available' })
+  assert.deepEqual(routeRefusalFields(await withdrawn.json()), { error: 'listing was withdrawn and is not available' })
 
   state.listingWithdrawn = false
   state.listingRemoved = true
@@ -1630,7 +1685,7 @@ test('claiming a free listing refuses before reading or recording a claim', asyn
     method: 'POST', headers: authed, body: '{not valid json',
   })
   assert.equal(removed.status, 404)
-  assert.deepEqual(await removed.json(), { error: 'listing was removed' })
+  assert.deepEqual(routeRefusalFields(await removed.json()), { error: 'listing was removed' })
   assert.equal(inserted('purchases'), 0)
 })
 
@@ -2198,7 +2253,7 @@ test('paid listing reports only fee transaction unique constraints as already us
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
     assert.equal(res.status, 503)
-    assert.deepEqual(await res.json(), {
+    assert.deepEqual(routeRefusalFields(await res.json()), {
       error: 'the market could not preserve this fee payment; retry the same listing request and transaction; do not pay again',
       retry: 'retry the same listing request with the same fee transaction',
       do_not_pay_again: true,
@@ -2219,7 +2274,7 @@ test('a database outage is not misreported as a reused payment', async () => {
       method: 'POST', headers: authed, body: listingBody(TX1),
     })
     assert.equal(res.status, 503)
-    assert.deepEqual(await res.json(), {
+    assert.deepEqual(routeRefusalFields(await res.json()), {
       error: 'the market could not preserve this fee payment; retry the same listing request and transaction; do not pay again',
       retry: 'retry the same listing request with the same fee transaction',
       do_not_pay_again: true,
@@ -2886,7 +2941,7 @@ test('facilitator rejection writes nothing and runs no listing quota SQL', async
     body: listingBody(),
   })
   assert.equal(res.status, 502)
-  assert.deepEqual(await res.json(), {
+  assert.deepEqual(routeRefusalFields(await res.json()), {
     error: 'payment facilitator rejected this X-PAYMENT as terminal but did not publish a recognized ' +
       'caller-correctable cause; do not retry or replay this proof blindly',
   })
@@ -3024,7 +3079,7 @@ test('listing and buying distinguish invalid, unclassified, and unavailable x402
       body,
     })
     assert.equal(unavailable.status, 503, action)
-    assert.deepEqual(await unavailable.json(), {
+    assert.deepEqual(routeRefusalFields(await unavailable.json()), {
       error: 'payment facilitator verification is unavailable; retry this request with the same X-PAYMENT proof later',
       retry: 'retry this same request with the same X-PAYMENT proof',
       do_not_pay_again: true,
@@ -3039,7 +3094,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
     method: 'POST', headers: authed, body: listingBody(TX1),
   })
   assert.equal(fee.status, 503)
-  assert.deepEqual(await fee.json(), {
+  assert.deepEqual(routeRefusalFields(await fee.json()), {
     error: 'the market could not check this payment on Base; retry the same proof later',
     retry: 'retry the same listing request with the same fee transaction',
     do_not_pay_again: true,
@@ -3051,7 +3106,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
     method: 'POST', headers: authed, body: listingBody(TX1),
   })
   assert.equal(pendingFee.status, 503)
-  assert.deepEqual(await pendingFee.json(), {
+  assert.deepEqual(routeRefusalFields(await pendingFee.json()), {
     error: 'the market could not check this payment on Base; retry the same proof later',
     retry: 'retry the same listing request with the same fee transaction',
     do_not_pay_again: true,
@@ -3067,7 +3122,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
     method: 'POST', headers: authed, body: directClaimBody(signatureIntent.id, TX1),
   })
   assert.equal(signature.status, 503)
-  assert.deepEqual(await signature.json(), {
+  assert.deepEqual(routeRefusalFields(await signature.json()), {
     error: 'the market could not check payer_signature on Base; retry the same proof later',
     payment_preserved: false,
   })
@@ -3082,7 +3137,7 @@ test('direct fee and purchase proofs report an unavailable Base RPC as retryable
     method: 'POST', headers: authed, body: directClaimBody(paymentIntent.id, TX1),
   })
   assert.equal(payment.status, 503)
-  assert.deepEqual(await payment.json(), {
+  assert.deepEqual(routeRefusalFields(await payment.json()), {
     error: 'the market could not check this payment on Base; retry the same proof later',
     retry: 'retry this same claim before the purchase intent expires',
     payment_preserved: false,
@@ -3100,7 +3155,7 @@ test('a signature that proves another wallet remains a caller-invalid 402 refusa
     method: 'POST', headers: authed, body: directClaimBody(intent.id, TX1),
   })
   assert.equal(response.status, 402)
-  assert.deepEqual(await response.json(), {
+  assert.deepEqual(routeRefusalFields(await response.json()), {
     error: 'payer_signature does not prove control of the expected payer wallet',
   })
 })
@@ -3522,6 +3577,60 @@ test('treasury fees and bounded storefronts expose exact continuation metadata',
     assert.equal(storeBody.has_more, total === 51)
     assert.equal(storeBody.next_before_id, total === 51 ? 2 : null)
   }
+})
+
+test('treasury serves labeled escaped HTML to browsers and unchanged JSON to programs', async () => {
+  reset()
+  state.feeRows = [{
+    id: 9,
+    amount_usdc: 1,
+    tx_hash: '0x' + '11'.repeat(32),
+    handle: '<script>alert(1)</script>',
+    listing_id: 41,
+    created_at: '2026-09-12T12:00:00.000Z',
+  }]
+
+  const [browser, program] = await Promise.all([
+    app.request('/treasury', { headers: { accept: 'text/html' } }),
+    app.request('/treasury', { headers: { accept: 'application/json' } }),
+  ])
+  assert.match(browser.headers.get('content-type') ?? '', /text\/html/iu)
+  assert.equal(browser.headers.get('vary'), 'Accept')
+  assert.equal(browser.headers.get('cache-control'), 'public, max-age=0, must-revalidate')
+  const html = await browser.text()
+  assert.match(html, /<title>Public books[^<]*1F3EA<\/title>/iu)
+  assert.match(html, /On-chain USDC balance/iu)
+  assert.match(html, /Total listing fees collected/iu)
+  assert.match(html, /Fee receipt 9/iu)
+  assert.match(html, /Listing<\/dt><dd>41/iu)
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/u)
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/u)
+  assert.match(html, /href="\/">Agent front door<\/a>/u)
+
+  assert.match(program.headers.get('content-type') ?? '', /application\/json/iu)
+  const json = await program.json() as { recent_fees: Array<{ handle: string }> }
+  assert.equal(json.recent_fees[0]?.handle, '<script>alert(1)</script>')
+})
+
+test('treasury HTML links to its next receipt page and honors exact Accept exclusions', async () => {
+  reset()
+  state.feeRows = Array.from({ length: 51 }, (_, index) => ({
+    id: 51 - index,
+    amount_usdc: 1,
+    tx_hash: `0x${String(51 - index).padStart(64, '0')}`,
+    handle: 'agent-8',
+    listing_id: 51 - index,
+    created_at: '2026-09-12T12:00:00.000Z',
+  }))
+
+  const [browser, exactZero, tied] = await Promise.all([
+    app.request('/treasury?limit=50', { headers: { accept: 'text/html' } }),
+    app.request('/treasury', { headers: { accept: 'text/html;q=0,*/*;q=1' } }),
+    app.request('/treasury', { headers: { accept: 'application/json,text/html' } }),
+  ])
+  assert.match(await browser.text(), /href="\/treasury\?limit=50&amp;before_id=2">Read older fees<\/a>/u)
+  assert.match(exactZero.headers.get('content-type') ?? '', /application\/json/iu)
+  assert.match(tied.headers.get('content-type') ?? '', /application\/json/iu)
 })
 
 test('purchase re-downloads are exact, stable, cursor-bounded, and capped at two full artifacts', async () => {
