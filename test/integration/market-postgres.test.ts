@@ -17,6 +17,7 @@ import {
 } from '../support/market-postgres-harness.ts'
 import { runMarketPostgresMigrationCases } from '../support/market-postgres-migration-cases.ts'
 import { runMarketPostgresX402ResultCases } from '../support/market-postgres-x402-result-cases.ts'
+import { routeFieldsFromConflict } from '../support/market-refusal-assertions.ts'
 
 test('real PostgreSQL prepares every public read and the direct purchase timing sentinel', async t => {
   const app = await startMarketPostgresHarness(t)
@@ -139,7 +140,9 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
     )
     const repeated = await vote()
     assert.equal(repeated.status, 409, await repeated.clone().text())
-    assert.deepEqual(await repeated.json(), { error: 'already voted for that listing' })
+    assert.deepEqual(routeFieldsFromConflict(await repeated.json()), {
+      error: 'already voted for that listing. Read GET /api/shelves before choosing another listing.',
+    })
     const exhausted = await connectedDatabase().query<{ votes_today: number }>(
       'SELECT votes_today FROM merchants WHERE id = 2',
     )
@@ -179,7 +182,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
       method: 'POST', headers, body: draftBody,
     })
     assert.equal(conflict.status, 409, await conflict.clone().text())
-    assert.deepEqual(await conflict.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await conflict.json()), {
       error: 'you already have a live pending draft; activate it, POST /api/world/draft/:id/cancel, or wait for expiry',
     })
   })
@@ -214,7 +217,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
     const repeated = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(repeated.status, 409, await repeated.clone().text())
-    assert.deepEqual(await repeated.json(), { error: 'world draft is not pending' })
+    assert.deepEqual(routeFieldsFromConflict(await repeated.json()), { error: 'world draft is not pending' })
 
     const created = await app.request('/api/world/draft', {
       method: 'POST',
@@ -233,7 +236,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
     const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(response.status, 409, await response.clone().text())
-    assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
+    assert.deepEqual(routeFieldsFromConflict(await response.json()), { error: 'world draft is already activated' })
   })
 
   for (const state of ['withdrawn', 'sold'] as const) {
@@ -246,7 +249,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
       const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
       assert.equal(response.status, 409, await response.clone().text())
-      assert.deepEqual(await response.json(), { error: 'world draft is already activated' })
+      assert.deepEqual(routeFieldsFromConflict(await response.json()), { error: 'world draft is already activated' })
     })
   }
 
@@ -262,7 +265,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
     const response = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(response.status, 409, await response.clone().text())
-    assert.deepEqual(await response.json(), { error: 'world draft is not pending' })
+    assert.deepEqual(routeFieldsFromConflict(await response.json()), { error: 'world draft is not pending' })
     const durable = await connectedDatabase().query<{ state: string }>(
       'SELECT state FROM world_drafts WHERE id = 1',
     )
@@ -292,7 +295,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
 
     const refused = await listing
     assert.equal(refused.status, 409, await refused.clone().text())
-    assert.deepEqual(await refused.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await refused.json()), {
       error: 'world draft is not pending and unexpired',
       retry: 'no fee was recorded; start a new draft and reuse the same fee transaction within the hour',
     })
@@ -352,7 +355,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
       await listing
       const refused = await cancel
       assert.equal(refused.status, 409, await refused.clone().text())
-      assert.deepEqual(await refused.json(), {
+      assert.deepEqual(routeFieldsFromConflict(await refused.json()), {
         error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
       })
       const durable = await connectedDatabase().query<{ state: string; attempts: string }>(`
@@ -405,7 +408,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
       method: 'POST', headers, body: JSON.stringify({ city_handle: 'city-buyer' }),
     })
     assert.equal(conflict.status, 409, await conflict.clone().text())
-    assert.deepEqual(await conflict.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await conflict.json()), {
       error: 'you already have an active checkout for this listing; wait for its ten-minute expiry',
     })
   })

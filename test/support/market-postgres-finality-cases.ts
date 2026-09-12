@@ -19,6 +19,7 @@ import {
   x402PaymentHeader,
   type MarketPostgresApp,
 } from './market-postgres-harness.ts'
+import { routeFieldsFromConflict } from './market-refusal-assertions.ts'
 
 export async function runMarketPostgresFinalityCases(
   t: TestContext,
@@ -473,7 +474,7 @@ export async function runMarketPostgresFinalityCases(
 
     const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(canceled.status, 409, await canceled.clone().text())
-    assert.deepEqual(await canceled.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await canceled.json()), {
       error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
     })
     const protectedDraft = await connectedDatabase().query<{
@@ -600,7 +601,7 @@ export async function runMarketPostgresFinalityCases(
     assert.ok((cancelClock.rows[0]?.now.getTime() ?? Number.MAX_SAFE_INTEGER) < expiresAt.getTime())
     const canceled = await app.request('/api/world/draft/1/cancel', { method: 'POST', headers })
     assert.equal(canceled.status, 409, await canceled.clone().text())
-    assert.deepEqual(await canceled.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await canceled.json()), {
       error: 'you have a recorded world listing fee still reaching finality; retry that listing request instead of canceling',
     })
     const protectedDraft = await connectedDatabase().query<{
@@ -636,7 +637,7 @@ export async function runMarketPostgresFinalityCases(
       method: 'POST', headers, body: JSON.stringify({ draft_id: 1, city_offer_id: 501 }),
     })
     assert.equal(retried.status, 409, await retried.clone().text())
-    assert.deepEqual(await retried.json(), {
+    assert.deepEqual(routeFieldsFromConflict(await retried.json()), {
       error: 'the world draft is no longer pending and unexpired; its recorded fee needs review',
       retry: 'do not pay again; ask the market owner to review the recorded fee for this same world listing request',
       do_not_pay_again: true,
