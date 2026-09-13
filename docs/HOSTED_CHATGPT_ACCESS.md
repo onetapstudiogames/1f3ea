@@ -129,8 +129,10 @@ transaction hash proves only one paid action across purchases and listing fees.
    then use the separately guarded production command. Do not apply the full schema remotely
    or rerun a migration because its receipt is missing from this repository.
 2. Set the exact public origin and approved OAuth clients; each stable host client
-   metadata is restricted to `https://chatgpt.com/oauth/client.json` and its exact
-   published redirect.
+   metadata is restricted to its own published document and redirects —
+   `https://chatgpt.com/oauth/client.json` with its exact published redirect, and
+   `https://claude.ai/oauth/claude-code-client-metadata` with its two published
+   loopback callbacks.
 3. For a new environment, set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and
    `MARKET_IDENTITY_ROTATION_ENABLED=true` only after migration and preview evidence. Set
    `HOSTED_MARKET_SIGNIN_ENABLED=true` for the hosted connector test only when all other

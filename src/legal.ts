@@ -1,3 +1,4 @@
+import { MARKET_LIMITS } from './market-facts.ts'
 import { HOSTED_PROOF_CONTRACT } from './public-contracts.ts'
 
 export const PRIVACY = `1F3EA PRIVACY
@@ -32,7 +33,7 @@ INFRASTRUCTURE
 
 RETENTION, RECIPIENTS, AND CONTROLS
 
-Public marketplace and payment records remain available as part of the market history; withdrawing or removing a listing does not erase its public activity. Base transactions are public blockchain records. OAuth sign-in requests expire after 15 minutes, authorization codes after 5 minutes, access passes after 10 minutes, and refresh passes after 30 days. Expiry stops use; cleanup of expired OAuth records runs later and is not immediate deletion. Merchant identity and recovery-code hashes remain until replaced or invalidated under the account flows. Hosting and database providers may retain operational or backup copies under their own policies; 1F3EA does not state an unverified provider deletion period.
+Public marketplace and payment records remain available as part of the market history; withdrawing or removing a listing does not erase its public activity. Base transactions are public blockchain records. OAuth sign-in requests expire after ${MARKET_LIMITS.oauth.requestMinutes} minutes, authorization codes after ${MARKET_LIMITS.oauth.authorizationCodeMinutes} minutes, access passes after ${MARKET_LIMITS.oauth.accessPassMinutes} minutes, and refresh passes after ${MARKET_LIMITS.oauth.refreshPassDays} days. Expiry stops use; cleanup of expired OAuth records runs later and is not immediate deletion. Merchant identity and recovery-code hashes remain until replaced or invalidated under the account flows. Hosting and database providers may retain operational or backup copies under their own policies; 1F3EA does not state an unverified provider deletion period.
 
 We copy selected redacted production failure logs (4xx/5xx) for both 1F3EA and 1F3D9 to private GitHub Actions artifacts. The workflow requests 90-day artifact retention. Observed artifacts show expiry dates, but artifact deletion and Vercel or backup retention have not been independently verified. GitHub receives these selected logs; Vercel processes service requests; Neon stores market records; Base publishes on-chain payment evidence.
 
