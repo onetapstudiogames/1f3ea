@@ -29,6 +29,15 @@ interface ToolDef {
   route: (args: Record<string, unknown>) => { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; body?: unknown }
 }
 
+export function marketToolTitle(name: string): string {
+  const shortTitles: Record<string, string> = {
+    me: 'My Merchant Profile', buy: 'Buy a Listing', vote: 'Vote on a Listing', flag: 'Flag Market Content', help: 'Market Help',
+  }
+  if (shortTitles[name]) return shortTitles[name]
+  const words = name.split('_').map(word => word === 'me' ? 'Me' : word[0]!.toUpperCase() + word.slice(1))
+  return words.join(' ')
+}
+
 const ROUTE_ID_MAX = 2_147_483_647
 const minutesWord = (value: number) => value === 10 ? 'ten' : String(value)
 export const ROTATION_POLICY =
@@ -183,7 +192,7 @@ export const MCP_TOOLS: ToolDef[] = [
       properties: { line: { type: 'string', maxLength: MARKET_LIMITS.identityFields.storefrontLineMaxChars, 'x-maxUtf16CodeUnits': MARKET_LIMITS.identityFields.storefrontLineMaxChars, description: `at most ${MARKET_LIMITS.identityFields.storefrontLineMaxChars} characters measured as UTF-16 code units` } },
       required: ['line'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/store', body: { line: a.line } }),
   },
   {
@@ -337,7 +346,7 @@ export const MCP_TOOLS: ToolDef[] = [
       },
       required: ['title', 'description', 'preview', 'price_usdc', 'seller_wallet', 'tags', 'thing_id'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/world/draft', body: a }),
   },
   {
@@ -386,7 +395,7 @@ export const MCP_TOOLS: ToolDef[] = [
       },
       required: ['listing_id', 'city_handle'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({
       method: 'POST', path: `/api/world/checkout/${routeId(a.listing_id)}`,
       body: { city_handle: a.city_handle },
@@ -413,7 +422,7 @@ export const MCP_TOOLS: ToolDef[] = [
       properties: { listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX } },
       required: ['listing_id'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     route: a => ({
       method: 'POST',
       path: `/api/world/sync/${requiredRouteId('listing_id', a.listing_id)}`,
@@ -599,7 +608,7 @@ export const MCP_TOOLS: ToolDef[] = [
       properties: { listing_id: { type: 'integer', minimum: 1, maximum: ROUTE_ID_MAX } },
       required: ['listing_id'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({
       method: 'POST', path: '/api/vote',
       body: { listing_id: requiredRouteId('listing_id', a.listing_id) },
@@ -617,7 +626,7 @@ export const MCP_TOOLS: ToolDef[] = [
       },
       required: ['listing_id', 'body'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/comment', body: { listing_id: a.listing_id, parent_id: a.parent_id ?? null, body: a.body } }),
   },
   {
@@ -687,7 +696,7 @@ export const MCP_TOOLS: ToolDef[] = [
       },
       required: ['target_type', 'target_id', 'reason'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/flag', body: {
       target_type: a.target_type,
       target_id: requiredRouteId('target_id', a.target_id),
@@ -756,7 +765,7 @@ export const MCP_TOOLS: ToolDef[] = [
       },
       required: ['listing_id', 'pinned'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     route: a => ({ method: 'POST', path: '/api/mod/pin', body: {
       listing_id: requiredRouteId('listing_id', a.listing_id), pinned: a.pinned,
     } }),

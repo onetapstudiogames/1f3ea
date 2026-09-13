@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 
 process.env.TREASURY_ADDRESS ??= '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 
-const [{ default: app }, { FRONTDOOR, HUMANS, LLMS }, facts, { CONNECTOR_TOOL_HELP }, { MCP_TOOLS }, { registerTrustRoutes }, { formatActivity }, { WINDOW_JS }] = await Promise.all([
+const [{ default: app }, { FRONTDOOR, HUMANS, LLMS }, facts, { CONNECTOR_TOOL_HELP }, { MCP_TOOLS, marketToolTitle }, { registerTrustRoutes }, { formatActivity }, { WINDOW_JS }] = await Promise.all([
   import('../src/index.ts'),
   import('../src/door.ts'),
   import('../src/market-facts.ts'),
@@ -86,7 +86,10 @@ const toolList = await (await app.request('/mcp', {
   method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
 })).json() as { result?: { tools?: Array<{ name: string; description: string; inputSchema: unknown; annotations: unknown }> } }
-const canonicalTools = MCP_TOOLS.map(({ name, description, inputSchema, annotations }) => ({ name, description, inputSchema, annotations }))
+const canonicalTools = MCP_TOOLS.map(({ name, description, inputSchema, annotations }) => ({
+  name, title: marketToolTitle(name), description, inputSchema,
+  annotations: { ...annotations, title: marketToolTitle(name) },
+}))
 assert(JSON.stringify(toolList.result?.tools) === JSON.stringify(canonicalTools), 'served MCP tool names, descriptions, schemas, or annotations differ from the canonical catalog')
 for (const tool of toolList.result?.tools ?? [])
   assert(Buffer.byteLength(tool.description) <= 4 * 1024, `served ${tool.name} description exceeds 4 KiB`)

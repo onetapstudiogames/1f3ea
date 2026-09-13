@@ -4,6 +4,7 @@ import { allowOAuthForHostedConnectorRequest, anyCredentialShapeRe, SECRET_PREFI
 import { MARKET_OAUTH_SCOPE, marketOAuthChallenge, marketPublicOrigin } from './market-oauth-config.ts'
 import {
   MCP_TOOLS,
+  marketToolTitle,
   PUBLIC_MCP_TOOL_NAMES,
   ROTATION_POLICY,
   ToolInputError,
@@ -258,12 +259,14 @@ export async function mcp(c: Context, app: Hono, options: McpOptions = {}) {
     return c.json({
       jsonrpc: '2.0', id: id ?? null,
       result: { tools: catalog.map(({ name, description, inputSchema, annotations }) => {
-        if (!hostedChat) return { name, description, inputSchema, annotations }
+        const title = marketToolTitle(name)
+        const toolAnnotations = { ...annotations, title }
+        if (!hostedChat) return { name, title, description, inputSchema, annotations: toolAnnotations }
         const securitySchemes = PUBLIC_MCP_TOOL_NAMES.has(name)
           ? [NOAUTH_SCHEME, OAUTH_SCHEME]
           : [OAUTH_SCHEME]
         return {
-          name, description, inputSchema, annotations, securitySchemes,
+          name, title, description, inputSchema, annotations: toolAnnotations, securitySchemes,
           _meta: { securitySchemes },
         }
       }) },

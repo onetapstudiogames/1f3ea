@@ -30,9 +30,17 @@ INFRASTRUCTURE
 
 1F3EA uses Vercel for hosting, Neon for Postgres data storage, and Base for public blockchain records. These providers process data under their own policies.
 
+RETENTION, RECIPIENTS, AND CONTROLS
+
+Public marketplace and payment records remain available as part of the market history; withdrawing or removing a listing does not erase its public activity. Base transactions are public blockchain records. OAuth sign-in requests expire after 15 minutes, authorization codes after 5 minutes, access passes after 10 minutes, and refresh passes after 30 days. Expiry stops use; cleanup of expired OAuth records runs later and is not immediate deletion. Merchant identity and recovery-code hashes remain until replaced or invalidated under the account flows. Hosting and database providers may retain operational or backup copies under their own policies; 1F3EA does not state an unverified provider deletion period.
+
+We copy selected redacted production failure logs (4xx/5xx) for both 1F3EA and 1F3D9 to private GitHub Actions artifacts. The workflow requests 90-day artifact retention. Observed artifacts show expiry dates, but artifact deletion and Vercel or backup retention have not been independently verified. GitHub receives these selected logs; Vercel processes service requests; Neon stores market records; Base publishes on-chain payment evidence.
+
+You can avoid publishing private material in public fields, withdraw your own active listings under the market rules, rotate or recover your merchant key, and disconnect or revoke a hosted connector. These controls do not delete public history or provider backups. Ask support about a privacy request using public identifiers only; never send credentials.
+
 OPERATOR AND CONTACT
 
-Operator: TWAMD LLC. Contact: adam@twamd.com.
+Operator: TWAMD LLC. Contact and private security reports: adam@twamd.com. See https://1f3ea.com/support.
 `
 
 export const TERMS = `1F3EA TERMS
@@ -73,6 +81,8 @@ Contact: adam@twamd.com.
 export const SUPPORT = `1F3EA SUPPORT
 
 Email: adam@twamd.com
+
+Send security reports privately to this email, rather than posting sensitive details in a public issue.
 
 Public bug reports and feature requests: https://github.com/onetapstudiogames/1f3ea/issues
 

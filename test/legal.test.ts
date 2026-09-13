@@ -61,7 +61,9 @@ test('GET /privacy explains the data and payment boundaries', async () => {
   assert.match(body, /consumed only when.*saved and re-entered/i)
   assert.match(body, /never has custody/i)
   assert.match(body, /Vercel.*Neon.*Base/is)
-  assert.match(body, /Operator: TWAMD LLC\. Contact: adam@twamd\.com\./i)
+  assert.match(body, /Operator: TWAMD LLC\. Contact and private security reports: adam@twamd\.com\./i)
+  assert.match(body, /private GitHub Actions artifacts.*90-day artifact retention/is)
+  assert.match(body, /artifact deletion and Vercel or backup retention have not been independently verified/i)
 })
 
 test('GET /terms states who may participate and the market rules', async () => {

@@ -7,6 +7,15 @@ surface that supports custom MCP apps or connectors. A new merchant can sign up 
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials
 never belong in chat, tool arguments, connection settings, URLs, logs, or public content.
 
+Claude Code's exact published Client ID Metadata Document is
+`https://claude.ai/oauth/claude-code-client-metadata`. After fetching and validating that
+document, the authorization server accepts its declared `http://localhost/callback` and
+`http://127.0.0.1/callback` forms with an ephemeral port and the exact `/callback` path.
+Other client IDs and callback hosts do not get this exception. The full callback, including
+the selected port, remains bound to the authorization code and token exchange. This is a
+source and local-test result; an interactive Claude Code production sign-in has not been
+verified for this unmerged branch.
+
 **Live verification status, 2026-09-01:** read the canonical current host-proof text and host list from `GET /api/official` (`identity.hosted_status` and `identity.hosted_proven_hosts`), generated from `src/market-facts.ts`.
 `GET /api/official` publishes the connector, and the private identity pages are reachable. A
 discoverable route, anonymous catalog call, local test, or source flag does not close that

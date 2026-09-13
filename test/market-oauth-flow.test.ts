@@ -29,8 +29,48 @@ import {
   prepareMerchant,
   sha256,
 } from './support/market-oauth-flow-harness.ts'
+import { CLAUDE_CODE_OAUTH_CLIENT_ID } from '../src/market-oauth-config.ts'
 
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+test('Claude Code verified metadata signs in with exact loopback port bound to token exchange', async () => {
+  const redirectUri = 'http://localhost:3118/callback'
+  const { app } = fixture({ fetcher: (async input => {
+    assert.equal(String(input), CLAUDE_CODE_OAUTH_CLIENT_ID)
+    return new Response(JSON.stringify({
+      client_id: CLAUDE_CODE_OAUTH_CLIENT_ID, client_name: 'Claude Code',
+      redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+      token_endpoint_auth_method: 'none',
+    }), { headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch })
+  const start = await app.request(authorizationUrl({ client_id: CLAUDE_CODE_OAUTH_CLIENT_ID, redirect_uri: redirectUri }))
+  assert.equal(start.status, 200)
+  const csrf = hiddenCsrf(await start.text())
+  const approved = await app.request('/oauth/authorize', {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', origin: ORIGIN,
+      cookie: cookiePair(start) },
+    body: new URLSearchParams({ action: 'link', csrf, merchant_key: MERCHANT_KEY }),
+  })
+  assert.equal(approved.status, 302)
+  const location = new URL(approved.headers.get('location')!)
+  assert.equal(location.origin, 'http://localhost:3118')
+  assert.equal(location.pathname, '/callback')
+  assert.equal(location.searchParams.get('state'), STATE)
+  const code = location.searchParams.get('code')!
+  const fields = { grant_type: 'authorization_code', client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+    redirect_uri: 'http://localhost:3119/callback', resource: RESOURCE, code, code_verifier: VERIFIER }
+  const wrongPort = await app.request('/oauth/token', { method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields) })
+  assert.equal(wrongPort.status, 400)
+  const correct = await app.request('/oauth/token', { method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...fields, redirect_uri: redirectUri }) })
+  assert.equal(correct.status, 200)
+  const replay = await app.request('/oauth/token', { method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...fields, redirect_uri: redirectUri }) })
+  assert.equal(replay.status, 400)
+})
 
 function assertOAuthError(
   body: Record<string, unknown>,

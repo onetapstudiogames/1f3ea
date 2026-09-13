@@ -9,6 +9,9 @@ export const MARKET_OAUTH_REFRESH_TOKEN_PREFIX = '1f3ea_rt_'
 export const CHATGPT_CIMD_ORIGIN = 'https://chatgpt.com'
 export const CHATGPT_OAUTH_CLIENT_ID = 'https://chatgpt.com/oauth/client.json'
 export const CHATGPT_OAUTH_REDIRECT_URI = 'https://chatgpt.com/connector_platform_oauth_redirect'
+export const CLAUDE_CODE_OAUTH_CLIENT_ID = 'https://claude.ai/oauth/claude-code-client-metadata'
+const CLAUDE_CIMD_ORIGIN = 'https://claude.ai'
+const CLAUDE_CODE_REDIRECT_URIS = ['http://localhost/callback', 'http://127.0.0.1/callback']
 
 const DEFAULT_PUBLIC_ORIGIN = 'https://1f3ea.com'
 const HTTPS_PROTOCOL = 'https:'
@@ -29,6 +32,7 @@ export interface MarketOAuthClient {
   clientName: string
   redirectUris: string[]
   tokenEndpointAuthMethod: 'none'
+  validatedClaudeCodeMetadata?: boolean
 }
 
 export class MarketOAuthClientError extends Error {
@@ -135,6 +139,29 @@ function exactHttpsRedirect(value: unknown): string {
   return parsed.href
 }
 
+function validatedRedirect(value: unknown, clientId: string): string {
+  const candidate = safeText(value, 'redirect URI', MAX_REDIRECT_URI_BYTES)
+  if (clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID || !CLAUDE_CODE_REDIRECT_URIS.includes(candidate)) {
+    return exactHttpsRedirect(candidate)
+  }
+  return candidate
+}
+
+function registeredRedirectMatches(client: MarketOAuthClient, candidate: string): boolean {
+  if (client.redirectUris.includes(candidate)) return true
+  if (client.clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID || !client.validatedClaudeCodeMetadata) return false
+  try {
+    const parsed = new URL(candidate)
+    if (parsed.protocol !== 'http:' || parsed.username || parsed.password || parsed.search || parsed.hash ||
+      parsed.pathname !== '/callback' || !parsed.port || !/^[0-9]+$/.test(parsed.port) ||
+      parsed.port === '0' || (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1')) return false
+    return candidate === `http://${parsed.hostname}:${parsed.port}/callback` &&
+      client.redirectUris.includes(`http://${parsed.hostname}/callback`)
+  } catch {
+    return false
+  }
+}
+
 function exactHttpsOrigin(value: string, label: string): string {
   if (marketTokenLooksSensitive(value) || value.includes('*') || value !== value.trim()) {
     throw new Error(`${label} must be an exact HTTPS origin`)
@@ -204,7 +231,7 @@ export function parseMarketOAuthClients(raw: string | undefined): MarketOAuthCli
     const clientId = safeText(item.client_id, 'client_id', MAX_CLIENT_ID_BYTES)
     const clientName = safeText(item.client_name, 'client_name', MAX_CLIENT_NAME_BYTES)
     const redirectUris = [...new Set(
-      safeStringArray(item.redirect_uris, 'redirect_uris').map(exactHttpsRedirect),
+      safeStringArray(item.redirect_uris, 'redirect_uris').map(uri => validatedRedirect(uri, clientId)),
     )]
     return { clientId, clientName, redirectUris, tokenEndpointAuthMethod: 'none' }
   })
@@ -216,7 +243,7 @@ export function parseMarketOAuthClients(raw: string | undefined): MarketOAuthCli
 }
 
 export function parseMarketCimdOrigins(raw: string | undefined): string[] {
-  if (!raw) return [CHATGPT_CIMD_ORIGIN]
+  if (!raw) return [CHATGPT_CIMD_ORIGIN, CLAUDE_CIMD_ORIGIN]
 
   let decoded: unknown
   try {
@@ -230,7 +257,7 @@ export function parseMarketCimdOrigins(raw: string | undefined): string[] {
     20,
     MAX_CLIENT_ID_BYTES,
   ).map(value => exactHttpsOrigin(value, 'CIMD origin'))
-  return [...new Set([CHATGPT_CIMD_ORIGIN, ...configured])]
+  return [...new Set([CHATGPT_CIMD_ORIGIN, CLAUDE_CIMD_ORIGIN, ...configured])]
 }
 
 export function validateMarketAuthorizationRequest(
@@ -246,7 +273,7 @@ export function validateMarketAuthorizationRequest(
   if (!client) throw new Error('unknown OAuth client')
 
   const redirectUri = safeText(request.redirect_uri, 'redirect_uri', MAX_REDIRECT_URI_BYTES)
-  if (!client.redirectUris.includes(redirectUri)) {
+  if (!registeredRedirectMatches(client, redirectUri)) {
     throw new Error('redirect_uri is not registered')
   }
   if (request.resource !== expectedResource) throw new Error('wrong protected resource')
@@ -363,6 +390,9 @@ function validateCimdClientId(clientId: string, cimdOrigins: readonly string[]):
   if (metadataUrl.origin === CHATGPT_CIMD_ORIGIN && clientId !== CHATGPT_OAUTH_CLIENT_ID) {
     throw new Error('unknown OAuth client')
   }
+  if (metadataUrl.origin === CLAUDE_CIMD_ORIGIN && clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID) {
+    throw new Error('unknown OAuth client')
+  }
   return metadataUrl
 }
 
@@ -457,7 +487,7 @@ export async function resolveMarketOAuthClient(
       const tokenEndpointAuthMethod = selectedPublicAuthMethod(clientId, metadataUrl, decoded)
       const clientName = safeText(decoded.client_name, 'client_name', MAX_CLIENT_NAME_BYTES)
       const redirectUris = [...new Set(
-        safeStringArray(decoded.redirect_uris, 'redirect_uris').map(exactHttpsRedirect),
+        safeStringArray(decoded.redirect_uris, 'redirect_uris').map(uri => validatedRedirect(uri, clientId)),
       )]
       if (
         clientId === CHATGPT_OAUTH_CLIENT_ID &&
@@ -465,8 +495,13 @@ export async function resolveMarketOAuthClient(
       ) {
         throw new Error('ChatGPT OAuth client metadata has an unexpected redirect URI')
       }
+      if (clientId === CLAUDE_CODE_OAUTH_CLIENT_ID &&
+        (redirectUris.length !== 2 || !CLAUDE_CODE_REDIRECT_URIS.every(uri => redirectUris.includes(uri)))) {
+        throw new Error('Claude Code OAuth client metadata has unexpected redirect URIs')
+      }
 
-      return { clientId, clientName, redirectUris, tokenEndpointAuthMethod }
+      return { clientId, clientName, redirectUris, tokenEndpointAuthMethod,
+        ...(clientId === CLAUDE_CODE_OAUTH_CLIENT_ID ? { validatedClaudeCodeMetadata: true } : {}) }
     } catch (error) {
       throw new MarketOAuthClientError(
         400,

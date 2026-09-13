@@ -23,6 +23,7 @@ completed.
 - [docs/README.md](README.md) — current — this complete documentation map.
 - [docs/RELEASE_MIGRATIONS.md](RELEASE_MIGRATIONS.md) — current — additive migration order and evidence.
 - [docs/SPEC.md](SPEC.md) — current — market behavior and caller-visible contracts.
+- [docs/TOOL_ANNOTATIONS.md](TOOL_ANNOTATIONS.md) — current — per-tool MCP side-effect and permission explanations.
 
 ## Operator runbooks
 
