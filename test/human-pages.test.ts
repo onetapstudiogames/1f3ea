@@ -125,6 +125,24 @@ test('the routed human guide stylesheet is cacheable CSS', async () => {
   assert.match(await response.text(), /--cream:\s*#fffef8/iu)
 })
 
+test('the served stylesheet keeps the market seal square instead of stretching it', async () => {
+  const css = await (await app.request('/guide.css')).text()
+  const sealRule = css.match(/\.market-seal img \{([^}]*)\}/u)?.[1]
+
+  assert.ok(sealRule, 'the served stylesheet declares a .market-seal img rule')
+  assert.match(sealRule, /height:\s*auto/u)
+  assert.match(css, /(?:^|\n)img \{[^}]*max-width:\s*100%/u)
+})
+
+test('every page that shows the market seal loads the one guide stylesheet', async () => {
+  for (const path of ['/about', '/help', '/city-bridge']) {
+    const html = await (await app.request(path, { headers: { accept: 'text/html' } })).text()
+
+    assert.match(html, /class="market-seal"/u, path)
+    assert.match(html, /<link rel="stylesheet" href="\/guide\.css">/u, path)
+  }
+})
+
 test('the guide accent clears normal-text contrast on both page backgrounds', () => {
   const style = readText('human-style.ts')
   const accent = style.match(/--orange:\s*(#[\da-f]{6})/iu)?.[1]

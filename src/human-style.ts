@@ -17,6 +17,8 @@ export const GUIDE_CSS = String.raw`
 
 * { box-sizing: border-box; }
 
+img { display: block; max-width: 100%; }
+
 html {
   min-width: 0;
   background: var(--cream);
@@ -186,6 +188,7 @@ h3 { margin: 0; font-size: 1.25rem; }
 .market-seal img {
   display: block;
   width: min(100%, 23rem);
+  height: auto;
   aspect-ratio: 1;
   margin-inline: auto;
   border: 3px solid var(--line);
