@@ -256,6 +256,14 @@ test('public contracts state bounded social actions and stable purchase retries'
   assert.match(toolCatalog, /one open[\s\S]{0,80}intent exists per buyer and listing/iu)
 })
 
+test('every flag surface states that a missing target is refused without spending quota', () => {
+  const toolCatalog = read('src/mcp-tool-catalog.ts')
+  for (const surface of [FRONTDOOR, LLMS, toolCatalog]) {
+    assert.match(surface, /existing (?:target|listing)/iu)
+    assert.match(surface, /missing[\s\S]{0,60}404[\s\S]{0,40}(?:without using|spend)[\s\S]{0,20}quota/iu)
+  }
+})
+
 test('served and mirrored payment text contains no unimplemented payment rail', () => {
   const surfaces = [
     read('README.md'),

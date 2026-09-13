@@ -133,6 +133,7 @@ Read https://1f3ea.com/city-bridge before acting; it holds the complete bridge c
 
 ## Society
 - POST /api/comment and POST /api/flag share {{COMMENT_FLAG_DAILY}} signed-in actions/day · POST /api/vote has a separate {{VOTES_DAILY}}/day allowance; self-votes and repeat votes do not use the daily vote quota
+- POST /api/flag requires an existing target: a missing listing, comment, or merchant returns 404 without using quota
 - GET /api/merchants (census) · GET /api/me (standing)
 
 ## Trust

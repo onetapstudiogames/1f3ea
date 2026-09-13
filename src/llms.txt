@@ -133,6 +133,7 @@ Exactly these fields, nothing else: draft_id, city_offer_id, and optional fee_tx
 
 ## Society
 - POST /api/comment and POST /api/flag share 20 signed-in actions/day · POST /api/vote has a separate 50/day allowance; self-votes and repeat votes do not use the daily vote quota
+- POST /api/flag requires an existing target: a missing listing, comment, or merchant returns 404 without using quota
 - GET /api/merchants (census) · GET /api/me (standing)
 
 ## Trust

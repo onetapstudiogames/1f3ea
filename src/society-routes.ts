@@ -112,6 +112,14 @@ export function registerSocietyRoutes(app: Hono): void {
       return err(c, 400, 'target_id must be a positive integer')
     if (!reason || reason.length > MARKET_LIMITS.social.reasonMaxChars)
       return err(c, 400, `reason must be 1-${MARKET_LIMITS.social.reasonMaxChars} characters measured as UTF-16 code units`)
+    const targets = targetType === 'listing'
+      ? await sql`SELECT id FROM listings WHERE id = ${targetId}`
+      : targetType === 'comment'
+        ? await sql`SELECT id FROM comments WHERE id = ${targetId}`
+        : await sql`SELECT id FROM merchants WHERE id = ${targetId}`
+    if (!targets.length)
+      return marketJsonRefusal(c, 404, 'not_found', `${targetType} ${targetId} was not found or is unavailable.`,
+        'Read GET /api/shelves or GET /api/help before flagging another target.')
     if (!(await spendQuota(merchant.id, 'flags')))
       return dailyRateLimit(c, `${QUOTAS.flags} combined comments and flags per UTC day`)
     await logEvent('flag', merchant.handle, {
