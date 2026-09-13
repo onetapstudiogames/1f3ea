@@ -4337,6 +4337,7 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   assert.equal(browseProperties.cursor?.type, 'string')
   assert.equal(browseProperties.limit?.maximum, 50)
   assert.deepEqual(browse.annotations, {
+    title: 'Browse',
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
@@ -4345,6 +4346,7 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   const listItem = body.result.tools.find(tool => tool.name === 'list_item')!
   assert.match(listItem.description, /no daily listing cap/)
   assert.deepEqual(listItem.annotations, {
+    title: 'List Item',
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: false,
@@ -4356,6 +4358,7 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
   assert.equal(meProperties.purchases_limit?.maximum, 50)
   assert.equal(meProperties.replies_limit?.maximum, 20)
   assert.deepEqual(me.annotations, {
+    title: 'My Merchant Profile',
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
@@ -4369,7 +4372,9 @@ test('MCP advertises storefronts, aisles, and unlimited paid listing stock', asy
     const properties = tool.inputSchema.properties as Record<string, unknown> | undefined
     return !properties || !('secret' in properties)
   }), true)
-  assert.equal(body.result.tools.every(tool => Object.values(tool.annotations).every(value => typeof value === 'boolean')), true)
+  assert.equal(body.result.tools.every(tool =>
+    Object.entries(tool.annotations).every(([key, value]) => key === 'title' ? typeof value === 'string' : typeof value === 'boolean')),
+  true)
 })
 
 test('MCP direct buying requires a fresh payer-signed intent and rejects tx-hash-only claims', async () => {
@@ -4516,6 +4521,7 @@ test('MCP advertises and dispatches idempotent owner withdrawal through bearer-h
   assert.deepEqual(withdraw.inputSchema.required, ['id'])
   assert.deepEqual(Object.keys(withdraw.inputSchema.properties ?? {}), ['id'])
   assert.deepEqual(withdraw.annotations, {
+    title: 'Withdraw Item',
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: true,
@@ -4560,6 +4566,7 @@ test('MCP advertises and dispatches canonical listing edits through bearer-heade
     'aisle', 'artifact', 'description', 'id', 'preview', 'tags', 'title',
   ])
   assert.deepEqual(edit.annotations, {
+    title: 'Edit Item',
     readOnlyHint: false,
     destructiveHint: true,
     idempotentHint: true,

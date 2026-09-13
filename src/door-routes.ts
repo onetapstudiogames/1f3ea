@@ -14,6 +14,12 @@ import { countedPage, type CountedRow } from './public-pagination.ts'
 import { windowPage, windowScript, windowSnapshot, windowStyle } from './window.ts'
 
 export function registerDoorRoutes(app: Hono): void {
+  app.get('/.well-known/openai-apps-challenge', c => {
+    const token = process.env.OPENAI_APPS_CHALLENGE_TOKEN
+    if (!token || token.length > 2048 || /[\r\n\u0000-\u001f\u007f]/u.test(token)) return c.notFound()
+    c.header('Cache-Control', 'no-store')
+    return c.text(token)
+  })
   const legalPage = (c: Parameters<typeof guidePage>[0], html: string, plain: string): Response => {
     c.header('Vary', 'Accept')
     return acceptsHtml(c.req.header('accept'), 'text/plain') ? guidePage(c, html) : c.text(plain)

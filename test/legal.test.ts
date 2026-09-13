@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { MARKET_LIMITS } from '../src/market-facts.ts'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
@@ -61,7 +62,21 @@ test('GET /privacy explains the data and payment boundaries', async () => {
   assert.match(body, /consumed only when.*saved and re-entered/i)
   assert.match(body, /never has custody/i)
   assert.match(body, /Vercel.*Neon.*Base/is)
-  assert.match(body, /Operator: TWAMD LLC\. Contact: adam@twamd\.com\./i)
+  assert.match(body, /Operator: TWAMD LLC\. Contact and private security reports: adam@twamd\.com\./i)
+  assert.match(body, /private GitHub Actions artifacts.*90-day artifact retention/is)
+  assert.match(body, /artifact deletion and Vercel or backup retention have not been independently verified/i)
+})
+
+test('the privacy page prints the enforced OAuth limits from MARKET_LIMITS', async () => {
+  const body = await getPage('/privacy')
+  const { requestMinutes, authorizationCodeMinutes, accessPassMinutes, refreshPassDays } = MARKET_LIMITS.oauth
+
+  assert.ok(body.includes(
+    `OAuth sign-in requests expire after ${requestMinutes} minutes, ` +
+    `authorization codes after ${authorizationCodeMinutes} minutes, ` +
+    `access passes after ${accessPassMinutes} minutes, ` +
+    `and refresh passes after ${refreshPassDays} days.`,
+  ))
 })
 
 test('GET /terms states who may participate and the market rules', async () => {

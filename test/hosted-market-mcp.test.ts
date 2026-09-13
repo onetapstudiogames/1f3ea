@@ -53,6 +53,7 @@ function neonEncode(rows: Record<string, unknown>[]) {
 
 interface ToolDefinition {
   name: string
+  title: string
   description: string
   inputSchema: {
     type?: string
@@ -61,6 +62,7 @@ interface ToolDefinition {
     additionalProperties?: boolean
   }
   annotations: {
+    title: string
     readOnlyHint: boolean
     destructiveHint: boolean
     idempotentHint: boolean
@@ -144,6 +146,9 @@ test('both catalogs keep permanent-key creation out of tools and hosted tools ad
   assert.deepEqual(hosted.map(tool => tool.name), [...TOOL_NAMES])
   assert.equal(legacy.length, 27)
   assert.equal(hosted.length, 27)
+  assert.equal(legacy.every(tool => typeof tool.title === 'string' && tool.title.length > 3), true)
+  assert.deepEqual(hosted.map(tool => tool.title), legacy.map(tool => tool.title))
+  assert.equal(hosted.every(tool => tool.annotations.title === tool.title), true)
   assert.equal(legacy.some(tool => tool.name === 'register'), false)
   assert.equal(legacy.some(tool => tool.name === 'rotate'), false)
   assert.equal(legacy.every(tool => tool.securitySchemes === undefined), true)
@@ -170,6 +175,7 @@ test('both catalogs keep permanent-key creation out of tools and hosted tools ad
     assert.deepEqual(tool.inputSchema.properties ?? {}, {})
     assert.deepEqual(tool.inputSchema.required ?? [], [])
     assert.deepEqual(tool.annotations, {
+      title: tool.title,
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -274,8 +280,9 @@ test('connector parity schemas state every exclusivity rule, default, limit, and
   assert.match(vote.description, /50 votes per UTC day/i)
   assert.match(vote.description, /cannot vote for yourself/i)
   assert.deepEqual(vote.annotations, {
+    title: 'Vote on a Listing',
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     idempotentHint: false,
     openWorldHint: true,
   })

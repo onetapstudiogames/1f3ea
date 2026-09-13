@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  CLAUDE_CODE_OAUTH_CLIENT_ID,
   CHATGPT_CIMD_ORIGIN,
   CHATGPT_OAUTH_CLIENT_ID,
   CHATGPT_OAUTH_REDIRECT_URI,
@@ -139,10 +140,10 @@ test('static client configuration permits only public clients with exact HTTPS r
 })
 
 test('CIMD origins are exact HTTPS origins and include the stable ChatGPT origin', () => {
-  assert.deepEqual(parseMarketCimdOrigins(undefined), [CHATGPT_CIMD_ORIGIN])
+  assert.deepEqual(parseMarketCimdOrigins(undefined), [CHATGPT_CIMD_ORIGIN, 'https://claude.ai'])
   assert.deepEqual(
     parseMarketCimdOrigins(JSON.stringify([CLIENT_ORIGIN, CHATGPT_CIMD_ORIGIN])),
-    [CHATGPT_CIMD_ORIGIN, CLIENT_ORIGIN],
+    [CHATGPT_CIMD_ORIGIN, 'https://claude.ai', CLIENT_ORIGIN],
   )
 
   for (const unsafe of [
@@ -190,6 +191,31 @@ test('authorization accepts only exact code flow details, one scope, state, and 
     validateMarketAuthorizationRequest(validRequest(previewResource), [staticClient], previewResource).resource,
     previewResource,
   )
+})
+
+test('validated Claude Code metadata permits only its loopback callback path with an ephemeral port', async () => {
+  const body = JSON.stringify({
+    client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+    client_name: 'Claude Code',
+    redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+    token_endpoint_auth_method: 'none',
+  })
+  const client = await resolveMarketOAuthClient(CLAUDE_CODE_OAUTH_CLIENT_ID, [],
+    parseMarketCimdOrigins(undefined), async () => jsonResponse(body))
+  for (const host of ['localhost', '127.0.0.1']) {
+    const redirect_uri = `http://${host}:3118/callback`
+    assert.equal(validateMarketAuthorizationRequest({ ...validRequest(), client_id: client.clientId, redirect_uri }, [client]).redirectUri, redirect_uri)
+  }
+  for (const redirect_uri of ['http://evil.example:3118/callback', 'http://localhost:3118/other', 'http://localhost:3118/callback?x=1', 'http://127.0.0.2:3118/callback', 'http://localhost:0/callback', 'https://localhost:3118/callback', 'http://LOCALHOST:3118/callback', 'http://localhost.:3118/callback', 'http://localhost:03118/callback', 'http://user@localhost:3118/callback', 'http://localhost:3118/callback#x']) {
+    assert.throws(() => validateMarketAuthorizationRequest({ ...validRequest(), client_id: client.clientId, redirect_uri }, [client]))
+  }
+  const unverified = parseMarketOAuthClients(JSON.stringify([{
+    client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+    client_name: 'Locally configured',
+    redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+  }]))
+  assert.throws(() => validateMarketAuthorizationRequest({ ...validRequest(),
+    client_id: CLAUDE_CODE_OAUTH_CLIENT_ID, redirect_uri: 'http://localhost:3118/callback' }, unverified))
 })
 
 test('PKCE uses RFC 7636 S256 and credentials are recognized before public output or logs', () => {
@@ -448,5 +474,43 @@ test('the exact stable ChatGPT CIMD negotiates public PKCE from its advertised c
     [],
     [CHATGPT_CIMD_ORIGIN],
     wrongRedirect,
-  ), /redirect/i)
+  ), /unexpected redirect URI/i)
+})
+
+test('only the exact claude.ai metadata document and its two loopback callbacks are accepted', async () => {
+  let unexpectedFetchCount = 0
+  const unexpectedFetcher = (async () => {
+    unexpectedFetchCount += 1
+    return jsonResponse(metadata())
+  }) as typeof fetch
+  for (const clientId of [
+    'https://claude.ai/oauth/client.json',
+    'https://claude.ai/oauth/claude-code-client-metadata/extra',
+    CLAUDE_CODE_OAUTH_CLIENT_ID.toUpperCase(),
+  ]) {
+    const refused = await clientError(resolveMarketOAuthClient(
+      clientId, [], parseMarketCimdOrigins(undefined), unexpectedFetcher,
+    ))
+    assert.equal(refused.status, 400)
+    assert.match(refused.message, /unknown OAuth client/i)
+  }
+  assert.equal(unexpectedFetchCount, 0)
+
+  for (const redirect_uris of [
+    ['http://localhost/callback'],
+    ['http://localhost/callback', 'http://localhost/callback'],
+    ['http://localhost/callback', 'http://127.0.0.1/callback', 'https://claude.ai/callback'],
+  ]) {
+    const error = await clientError(resolveMarketOAuthClient(
+      CLAUDE_CODE_OAUTH_CLIENT_ID, [], parseMarketCimdOrigins(undefined),
+      (async () => jsonResponse(JSON.stringify({
+        client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+        client_name: 'Claude Code',
+        redirect_uris,
+        token_endpoint_auth_method: 'none',
+      }))) as typeof fetch,
+    ))
+    assert.equal(error.status, 400)
+    assert.match(error.message, /unexpected redirect URIs/i)
+  }
 })
