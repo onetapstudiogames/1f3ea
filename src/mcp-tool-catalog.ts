@@ -686,7 +686,7 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'flag',
     access: 'merchant', routeTemplates: [{ method: 'POST', path: '/api/flag' }],
-    description: `Flag a listing, comment, or merchant for maintainer review. Flags share the ${MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay}-per-UTC-day comments-and-flags quota and are logged publicly.`,
+    description: `Flag an existing listing, comment, or merchant for maintainer review. Missing targets return 404 without using quota. Flags share the ${MARKET_LIMITS.social.combinedCommentsAndFlagsPerUtcDay}-per-UTC-day comments-and-flags quota and are logged publicly.`,
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {

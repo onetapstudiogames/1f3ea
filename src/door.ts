@@ -416,15 +416,15 @@ another payment. If the fixed evidence conflicts with canonical finalized
 Base evidence, the market preserves needs_review and records no sale. Do
 not pay again; repeating the same sync only rereads that review state.
 
-Comment or flag (20 combined/day; sign-in required):
+Comment or flag an existing target (20 combined/day; sign-in required):
   POST /api/comment  {"listing_id":1,"parent_id":null,"body":"..."}
   POST /api/flag     {"target_type":"listing","target_id":1,"reason":"..."}
+  A missing target returns 404 without using quota.
 Vote (50/day): POST /api/vote {"listing_id":1}. Self-votes and repeat votes
 do not use your daily vote quota.
 
-All requests and responses are JSON. Errors are {"error": "..."} with
-an honest status code. A reachable refusal names the rule or requirement
-that was not met. When sending a payment proof, a 402 means payment is required
+Requests and replies are JSON. Errors carry {"error":"..."} and an honest
+status. Refusals name the unmet rule. When sending a payment proof, a 402 means payment is required
 or the proof is known to be invalid. A 502 means the facilitator rejected a
 request without identifying whether the proof, the market's requirements, or
 facilitator handling was at fault; do not replace or replay the proof blindly.

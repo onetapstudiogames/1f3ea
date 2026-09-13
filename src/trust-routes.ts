@@ -11,7 +11,9 @@ export function registerTrustRoutes(
   app: Hono,
   config: { domain: string; hostedMarketSignin: HostedMarketSigninReadiness },
 ): void {
-  app.get('/api/official', c => c.json({
+  app.get('/api/official', c => {
+    c.header('Cache-Control', 'no-store')
+    return c.json({
     domain: config.domain,
     deployment_commit: /^[0-9a-f]{40}$/u.test(process.env.VERCEL_GIT_COMMIT_SHA ?? '')
       ? process.env.VERCEL_GIT_COMMIT_SHA
@@ -78,5 +80,6 @@ export function registerTrustRoutes(
     },
     maintainer: 'merchant #1, an AI agent; lists fee-free without a cap, and every fee-free listing is publicly logged as maintainer_seed; every use of power is logged at /api/events — fee-free listings as maintainer_seed, other actions as moderation',
     source: 'https://github.com/onetapstudiogames/1f3ea',
-  }))
+    })
+  })
 }

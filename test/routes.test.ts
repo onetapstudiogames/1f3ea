@@ -173,6 +173,7 @@ const state = {
   feeAgeSeconds: 60,
   listingOwner: 7,
   listingExists: true,
+  commentExists: true,
   listingRemoved: false,
   listingRemovedAt: null as string | null,
   listingWithdrawn: false,
@@ -956,6 +957,8 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('SELECT title, artifact'))
     return [{ title: state.listingTitle, artifact: state.listingArtifact }]
   if (query.includes('SELECT id FROM listings WHERE id')) return state.listingExists ? [{ id: 1 }] : []
+  if (query.includes('SELECT id FROM comments WHERE id')) return state.commentExists ? [{ id: 1 }] : []
+  if (query.includes('SELECT id FROM merchants WHERE id')) return state.storeExists ? [{ id: 8 }] : []
   if (query.includes('comments_today = (CASE WHEN quota_day')) {
     if (state.quotaDayStale) {
       state.quotaDayStale = false
@@ -1153,6 +1156,7 @@ function reset() {
   state.feeAgeSeconds = 60
   state.listingOwner = 7
   state.listingExists = true
+  state.commentExists = true
   state.listingRemoved = false
   state.listingRemovedAt = null
   state.listingWithdrawn = false
@@ -1328,6 +1332,38 @@ test('flagging requires a signed-in merchant and attributes the public event', a
   })
   await assertDailyRateLimit(limited, /20 combined comments and flags per UTC day/iu)
   assert.equal(inserted('events'), 0)
+})
+
+test('flagging refuses missing targets before quota or event writes', async () => {
+  for (const targetType of ['listing', 'comment', 'merchant'] as const) {
+    reset()
+    if (targetType === 'listing') state.listingExists = false
+    if (targetType === 'comment') state.commentExists = false
+    if (targetType === 'merchant') state.storeExists = false
+    const response = await app.request('/api/flag', {
+      method: 'POST', headers: authed,
+      body: JSON.stringify({ target_type: targetType, target_id: 999, reason: 'review' }),
+    })
+    assert.equal(response.status, 404)
+    const refusal = await response.json() as Record<string, unknown>
+    assert.equal(refusal.reason, 'not_found')
+    assert.match(String(refusal.request_id), REQUEST_ID)
+    assert.equal(response.headers.get('x-request-id'), refusal.request_id)
+    assert.equal(sqlCalls().some(call => /comments_today\s*=\s*\(CASE WHEN quota_day/iu.test(call.query ?? '')), false)
+    assert.equal(inserted('events'), 0)
+  }
+})
+
+test('flagging accepts existing listings, comments, and merchants', async () => {
+  for (const targetType of ['listing', 'comment', 'merchant'] as const) {
+    reset()
+    const response = await app.request('/api/flag', {
+      method: 'POST', headers: authed,
+      body: JSON.stringify({ target_type: targetType, target_id: 1, reason: 'review' }),
+    })
+    assert.equal(response.status, 201)
+    assert.equal(inserted('events'), 1)
+  }
 })
 
 test('voting reports an unrelated unique violation as internal', async () => {
@@ -4187,6 +4223,12 @@ test('/api/official publishes the hosting deployment commit when available', asy
     assert.ok(Object.hasOwn(absent, 'deployment_commit'))
     assert.equal(absent.deployment_commit, null)
 
+    for (const malformed of ['a'.repeat(39), 'A'.repeat(40)]) {
+      process.env.VERCEL_GIT_COMMIT_SHA = malformed
+      const invalid = await (await app.request('/api/official')).json() as Record<string, unknown>
+      assert.equal(invalid.deployment_commit, null)
+    }
+
     process.env.VERCEL_GIT_COMMIT_SHA = 'a'.repeat(40)
     const present = await (await app.request('/api/official')).json() as Record<string, unknown>
     assert.equal(present.deployment_commit, 'a'.repeat(40))
@@ -4194,6 +4236,11 @@ test('/api/official publishes the hosting deployment commit when available', asy
     if (previous === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA
     else process.env.VERCEL_GIT_COMMIT_SHA = previous
   }
+})
+
+test('/api/official is never cached', async () => {
+  const response = await app.request('/api/official')
+  assert.equal(response.headers.get('cache-control'), 'no-store')
 })
 
 test('missing HTTP routes give connector-first front-door recovery', async () => {
