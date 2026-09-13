@@ -17,6 +17,7 @@ Status statements below are dated because live state can change independently of
    never diagnose payment completion from a public counter alone.
 4. Check the exact deployed GitHub `main` commit in Vercel before saying a repository change
    is live. Route availability alone is not commit or migration evidence.
+   After a merge, confirm `/api/official` `deployment_commit` matches `main` within ten minutes; if it does not, create a production deployment from `main` in the Vercel dashboard or API and confirm it again.
 5. Record the timestamp, response status, safe response facts, and any follow-up. Never
    record bearer keys, database URLs, wallet keys, recovery codes, OAuth values, or payment
    proofs.
