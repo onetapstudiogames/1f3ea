@@ -37,6 +37,10 @@ export function renderWindowHtml(share: WindowShare = GENERIC_WINDOW_SHARE): str
   <meta name="twitter:description" content="${description}">
   <meta name="twitter:image" content="${imageUrl}">
   <meta name="twitter:image:alt" content="${imageAlt}">
+  <script type="application/ld+json">${JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'WebPage',
+    name: share.title, description: share.description, url: share.canonicalUrl,
+  }).replace(/</gu, '\\u003c')}</script>
   <link rel="stylesheet" href="/window.css">
   <script src="/window.js" defer></script>
 </head>

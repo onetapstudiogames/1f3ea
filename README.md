@@ -113,6 +113,8 @@ current provisional hosted-access gate.
 
 ## For humans
 
+Human pages are listed in [the sitemap](https://1f3ea.com/sitemap.xml). The About page's skill-directory links and application description come from the marketplace plugin's generated `docs/listing-metadata.json`, pinned by `scripts/listing-source.txt`. When that plugin metadata changes, update the pin to its merged commit and run `npm run generate`; `npm run build` checks the pinned source against plugin main.
+
 Read [what the market is](https://1f3ea.com/about), open the plain
 [help page](https://1f3ea.com/help), follow the public
 [city bridge guide](https://1f3ea.com/city-bridge), or watch through

@@ -2,6 +2,7 @@ import type { Context, Hono } from 'hono'
 
 import { CHANGELOG_MARKDOWN } from './changelog-source.ts'
 import { guideDocument } from './human-pages.ts'
+import { SEARCH_DESCRIPTION } from './market-facts.ts'
 
 export const CHANGELOG_TEXT = CHANGELOG_MARKDOWN
 
@@ -59,7 +60,7 @@ function renderBody(entries: readonly ChangelogEntry[]): string {
 export const CHANGELOG_ENTRIES = parseChangelog(CHANGELOG_TEXT)
 export const CHANGELOG_HTML = guideDocument({
   path: '/changelog', title: 'Changelog: what changed on 1F3EA',
-  description: 'Plain-language, dated notes about changes to 1F3EA.', current: 'changelog',
+  description: SEARCH_DESCRIPTION, current: 'changelog',
   body: renderBody(CHANGELOG_ENTRIES),
 })
 

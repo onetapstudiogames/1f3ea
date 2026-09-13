@@ -10,8 +10,8 @@
     "node": "24.x"
   },
   "scripts": {
-    "generate": "node scripts/embed-door.mjs && node scripts/embed-changelog.mjs",
-    "check:generated": "node scripts/embed-door.mjs --check && node scripts/embed-changelog.mjs --check",
+    "generate": "node scripts/embed-door.mjs && node scripts/embed-changelog.mjs && node scripts/embed-listings.mjs",
+    "check:generated": "node scripts/embed-door.mjs --check && node scripts/embed-changelog.mjs --check && node scripts/embed-listings.mjs --check",
     "check:contracts": "node --experimental-strip-types scripts/check-contracts.ts",
     "check:docs": "node --experimental-strip-types scripts/check-docs-index.ts",
     "build": "npm run check:generated && npm run check:contracts && npm run check:docs && npm run typecheck",

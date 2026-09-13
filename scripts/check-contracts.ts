@@ -187,7 +187,7 @@ for (const tool of MCP_TOOLS) {
     assert(dispatched.some(actual => matchesTemplate(actual, template)), `${tool.name} route template lacks a dispatch branch: ${template.path}`)
 }
 
-const generated = new Set(['src/door.ts', 'src/frontdoor.txt', 'src/humans.txt', 'src/llms.txt', 'src/changelog-source.ts'])
+const generated = new Set(['src/door.ts', 'src/frontdoor.txt', 'src/humans.txt', 'src/llms.txt', 'src/changelog-source.ts', 'src/listing-metadata.ts'])
 const roots = ['src', 'docs', 'seed', 'README.md', 'CHANGELOG.md']
 function filesUnder(path: string): string[] {
   const absolute = resolve(path)

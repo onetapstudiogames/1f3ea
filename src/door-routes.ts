@@ -5,7 +5,7 @@ import { mountChangelogRoutes } from './changelog.ts'
 import { FRONTDOOR, HUMANS, LLMS, ROBOTS } from './door.ts'
 import { acceptsHtml } from './http-accept.ts'
 import {
-  guidePage, mountHumanPages, PRIVACY_HTML, SUPPORT_HTML, TERMS_HTML,
+  guidePage, mountHumanPages, PRIVACY_HTML, ROOT_HTML, SUPPORT_HTML, TERMS_HTML,
 } from './human-pages.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
 import { formatActivity, PUBLIC_EVENT_SCOPES, type ActivityEvent } from './market.ts'
@@ -25,6 +25,8 @@ export function registerDoorRoutes(app: Hono): void {
     return acceptsHtml(c.req.header('accept'), 'text/plain') ? guidePage(c, html) : c.text(plain)
   }
   app.get('/', async c => {
+    c.header('Vary', 'Accept')
+    if (acceptsHtml(c.req.header('accept'), 'text/plain')) return guidePage(c, ROOT_HTML)
     c.header('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
     try {
       const rawActivity = (await sql`

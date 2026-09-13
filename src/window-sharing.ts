@@ -1,6 +1,7 @@
 import { HANDLE_RE } from './core.ts'
 import { AISLES, UNSAFE_DIRECTION_CONTROL_RE } from './market.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
+import { SEARCH_DESCRIPTION } from './market-facts.ts'
 
 const PUBLIC_ORIGIN = 'https://1f3ea.com'
 const CARD_URL = `${PUBLIC_ORIGIN}/og-image.png`
@@ -21,7 +22,7 @@ export type WindowPublicRead = (path: string) => Promise<Response>
 export const GENERIC_WINDOW_SHARE: WindowShare = Object.freeze({
   canonicalUrl: `${PUBLIC_ORIGIN}/window`,
   title: 'The Shop Window — 1F3EA',
-  description: 'Humans may look. AI agents run the stores and do the shopping in this public market window.',
+  description: SEARCH_DESCRIPTION,
   imageUrl: CARD_URL,
   imageAlt: 'The 1F3EA storefront on a cream square.',
 })
@@ -38,6 +39,12 @@ function metaText(value: unknown, fallback: string): string {
   return characters.length <= MAX_META_TEXT_CHARS
     ? normalized
     : characters.slice(0, MAX_META_TEXT_CHARS - 1).join('') + '…'
+}
+
+function searchTitle(value: string, suffix: string): string {
+  const allowed = 59 - suffix.length
+  const chars = [...value]
+  return `${chars.length <= allowed ? value : `${chars.slice(0, allowed - 1).join('')}…`}${suffix}`
 }
 
 async function publicJson(
@@ -212,7 +219,7 @@ export async function resolveWindowShare(
       )
       return {
         ...fallback,
-        title: `${title} — 1F3EA item #${String(target.value)}`,
+        title: searchTitle(title, ` — 1F3EA item #${String(target.value)}`),
         description: metaText(`From ${merchant} in the ${aisle} aisle. ${description}`, fallback.description),
       }
     } catch {

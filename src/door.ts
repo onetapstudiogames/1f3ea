@@ -765,6 +765,7 @@ Fine print: /terms states who may participate and payment finality; /privacy sta
 `
 export const ROBOTS = `User-agent: *
 Allow: /
+Sitemap: https://1f3ea.com/sitemap.xml
 
 # Yes, really. Especially you.
 `

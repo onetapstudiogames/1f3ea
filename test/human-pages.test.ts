@@ -1,10 +1,56 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { HOSTED_PROOF_CONTRACT } from '../src/market-facts.ts'
+import { HOSTED_PROOF_CONTRACT, SEARCH_DESCRIPTION } from '../src/market-facts.ts'
 
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
 const { default: app } = await import('../src/index.ts')
+const { treasuryDocument } = await import('../src/human-pages.ts')
+const { LISTING_METADATA } = await import('../src/listing-metadata.ts')
+
+test('every human page has search metadata from market facts', async () => {
+  for (const path of ['/','/about','/help','/city-bridge','/window','/terms','/privacy','/support','/treasury','/changelog']) {
+    const html = path === '/treasury' ? treasuryDocument({ address: '', network: 'Base', usdc_balance_onchain: 0, fees_collected_usdc: 0, fees_count: 0, recent_fees: [], fees_returned: 0, fees_page_size: 10, fees_has_more: false, fees_next_before_id: null, note: '' }) : await (async () => {
+      const response = await app.request(path, { headers: { accept: 'text/html' } })
+      assert.equal(response.status, 200, path)
+      return response.text()
+    })()
+    const title = /<title>([^<]+)<\/title>/u.exec(html)?.[1]
+    assert.ok(title?.includes('1F3EA') && title.length < 60, path)
+    assert.ok(html.includes(`<meta name="description" content="${SEARCH_DESCRIPTION}">`), path)
+    assert.ok(SEARCH_DESCRIPTION.length < 160)
+    assert.match(html, /<link rel="canonical" href="https:\/\/1f3ea\.com\//u, path)
+    assert.match(html, /<meta property="og:image" content="https:\/\/1f3ea\.com\/og-image\.png">/u, path)
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/1f3ea\.com\/og-image\.png">/u, path)
+    assert.equal((html.match(/<script type="application\/ld\+json">/gu) ?? []).length, 1, path)
+    for (const tag of [/<title>/gu, /<meta name="description"/gu, /<link rel="canonical"/gu, /<meta property="og:image"/gu, /<meta name="twitter:image"/gu]) {
+      assert.equal((html.match(tag) ?? []).length, 1, `${path}: ${tag}`)
+    }
+  }
+  const agentRoot = await app.request('/')
+  assert.match(agentRoot.headers.get('content-type') ?? '', /^text\/plain\b/u)
+  assert.equal(agentRoot.headers.get('vary'), 'Accept')
+  const browserRoot = await app.request('/', { headers: { accept: 'text/html' } })
+  assert.equal(browserRoot.headers.get('vary'), 'Accept')
+  const root = await browserRoot.text()
+  const rootSchema = JSON.parse(/<script type="application\/ld\+json">([^<]+)<\/script>/u.exec(root)?.[1] ?? '{}')
+  assert.equal(rootSchema['@type'], 'WebSite')
+  const robots = await (await app.request('/robots.txt')).text()
+  assert.match(robots, /Sitemap: https:\/\/1f3ea\.com\/sitemap\.xml/u)
+  const sitemap = await (await app.request('/sitemap.xml')).text()
+  for (const path of ['/','/about','/help','/city-bridge','/window','/terms','/privacy','/support','/treasury','/changelog']) {
+    assert.ok(sitemap.includes(`<loc>https://1f3ea.com${path}</loc>`), path)
+  }
+  const about = await (await app.request('/about')).text()
+  const schema = JSON.parse(/<script type="application\/ld\+json">([^<]+)<\/script>/u.exec(about)?.[1] ?? '{}')
+  assert.equal(schema['@type'], 'SoftwareApplication')
+  assert.equal(schema.name, LISTING_METADATA.displayName)
+  assert.equal(schema.description, LISTING_METADATA.longDescription)
+  for (const listing of LISTING_METADATA.directories.filter(row => row.status !== 'owner submits')) {
+    assert.ok(about.includes(listing.directory), listing.directory)
+    if (listing.listingUrl.startsWith('https://')) assert.ok(about.includes(listing.listingUrl), listing.directory)
+  }
+})
 
 const readAsset = (name: string) => readFileSync(new URL(`../src/assets/${name}`, import.meta.url))
 const readText = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8')

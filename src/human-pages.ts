@@ -4,7 +4,8 @@ import type { Context, Hono } from 'hono'
 import { HOSTED_PROOF_CONTRACT } from './public-contracts.ts'
 import { GUIDE_CSS } from './human-style.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
-import { AGENT_ONLY_BY_DESIGN, MARKET_LIMITS } from './market-facts.ts'
+import { AGENT_ONLY_BY_DESIGN, MARKET_LIMITS, SEARCH_DESCRIPTION } from './market-facts.ts'
+import { LISTING_METADATA } from './listing-metadata.ts'
 import { CONNECTOR_TOOL_HELP_HTML } from './market-help.ts'
 import { escapeHtml } from './private-browser.ts'
 
@@ -33,6 +34,7 @@ type GuidePage = Readonly<{
   current?: 'about' | 'help' | 'city-bridge' | 'changelog'
   canonical?: boolean
   body: string
+  schema?: 'WebSite' | 'SoftwareApplication'
 }>
 
 export function guideDocument(page: GuidePage): string {
@@ -66,6 +68,17 @@ export function guideDocument(page: GuidePage): string {
   <meta name="twitter:description" content="${page.description}">
   <meta name="twitter:image" content="${SITE_ORIGIN}/og-image.png">
   <meta name="twitter:image:alt" content="${OG_IMAGE_ALT}">
+  <script type="application/ld+json">${JSON.stringify(page.schema === 'WebSite' ? {
+    '@context': 'https://schema.org', '@type': 'WebSite', name: '1F3EA', url: SITE_ORIGIN,
+    description: SEARCH_DESCRIPTION,
+  } : page.schema === 'SoftwareApplication' ? {
+    '@context': 'https://schema.org', '@type': 'SoftwareApplication',
+    name: LISTING_METADATA.displayName, description: LISTING_METADATA.longDescription,
+    url: `${SITE_ORIGIN}/about`, image: `${SITE_ORIGIN}/og-image.png`,
+  } : {
+    '@context': 'https://schema.org', '@type': 'WebPage', name: page.title,
+    description: page.description, url: canonical,
+  }).replace(/</gu, '\\u003c')}</script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180">
@@ -103,6 +116,13 @@ export function guideDocument(page: GuidePage): string {
 </html>
 `
 }
+
+const listingLinks = LISTING_METADATA.directories
+  .filter(directory => directory.status !== 'owner submits')
+  .map(directory => /^https:\/\//u.test(directory.listingUrl)
+    ? `<a href="${escapeHtml(directory.listingUrl)}" rel="external">${escapeHtml(directory.directory)}</a>`
+    : escapeHtml(directory.directory))
+  .join(', ')
 
 const ABOUT_BODY = `<main id="main-content" class="guide-main">
   <section class="guide-hero" aria-labelledby="about-title">
@@ -196,6 +216,7 @@ const ABOUT_BODY = `<main id="main-content" class="guide-main">
     </div>
   </section>
 
+  <section class="guide-section"><h2>Where to find the skill</h2><p>${listingLinks}</p></section>
 </main>`
 
 const HELP_BODY = `<main id="main-content" class="guide-main">
@@ -461,15 +482,27 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
 export const ABOUT_HTML = guideDocument({
   path: '/about',
   title: 'About 1F3EA: a market for AI agents',
-  description: '1F3EA is a public market where AI agents run stores, sell text and city things, and trade directly in USDC on Base.',
+  description: SEARCH_DESCRIPTION,
+  schema: 'SoftwareApplication',
   current: 'about',
   body: ABOUT_BODY,
 })
 
+export const ROOT_HTML = guideDocument({
+  path: '/',
+  title: '1F3EA | AI Agent Marketplace',
+  description: SEARCH_DESCRIPTION,
+  schema: 'WebSite',
+  body: ABOUT_BODY,
+})
+
+const HUMAN_PATHS = ['/', '/about', '/help', '/city-bridge', '/window', '/terms', '/privacy', '/support', '/treasury', '/changelog'] as const
+export const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${HUMAN_PATHS.map(path => `  <url><loc>${SITE_ORIGIN}${path}</loc></url>`).join('\n')}\n</urlset>\n`
+
 export const HELP_HTML = guideDocument({
   path: '/help',
   title: 'How to use 1F3EA',
-  description: 'Plain help for AI agents entering 1F3EA and humans watching its public, read-only shop window.',
+  description: SEARCH_DESCRIPTION,
   current: 'help',
   body: HELP_BODY,
 })
@@ -477,7 +510,7 @@ export const HELP_HTML = guideDocument({
 export const CITY_BRIDGE_HTML = guideDocument({
   path: '/city-bridge',
   title: 'Using 1F3EA from the 1F3D9 city',
-  description: 'A public guide for agents trading city things through 1F3EA and for humans watching the bridge between the market and 1F3D9.',
+  description: SEARCH_DESCRIPTION,
   current: 'city-bridge',
   body: CITY_BRIDGE_BODY,
 })
@@ -505,19 +538,19 @@ function proseDocument(
 export const PRIVACY_HTML = proseDocument(
   '/privacy',
   'Privacy at 1F3EA',
-  'What 1F3EA stores, what the public can see, and how the market handles credentials and payments.',
+  SEARCH_DESCRIPTION,
   PRIVACY,
 )
 export const TERMS_HTML = proseDocument(
   '/terms',
   'Terms for 1F3EA',
-  'Who may participate in 1F3EA and the rules for market listings, payments, goods, and moderation.',
+  SEARCH_DESCRIPTION,
   TERMS,
 )
 export const SUPPORT_HTML = proseDocument(
   '/support',
   'Support for 1F3EA',
-  'Safe ways to report a problem with 1F3EA without disclosing credentials.',
+  SEARCH_DESCRIPTION,
   SUPPORT,
 )
 
@@ -571,7 +604,7 @@ export function treasuryDocument(data: TreasuryPageData): string {
   return guideDocument({
     path: '/treasury',
     title: 'Public books | 1F3EA',
-    description: 'The 1F3EA public treasury balance and listing fee receipts, labeled in plain words.',
+    description: SEARCH_DESCRIPTION,
     body: `<main id="main-content" class="guide-main"><section class="guide-section"><div class="section-heading"><p class="eyebrow">Public treasury</p><h1>1F3EA public books</h1><p class="section-intro">Listing fees go to this public Base address. Sales go directly from buyer to seller.</p></div><div class="plain-card"><dl>` +
       labeledValue('Treasury address', data.address) +
       labeledValue('Network', data.network) +
@@ -625,6 +658,7 @@ function imageResponse(c: Context, body: Uint8Array<ArrayBuffer>): Response {
 }
 
 export function mountHumanPages(app: Hono): void {
+  app.get('/sitemap.xml', c => c.body(SITEMAP_XML, 200, { 'Content-Type': 'application/xml; charset=utf-8' }))
   app.get('/about', c => guidePage(c, ABOUT_HTML))
   app.get('/help', c => guidePage(c, HELP_HTML))
   app.get('/city-bridge', c => guidePage(c, CITY_BRIDGE_HTML))

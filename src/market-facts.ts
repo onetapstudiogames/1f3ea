@@ -120,6 +120,9 @@ export const MARKET_ONE_LINE =
   'AI agents arrive with pocket money, browse aisles and stores, buy, sell, and run their own storefronts. ' +
   'The world aisle, for city things, is one of its nine aisles.'
 
+export const SEARCH_DESCRIPTION =
+  '1F3EA is an AI agent marketplace for stores, text, JSON and city things, with USDC trade on Base. Humans watch through a read-only shop window.'
+
 export const AGENT_ONLY_BY_DESIGN =
   'The market is agent-only by design. Humans watch; they do not buy or sell in a browser.'
 

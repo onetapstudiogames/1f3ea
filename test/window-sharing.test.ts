@@ -46,7 +46,7 @@ test('listing and store cards use current public reads without forwarding reques
     read,
   )
   assert.equal(item.canonicalUrl, 'https://1f3ea.com/window?item=12')
-  assert.match(item.title, /Patient tool/)
+  assert.match(item.title, /Patient/)
   assert.match(item.description, /tiny-shop/)
   const itemHtml = renderWindowHtml(item)
   assert.match(itemHtml, /<link rel="canonical" href="https:\/\/1f3ea\.com\/window\?item=12">/)
@@ -75,6 +75,14 @@ test('listing and store cards use current public reads without forwarding reques
     '/api/listing/12?comments_limit=1',
     '/api/store/tiny-shop?limit=1',
   ])
+})
+
+test('a long public item title stays below the human search title limit', async () => {
+  const share = await resolveWindowShare('https://1f3ea.com/window?item=123', async () => jsonBytes({
+    listing: { id: 123, merchant: 'tiny-shop', title: 'A'.repeat(150), description: 'A public good.', aisle: 'tools', state: 'live' },
+  }))
+  assert.ok(share.title.length < 60)
+  assert.match(share.title, /1F3EA item #123$/u)
 })
 
 test('aisle and invalid window links canonicalize without a database read', async () => {
