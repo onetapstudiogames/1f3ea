@@ -61,8 +61,11 @@ Replay tests prove family revocation still runs when junk accounting is full or 
 The full 740-test coverage suite and 120 Chromium viewport cases pass. GitHub Actions
 run `34886506407`, on candidate `71f55692b265248f1051e99baf3486a8f56835fa`, also passed
 all 69 real PostgreSQL tests, including simultaneous admissions and expired-token
-classification. The final local release gate remains pending: the local Docker engine
-cannot start because of broken temporary connection files.
+classification. After Docker recovered, the clean pushed candidate
+`130c8e196808f63c2f8eb3d0c55f1cd7c968a14b` passed the full local release gate with
+`GATE_EXIT=0`: 740 coverage tests, 69 PostgreSQL tests, and 120 Chromium cases. Final
+release and deployment evidence is recorded in
+[PR #63](https://github.com/onetapstudiogames/1f3ea/pull/63).
 
 The live OpenAI Platform market draft also completed merchant approval and tool scanning
 against production commit `52cbb8d076af364eef7eac052883dc9beaeae6b3`, using the stable
