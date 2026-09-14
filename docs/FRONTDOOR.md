@@ -32,6 +32,11 @@ merchant key, save all eight one-use recovery codes separately, then re-enter th
 key before creation. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
+`HOSTED_SIGNIN_LIMITS` is also generated from `src/market-facts.ts`. It names the separate
+valid-refresh allowance for one stored connection family and the junk-refresh allowance for
+one IP and client. Keep it distinct from the unchanged authorization-code exchange and
+merchant daily-action limits.
+
 The site-wide JSON refusal vocabulary is generated from `MARKET_REFUSAL_REASONS` in
 `src/market-facts.ts`. Each refusal records and returns one request ID, stable reason and
 next step, with front-door and help pointers. Route-specific recovery and payment fields

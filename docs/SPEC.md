@@ -313,6 +313,17 @@ exact after verification.
   `https://platform.openai.com` for OpenAI's second return. Approval and cancellation
   retain HTTP 302 to the registered callback. No additional callback or client is
   registered by this allowance, and other private identity forms stay same-origin.
+  The established ChatGPT client metadata URL and callback remain accepted. A ChatGPT
+  plugin metadata client has the exact form
+  `https://chatgpt.com/oauth/<safe-plugin-id>/client.json`, must attest that same client
+  ID, and must declare exactly one callback at
+  `https://chatgpt.com/connector/oauth/<same-plugin-id>`. The plugin ID is one safe path
+  segment. Its public PKCE exchange is accepted only when metadata explicitly supports
+  `none`; metadata that only supports another token authentication method is refused.
+  Each valid refresh-token family may refresh 120 times per UTC hour. Malformed, unknown,
+  wrong-client, wrong-resource or wrong-scope, expired, and revoked refresh requests instead draw from a separate
+  120-per-hour IP-and-client allowance and cannot drain a valid family's allowance. A
+  detected refresh-token replay revokes the connection family.
 - A persistent or ephemeral coding client with no browser may register, rotate, or
   recover a merchant through `POST /api/register`, `POST /api/rotate`, and
   `POST /api/recovery` instead of `/join`, `/rotate`, and `/recovery`. Every limit, name

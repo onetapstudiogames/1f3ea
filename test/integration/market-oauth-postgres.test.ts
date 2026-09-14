@@ -330,26 +330,30 @@ async function stageRecoveryForRace(label: string, merchantId: number, keyHash: 
 async function seedOAuthTokenFamily(
   store: ReturnType<typeof createMarketOAuthStore>,
   label: string,
+  clientId?: string,
 ) {
   const seeded = await seedExistingMerchant(label)
-  await store.createAuthorizationRequest(seeded.authorization)
+  const bound = { ...seeded, authorization: {
+    ...seeded.authorization, clientId: clientId ?? seeded.authorization.clientId,
+  } }
+  await store.createAuthorizationRequest(bound.authorization)
   const codeHash = sha256(`${label}:authorization-code`)
   assert.equal((await store.approveExistingMerchantAndIssueAuthorizationCode({
-    sessionHash: seeded.authorization.sessionHash,
-    csrfHash: seeded.authorization.csrfHash,
-    merchantSecretHash: seeded.keyHash,
+    sessionHash: bound.authorization.sessionHash,
+    csrfHash: bound.authorization.csrfHash,
+    merchantSecretHash: bound.keyHash,
     authorizationCodeHash: codeHash,
   })).status, 'approved')
   const refreshTokenHash = sha256(`${label}:old-refresh`)
   assert.equal(await store.exchangeAuthorizationCode({
     codeHash,
-    clientId: seeded.authorization.clientId,
-    redirectUri: seeded.authorization.redirectUri,
-    resource: seeded.authorization.resource,
+    clientId: bound.authorization.clientId,
+    redirectUri: bound.authorization.redirectUri,
+    resource: bound.authorization.resource,
     accessTokenHash: sha256(`${label}:old-access`),
     refreshTokenHash,
   }), true)
-  return { seeded, refreshTokenHash }
+  return { seeded: bound, refreshTokenHash }
 }
 
 test('hosted merchant OAuth is atomic against real PostgreSQL', async t => {
@@ -784,6 +788,66 @@ test('hosted merchant OAuth is atomic against real PostgreSQL', async t => {
          WHERE token.token_hash = $1`,
         [refreshTokenHash],
       )).rows, [{ refresh_unused: true, family_active: true, token_count: 2 }])
+    })
+
+    await t.test('refresh routing isolates same-client families and PostgreSQL admits exactly 120 concurrent attempts', async () => {
+      const clientId = 'shared-openai-client'
+      const first = await seedOAuthTokenFamily(store, 'refresh-rate-first', clientId)
+      const second = await seedOAuthTokenFamily(store, 'refresh-rate-second', clientId)
+      const firstSubject = await store.resolveRefreshRateLimitSubject({
+        presentedRefreshTokenHash: first.refreshTokenHash, clientId,
+        resource: first.seeded.authorization.resource,
+      })
+      const secondSubject = await store.resolveRefreshRateLimitSubject({
+        presentedRefreshTokenHash: second.refreshTokenHash, clientId,
+        resource: second.seeded.authorization.resource,
+      })
+      assert.equal(firstSubject.status, 'active')
+      assert.equal(secondSubject.status, 'active')
+      assert.notDeepEqual(firstSubject, secondSubject)
+      if (firstSubject.status !== 'active' || secondSubject.status !== 'active') return
+
+      const firstBucket = sha256(`market-oauth:connection:${firstSubject.connectionKey}`)
+      const admitted = await Promise.all(Array.from({ length: 121 }, () =>
+        store.consumeOAuthRateLimit({ bucketHash: firstBucket, attemptKind: 'refresh', maximum: 120 })))
+      assert.equal(admitted.filter(Boolean).length, 120)
+      assert.equal(admitted.filter(value => !value).length, 1)
+      assert.equal(await store.consumeOAuthRateLimit({
+        bucketHash: sha256(`market-oauth:connection:${secondSubject.connectionKey}`),
+        attemptKind: 'refresh', maximum: 120,
+      }), true)
+      assert.deepEqual((await testDatabase.query(
+        `SELECT used FROM oauth_rate_limits WHERE bucket_hash = $1 AND attempt_kind = 'refresh'`,
+        [firstBucket],
+      )).rows, [{ used: 120 }])
+    })
+
+    await t.test('refresh routing sends wrong binding, expired and revoked tokens to junk, and flags first replay', async () => {
+      const { seeded, refreshTokenHash } = await seedOAuthTokenFamily(store, 'refresh-classification')
+      const bound = { presentedRefreshTokenHash: refreshTokenHash,
+        clientId: seeded.authorization.clientId, resource: seeded.authorization.resource }
+      assert.equal((await store.resolveRefreshRateLimitSubject(bound)).status, 'active')
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject({ ...bound, clientId: 'wrong-client' }), {
+        status: 'junk',
+      })
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject({
+        ...bound, resource: `${bound.resource}/wrong`,
+      }), { status: 'junk' })
+      await testDatabase.query(`UPDATE oauth_token_families SET expires_at = now() + interval '9 minutes'
+        WHERE merchant_id = $1`, [seeded.id])
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'junk' })
+      await testDatabase.query(`UPDATE oauth_token_families SET expires_at = now() + interval '1 day'
+        WHERE merchant_id = $1`, [seeded.id])
+      await testDatabase.query(`UPDATE oauth_tokens SET expires_at = now() - interval '1 minute'
+        WHERE token_hash = $1`, [refreshTokenHash])
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'junk' })
+      await testDatabase.query(`UPDATE oauth_tokens SET expires_at = now() + interval '1 day'
+        WHERE token_hash = $1`, [refreshTokenHash])
+      await testDatabase.query(`UPDATE oauth_tokens SET used_at = now() WHERE token_hash = $1`, [refreshTokenHash])
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'reused' })
+      await store.revokeTokenFamilyByToken({ tokenHash: refreshTokenHash,
+        clientId: seeded.authorization.clientId })
+      assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'junk' })
     })
   } finally {
     database = null
