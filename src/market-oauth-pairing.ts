@@ -61,7 +61,7 @@ export async function handlePairAction(
   }
   const pairingCode = oneFormValue(values, 'pairing_code', 80)
   if (!pairingCode || !PAIRING_CODE_RE.test(pairingCode)) {
-    return pairingError(c, 'pairing_code_malformed', 'The pairing_code field did not have the expected shape.', pending.client_display_name, csrf)
+    return pairingError(c, 'pairing_code_malformed', 'The pairing_code field did not have the expected shape.', pending.client_display_name, csrf, pending.redirect_uri)
   }
   const allowed = await admitted(
     oauth,
@@ -72,13 +72,14 @@ export async function handlePairAction(
   if (!allowed) return browserError(c, 429, 'rate_limited', 'Too many pairing attempts. Try again after the next UTC hour.')
   const reserved = await reservePairing({ sessionHash, csrfHash, codeHash: sha256(pairingCode) })
   if (!reserved) {
-    return pairingError(c, 'pairing_code_unavailable', 'That pairing code was not accepted.', pending.client_display_name, csrf)
+    return pairingError(c, 'pairing_code_unavailable', 'That pairing code was not accepted.', pending.client_display_name, csrf, pending.redirect_uri)
   }
   return html(
     c,
     200,
     `Connect ${pending.client_display_name} to @${reserved.handle}?`,
     pairingConfirmPage(pending.client_display_name, reserved.handle, csrf),
+    pending.redirect_uri,
   )
 }
 
@@ -106,11 +107,11 @@ export async function handleConfirmPairAction(
   }
   const reservation = await takeReservation({ sessionHash, csrfHash })
   if (!reservation) {
-    return pairingError(c, 'pairing_reservation_missing', 'No reserved pairing code is waiting for this sign-in.', pending.client_display_name, csrf)
+    return pairingError(c, 'pairing_reservation_missing', 'No reserved pairing code is waiting for this sign-in.', pending.client_display_name, csrf, pending.redirect_uri)
   }
   const resolved = await resolvePairingCode({ codeHash: reservation.codeHash })
   if (!resolved) {
-    return pairingError(c, 'pairing_code_expired_or_revoked', 'The reserved pairing code was already used, expired, or revoked.', pending.client_display_name, csrf)
+    return pairingError(c, 'pairing_code_expired_or_revoked', 'The reserved pairing code was already used, expired, or revoked.', pending.client_display_name, csrf, pending.redirect_uri)
   }
   const code = opaque(MARKET_OAUTH_AUTHORIZATION_CODE_PREFIX)
   const approved = await oauth.store.approveExistingMerchantAndIssueAuthorizationCode({
@@ -124,7 +125,7 @@ export async function handleConfirmPairAction(
       : browserError(c, 403, 'request_unavailable', 'This sign-in request is no longer available.')
   }
   if (approved.status === 'merchant_key_rejected') {
-    return pairingError(c, 'pairing_merchant_key_changed', 'That pairing code no longer matches a current merchant key.', pending.client_display_name, csrf)
+    return pairingError(c, 'pairing_merchant_key_changed', 'That pairing code no longer matches a current merchant key.', pending.client_display_name, csrf, pending.redirect_uri)
   }
   return redirect(c, callbackUrl(approved.redirectUri, approved.state, oauth.origin, { code }))
 }

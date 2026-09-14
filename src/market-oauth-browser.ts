@@ -34,8 +34,9 @@ export function oauthHtml(
   status: HtmlStatus,
   title: string,
   body: string,
+  validatedRedirectUri?: string,
 ): Response {
-  privateBrowserHeaders(c, true)
+  privateBrowserHeaders(c, true, validatedRedirectUri)
   return c.html(page(title, body), status)
 }
 
@@ -58,6 +59,7 @@ function renderBrowserError(
   nextStep: string,
   detail?: MarketRefusalDetail,
   recoveryHtml = '',
+  validatedRedirectUri?: string,
 ) {
   c.header('Vary', 'Accept')
   if (status === 429 && !c.res.headers.has('Retry-After')) {
@@ -77,6 +79,7 @@ function renderBrowserError(
       `<p class="muted">Request ID: <code>${escapeHtml(reference.requestId)}</code></p>` +
       '<p class="muted"><a href="/">Read the market front door</a> or <a href="/help">open market help</a>.</p>' +
       recoveryHtml,
+    validatedRedirectUri,
   )
 }
 
@@ -86,6 +89,7 @@ export function oauthPairingBrowserError(
   message: string,
   clientName: string,
   csrf: string,
+  validatedRedirectUri: string,
 ): Response {
   return renderBrowserError(
     c,
@@ -95,6 +99,7 @@ export function oauthPairingBrowserError(
     'Correct the code below, or mint a fresh pairing code from the coding client.',
     detail,
     '<hr><h2>Try another pairing code</h2>' + oauthConsentPage(clientName, csrf, true, true),
+    validatedRedirectUri,
   )
 }
 
@@ -234,6 +239,7 @@ export function stagedAuthorizationResponse(
     200,
     'Continue creating the merchant',
     resumedMerchantKeyPage(request.new_handle!, csrf),
+    request.redirect_uri,
   )
 }
 

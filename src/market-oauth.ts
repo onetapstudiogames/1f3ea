@@ -320,6 +320,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         existing !== undefined,
         oauth.codingIdentityReady,
       ),
+      existing?.redirect_uri ?? request.redirectUri,
     )
     const renderActiveRequest = (
       existing: AuthorizationRequestRecord,
@@ -627,6 +628,7 @@ export function mountMarketOAuthRoutes(app: Hono, options: MarketOAuthRouteOptio
         200,
         'Save the merchant key',
         saveMerchantKeyPage(staged.handle, merchantKey, recoveryCodes, csrf),
+        pending.redirect_uri,
       )
     } catch {
       c.header('Retry-After', '1')
