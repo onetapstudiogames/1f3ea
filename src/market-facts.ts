@@ -45,6 +45,8 @@ export const MARKET_LIMITS = Object.freeze({
     newMerchantStartsPerClientUtcHour: 300,
     newMerchantConfirmsPerIpAndSessionUtcHour: 10,
     tokenRequestsPerIpOrClientUtcHour: 120,
+    refreshesPerConnectionUtcHour: 120,
+    junkRefreshesPerIpOrClientUtcHour: 120,
     revocationsPerIpOrClientUtcHour: 120,
   }),
   pairing: Object.freeze({ createsPerIpAndMerchantUtcHour: 20, lifetimeMinutes: 10 }),
@@ -127,14 +129,11 @@ export const REQUEST_FIELD_CONVENTION =
   'Request bodies and connector arguments accept only the fields named for that call; extra fields are refused.'
 
 export const HOSTED_SIGNIN_LIMITS =
-  `The sign-in request expires after ${MARKET_LIMITS.oauth.requestMinutes} minutes and its one-time authorization code expires after ${MARKET_LIMITS.oauth.authorizationCodeMinutes} minutes. ` +
-  `Sign-in starts allow ${MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour} client-metadata checks per IP and ${MARKET_LIMITS.oauth.validRequestsPerClientUtcHour} valid requests per client per UTC hour. ` +
-  `Existing-key and pairing-code confirmation share a limit of ${MARKET_LIMITS.oauth.keyAttemptsPerIpAndClientUtcHour} attempts per IP and client per UTC hour. ` +
-  `New-merchant preparation allows ${MARKET_LIMITS.oauth.newMerchantStartsPerIpUtcHour} starts per IP, ${MARKET_LIMITS.oauth.newMerchantStartsGlobalUtcHour} total, and ${MARKET_LIMITS.oauth.newMerchantStartsPerClientUtcHour} per client per UTC hour; confirmation allows ` +
-  `${MARKET_LIMITS.oauth.newMerchantConfirmsPerIpAndSessionUtcHour} attempts per IP and browser session. Pairing-code creation allows ${MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour} attempts per IP and merchant per UTC hour. ` +
-  `A pairing code is single-use and expires after ${MARKET_LIMITS.pairing.lifetimeMinutes} minutes. ` +
-  `The short pass lasts ${MARKET_LIMITS.oauth.accessPassMinutes} minutes and the long pass lasts ${MARKET_LIMITS.oauth.refreshPassDays} days. ` +
-  `OAuth token exchange allows ${MARKET_LIMITS.oauth.tokenRequestsPerIpOrClientUtcHour} attempts per UTC hour for each IP and each client; OAuth revocation allows ${MARKET_LIMITS.oauth.revocationsPerIpOrClientUtcHour} attempts per UTC hour for each IP and each client.`
+  `All hourly limits reset at UTC-hour start. Sign-in request: ${MARKET_LIMITS.oauth.requestMinutes} minutes; code: ${MARKET_LIMITS.oauth.authorizationCodeMinutes}. Starts allow ${MARKET_LIMITS.oauth.metadataChecksPerIpUtcHour} metadata checks per IP and ${MARKET_LIMITS.oauth.validRequestsPerClientUtcHour} valid requests per client. ` +
+  `Existing-key and pairing-code confirmation: ${MARKET_LIMITS.oauth.keyAttemptsPerIpAndClientUtcHour} attempts per IP and per client. New-merchant preparation: ${MARKET_LIMITS.oauth.newMerchantStartsPerIpUtcHour} starts per IP, ${MARKET_LIMITS.oauth.newMerchantStartsGlobalUtcHour} total, ${MARKET_LIMITS.oauth.newMerchantStartsPerClientUtcHour} per client; confirmation: ${MARKET_LIMITS.oauth.newMerchantConfirmsPerIpAndSessionUtcHour} per IP and browser session. ` +
+  `Pairing codes: ${MARKET_LIMITS.pairing.createsPerIpAndMerchantUtcHour} per IP and merchant, single-use, ${MARKET_LIMITS.pairing.lifetimeMinutes} minutes. Access: ${MARKET_LIMITS.oauth.accessPassMinutes} minutes; refresh: ${MARKET_LIMITS.oauth.refreshPassDays} days. ` +
+  `Code exchange: ${MARKET_LIMITS.oauth.tokenRequestsPerIpOrClientUtcHour} per IP and per client. Valid refresh: ${MARKET_LIMITS.oauth.refreshesPerConnectionUtcHour} per stored connection family. ` +
+  `Invalid refreshes (malformed, unknown, wrong-client, wrong-resource, wrong-scope, expired, or revoked): separate ${MARKET_LIMITS.oauth.junkRefreshesPerIpOrClientUtcHour} per IP and per client. Revocation: ${MARKET_LIMITS.oauth.revocationsPerIpOrClientUtcHour} per IP and per client.`
 
 export const IDENTITY_LIMITS =
   `Identity ceremonies expire after ${MARKET_LIMITS.identity.ceremonyMinutes} minutes. Registration staging allows ${MARKET_LIMITS.identity.registrationStartsPerIpUtcHour} starts per IP and ${MARKET_LIMITS.identity.registrationStartsGlobalUtcHour} total per UTC hour. ` +

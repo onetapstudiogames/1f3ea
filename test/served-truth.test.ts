@@ -213,7 +213,9 @@ test('public hosted surfaces publish the same empty per-host proof record', asyn
     ['/support', await (await app.request('/support')).text()],
   ] as const) {
     assert.ok(text.includes(HOSTED_PROOF_CONTRACT), path)
-    assert.doesNotMatch(text, /\b(?:ChatGPT|Claude)\b/u, path)
+    // Naming a supported metadata address is not a claim that a host has
+    // completed a protected call. Keep the actual proof record explicit.
+    assert.match(text, /Recorded proven hosts: none\./u, path)
   }
 })
 

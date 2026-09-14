@@ -6,7 +6,10 @@ import { environment, fixture } from '../test/support/market-oauth-flow-harness.
 
 export const RETURN_TEST_PORT = Number(process.env.MARKET_RETURN_E2E_PORT ?? 41_839)
 export const RETURN_TEST_ORIGIN = `https://127.0.0.1:${RETURN_TEST_PORT}`
-export const RETURN_TEST_CLIENT = 'market-browser-return-test'
+export const RETURN_TEST_CLIENT = 'https://chatgpt.com/oauth/e2e-plugin-browser/client.json'
+export const RETURN_TEST_PLUGIN_ID = 'e2e-plugin-browser'
+export const RETURN_TEST_PLUGIN_CALLBACK = `https://chatgpt.com/connector/oauth/${RETURN_TEST_PLUGIN_ID}`
+const RETURN_TEST_STATIC_CLIENT = 'market-browser-return-test'
 export const RETURN_CALLBACKS = {
   direct: 'https://chatgpt.com/connector/oauth/e2e-direct',
   platform: 'https://chatgpt.com/connector/oauth/e2e-platform',
@@ -32,12 +35,29 @@ export async function startReturnTestServer() {
     ...environment,
     PUBLIC_ORIGIN: RETURN_TEST_ORIGIN,
     HOSTED_MARKET_OAUTH_CLIENTS: JSON.stringify([{
-      client_id: RETURN_TEST_CLIENT,
+      client_id: RETURN_TEST_STATIC_CLIENT,
       client_name: 'Browser Return Test',
       redirect_uris: Object.values(RETURN_CALLBACKS),
     }]),
+  }, fetcher: async (input, init) => {
+    if (
+      String(input) !== RETURN_TEST_CLIENT ||
+      init?.method !== 'GET' ||
+      init.redirect !== 'manual'
+    ) {
+      throw new Error(`unexpected OAuth client metadata fetch: ${String(input)}`)
+    }
+    metadataRequests = [...metadataRequests, { url: String(input), method: init.method }]
+    return new Response(JSON.stringify({
+      client_id: RETURN_TEST_CLIENT,
+      client_name: 'ChatGPT browser plugin',
+      redirect_uris: [RETURN_TEST_PLUGIN_CALLBACK],
+      token_endpoint_auth_method: 'private_key_jwt',
+      token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+    }), { headers: { 'content-type': 'application/json' } })
   } })
   let receipts: ReadonlyArray<{ origin: string; path: string; method: string; status: number }> = []
+  let metadataRequests: ReadonlyArray<{ url: string; method: string }> = []
   for (const path of ['/connector/oauth/*', '/apps-manage/oauth', '/oauth/callback', '/oauth/return']) {
     app.use(path, async (c, next) => {
       await next()
@@ -50,6 +70,7 @@ export async function startReturnTestServer() {
   app.get('/connector/oauth/e2e-direct', c => c.html('<h1>ChatGPT callback reached</h1>'))
   app.get('/connector/oauth/e2e-platform', c => c.redirect('https://platform.openai.com/apps-manage/oauth', 302))
   app.get('/connector/oauth/e2e-unapproved', c => c.redirect('https://platform.openai.com/apps-manage/oauth?unapproved=1', 302))
+  app.get(`/connector/oauth/${RETURN_TEST_PLUGIN_ID}`, c => c.redirect('https://platform.openai.com/apps-manage/oauth', 302))
   app.get('/oauth/callback', c => c.redirect('https://platform.openai.com/apps-manage/oauth', 302))
   app.get('/apps-manage/oauth', c => c.req.query('unapproved')
     ? c.redirect('https://unapproved.example/oauth/return', 302)
@@ -63,7 +84,8 @@ export async function startReturnTestServer() {
   await once(server, 'listening')
   return {
     receipts: () => receipts,
-    reset: () => { receipts = [] },
+    metadataRequests: () => metadataRequests,
+    reset: () => { receipts = []; metadataRequests = [] },
     close: async () => {
       const closed = once(server, 'close')
       server.close()

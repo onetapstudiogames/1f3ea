@@ -90,6 +90,10 @@ export interface RefreshRotationInput {
 
 export type RefreshRotationResult = 'rotated' | 'reused' | 'invalid'
 
+export type RefreshRateLimitSubject =
+  | { status: 'active'; connectionKey: string }
+  | { status: 'reused' | 'junk' }
+
 export interface MarketOAuthStore {
   createAuthorizationRequest(input: AuthorizationRequestInput): Promise<void>
   getAuthorizationRequest(sessionHash: string): Promise<AuthorizationRequestRecord | null>
@@ -115,6 +119,11 @@ export interface MarketOAuthStore {
   ): Promise<NewMerchantConfirmationResult>
   getAuthorizationCode(codeHash: string): Promise<AuthorizationCodeRecord | null>
   exchangeAuthorizationCode(input: CodeExchangeInput): Promise<boolean>
+  resolveRefreshRateLimitSubject(input: {
+    presentedRefreshTokenHash: string
+    clientId: string
+    resource: string
+  }): Promise<RefreshRateLimitSubject>
   rotateRefreshToken(input: RefreshRotationInput): Promise<RefreshRotationResult>
   revokeTokenFamilyByToken(input: { tokenHash: string; clientId: string }): Promise<void>
   resolveOAuthAccessToken(input: {
@@ -475,6 +484,46 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     return rows.length === 1
   }
 
+  // This read only chooses a rate bucket. rotateRefreshToken remains the
+  // authority for one-use tokens and family replay revocation.
+  async function resolveRefreshRateLimitSubject(input: {
+    presentedRefreshTokenHash: string
+    clientId: string
+    resource: string
+  }): Promise<RefreshRateLimitSubject> {
+    requireHash(input.presentedRefreshTokenHash, 'presentedRefreshTokenHash')
+    const rows = await query`
+      SELECT family.id::text AS connection_key,
+        CASE
+          WHEN token.used_at IS NOT NULL
+            AND token.revoked_at IS NULL
+            AND token.expires_at > now()
+            AND family.revoked_at IS NULL
+            AND family.expires_at > now()
+            THEN 'reused'
+          WHEN token.used_at IS NULL
+            AND token.revoked_at IS NULL
+            AND token.expires_at > now()
+            AND family.revoked_at IS NULL
+            AND family.expires_at >= now() + make_interval(mins => ${MARKET_LIMITS.oauth.accessPassMinutes})
+            THEN 'active'
+          ELSE 'junk'
+        END AS status
+      FROM oauth_tokens token
+      JOIN oauth_token_families family ON family.id = token.family_id
+      WHERE token.token_hash = ${input.presentedRefreshTokenHash}
+        AND token.token_type = 'refresh'
+        AND family.client_id = ${input.clientId}
+        AND family.resource = ${input.resource}
+    ` as unknown as { connection_key: string; status: string }[]
+    const subject = rows[0]
+    if (subject?.status === 'active' && subject.connection_key) {
+      return { status: 'active', connectionKey: subject.connection_key }
+    }
+    if (subject?.status === 'reused') return { status: 'reused' }
+    return { status: 'junk' }
+  }
+
   async function rotateRefreshToken(input: RefreshRotationInput): Promise<RefreshRotationResult> {
     requireHash(input.presentedRefreshTokenHash, 'presentedRefreshTokenHash')
     requireHash(input.accessTokenHash, 'accessTokenHash')
@@ -671,6 +720,7 @@ export function createMarketOAuthStore(query: MarketOAuthQuery): MarketOAuthStor
     ...registrationStore,
     getAuthorizationCode,
     exchangeAuthorizationCode,
+    resolveRefreshRateLimitSubject,
     rotateRefreshToken,
     revokeTokenFamilyByToken,
     resolveOAuthAccessToken,
@@ -692,6 +742,7 @@ export const {
   confirmNewMerchantAndIssueAuthorizationCode,
   getAuthorizationCode,
   exchangeAuthorizationCode,
+  resolveRefreshRateLimitSubject,
   rotateRefreshToken,
   revokeTokenFamilyByToken,
   resolveOAuthAccessToken,

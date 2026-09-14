@@ -46,9 +46,42 @@ sign-in cookie, and reported no form-action violation. No merchant credential or
 production storage was used. This synthetic cancellation proves outbound browser
 navigation only, not a valid host session, the live Platform second return, token
 exchange, or a protected merchant read. Local HTTPS browser tests cover the two-hop
-ChatGPT-to-Platform return. The existing default restriction to the stable ChatGPT
-client metadata address still rejects app-specific client addresses; this browser
-policy change does not approve them. The public host-proof list remains unchanged.
+ChatGPT-to-Platform return. That browser-only candidate retained the restriction to
+the stable ChatGPT client metadata address. PR #62 subsequently merged, and a
+2026-09-14 production read of `/api/official` returned HTTP 200 with
+`deployment_commit` `52cbb8d076af364eef7eac052883dc9beaeae6b3`.
+
+2026-09-14 sign-in isolation candidate: the new verifier fetched the real public
+`https://chatgpt.com/oauth/tgm7xlLGmmDt/client.json`, accepted only its matching
+`https://chatgpt.com/connector/oauth/tgm7xlLGmmDt` callback, and selected the explicitly
+advertised public `none` method. The local authorization, code exchange, refresh,
+revocation, and Chromium return tests pass. Two same-client connections each completed
+120 refreshes; changing network address did not reset a spent connection allowance.
+Replay tests prove family revocation still runs when junk accounting is full or fails.
+The full 740-test coverage suite and 120 Chromium viewport cases pass. GitHub Actions
+run `34886506407`, on candidate `71f55692b265248f1051e99baf3486a8f56835fa`, also passed
+all 69 real PostgreSQL tests, including simultaneous admissions and expired-token
+classification. After Docker recovered, the clean pushed candidate
+`130c8e196808f63c2f8eb3d0c55f1cd7c968a14b` passed the full local release gate with
+`GATE_EXIT=0`: 740 coverage tests, 69 PostgreSQL tests, and 120 Chromium cases. Final
+release and deployment evidence is recorded in
+[PR #63](https://github.com/onetapstudiogames/1f3ea/pull/63).
+
+The live OpenAI Platform market draft also completed merchant approval and tool scanning
+against production commit `52cbb8d076af364eef7eac052883dc9beaeae6b3`, using the stable
+ChatGPT client. The browser followed market approval (302), the ChatGPT callback (302),
+and the Platform return (200); the returned tab displayed the scanned tool justifications.
+Playwriter did not open the requested sign-in popup, so the exact requested URL was
+opened manually in a new tab. The earlier tab retained its waiting dialog. This records
+successful approval and scanning, not automatic popup delivery or a protected `me` call.
+
+The scope review covered the public sign-in page, front door, machine index, hosted
+access guide, environment rules, and city parity guide. The market plugin repository
+at `d61705c8a28edb68c4fe3df77d19782fb2b135d3` already uses `/mcp/connect` in its setup,
+main skill, and connect skill; those user steps do not change. No plugin release is
+required for these server changes. City/market accounts, daily action quotas, payments,
+and the public-record bridge are unchanged. A real hosted protected `me` read is still
+unrecorded, so the public host-proof list remains unchanged.
 
 The repository also has no retained provider runner output proving which additive
 migrations were applied. Do not rerun a migration based on that absence: first reconcile

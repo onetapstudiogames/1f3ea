@@ -443,6 +443,33 @@ test('refresh rotation is one-use and reuse revokes the complete token family', 
   assert.equal(await createMarketOAuthStore(invalidFake.query).rotateRefreshToken(input), 'invalid')
 })
 
+test('refresh rate routing resolves only a live matching token family', async () => {
+  const input = {
+    presentedRefreshTokenHash: HASH_A,
+    clientId: 'https://chatgpt.com/oauth/client.json',
+    resource: 'https://1f3ea.com/mcp/connect',
+  }
+  const active = fakeQuery([[{ connection_key: '23', status: 'active' }]])
+  assert.deepEqual(await createMarketOAuthStore(active.query).resolveRefreshRateLimitSubject(input), {
+    status: 'active', connectionKey: '23',
+  })
+  assert.deepEqual(active.captured[0]!.values, [MARKET_LIMITS.oauth.accessPassMinutes, HASH_A, input.clientId, input.resource])
+  assert.match(active.captured[0]!.text, /family\.client_id = \$3/u)
+  assert.match(active.captured[0]!.text, /family\.resource = \$4/u)
+  assert.match(active.captured[0]!.text, /family\.expires_at >= now\(\) \+ make_interval\(mins => \$1\)/u)
+  assert.match(active.captured[0]!.text, /token\.expires_at > now\(\)/u)
+  assert.match(active.captured[0]!.text, /family\.revoked_at IS NULL/u)
+  const reused = fakeQuery([[{ connection_key: '23', status: 'reused' }]])
+  assert.deepEqual(await createMarketOAuthStore(reused.query).resolveRefreshRateLimitSubject(input), {
+    status: 'reused',
+  })
+  for (const rows of [[], [{ connection_key: '23', status: 'junk' }]]) {
+    assert.deepEqual(await createMarketOAuthStore(fakeQuery([rows]).query).resolveRefreshRateLimitSubject(input), {
+      status: 'junk',
+    })
+  }
+})
+
 test('access-token resolution is passive and returns the linked merchant', async () => {
   const merchant = {
     id: 7,

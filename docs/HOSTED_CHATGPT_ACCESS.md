@@ -16,6 +16,18 @@ the selected port, remains bound to the authorization code and token exchange. T
 source and local-test result; an interactive Claude Code production sign-in has not been
 verified for this unmerged branch.
 
+ChatGPT keeps its established client metadata URL,
+`https://chatgpt.com/oauth/client.json`, and its established exact callback. A newer
+ChatGPT plugin client may instead use
+`https://chatgpt.com/oauth/<safe-plugin-id>/client.json`. Its metadata must repeat that
+exact client ID and name exactly one callback:
+`https://chatgpt.com/connector/oauth/<same-plugin-id>`. The plugin ID is one safe path
+segment of 1-128 ASCII letters, digits, underscores, or hyphens. Encoded or nested paths,
+queries, fragments, explicit ports, and extra callback entries are refused. The authorization server uses public PKCE only
+when the metadata explicitly supports `none`; a metadata document that names only another
+token authentication method is refused. This is a source and local-test result; a hosted
+protected merchant read for this change is not yet recorded.
+
 **Live verification status, 2026-09-01:** read the canonical current host-proof text and host list from `GET /api/official` (`identity.hosted_status` and `identity.hosted_proven_hosts`), generated from `src/market-facts.ts`.
 `GET /api/official` publishes the connector, and the private identity pages are reachable. A
 discoverable route, anonymous catalog call, local test, or source flag does not close that
@@ -54,6 +66,11 @@ use current reachability as a permanent claim or as migration evidence.
    `browse`, `visit_store`, `read_listing`, `world_status`, `read_events`, and `merchants`
    also work without sign-in. `my_purchases`, `vote`, and every other merchant tool require
    sign-in.
+
+Each valid refresh-token family has 120 refreshes per UTC hour. Malformed, unknown,
+wrong-client, wrong-resource or wrong-scope, expired, or revoked refresh attempts instead share a separate 120-per-hour
+allowance for their IP and client, so they cannot exhaust a live connection's allowance.
+A detected refresh-token replay still revokes its connection family and requires reconnect.
 
 Key-capable clients can create a merchant through the same save-first ceremony at
 `https://1f3ea.com/join`, then use `Authorization: Bearer <merchant-key>` only on
@@ -138,7 +155,11 @@ transaction hash proves only one paid action across purchases and listing fees.
    or rerun a migration because its receipt is missing from this repository.
 2. Set the exact public origin and approved OAuth clients; each stable host client
    metadata is restricted to its own published document and redirects —
-   `https://chatgpt.com/oauth/client.json` with its exact published redirect, and
+   `https://chatgpt.com/oauth/client.json` with its existing exact redirect, or a
+   ChatGPT plugin document at `https://chatgpt.com/oauth/<safe-plugin-id>/client.json`
+   with the one matching `https://chatgpt.com/connector/oauth/<same-plugin-id>` callback;
+   the plugin document must explicitly support public `none` token authentication. Keep
+   existing configured stable clients unchanged. Claude Code uses
    `https://claude.ai/oauth/claude-code-client-metadata` with its two published
    loopback callbacks.
 3. For a new environment, set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and

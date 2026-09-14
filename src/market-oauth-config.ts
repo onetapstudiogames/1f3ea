@@ -9,6 +9,7 @@ export const MARKET_OAUTH_REFRESH_TOKEN_PREFIX = '1f3ea_rt_'
 export const CHATGPT_CIMD_ORIGIN = 'https://chatgpt.com'
 export const CHATGPT_OAUTH_CLIENT_ID = 'https://chatgpt.com/oauth/client.json'
 export const CHATGPT_OAUTH_REDIRECT_URI = 'https://chatgpt.com/connector_platform_oauth_redirect'
+const CHATGPT_PLUGIN_CLIENT_ID_PATTERN = /^https:\/\/chatgpt\.com\/oauth\/([A-Za-z0-9_-]{1,128})\/client\.json$/
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = 'https://claude.ai/oauth/claude-code-client-metadata'
 const CLAUDE_CIMD_ORIGIN = 'https://claude.ai'
 const CLAUDE_CODE_REDIRECT_URIS = ['http://localhost/callback', 'http://127.0.0.1/callback']
@@ -332,6 +333,11 @@ async function boundedResponseText(response: Response): Promise<string> {
   return Buffer.concat(chunks, byteLength).toString('utf8')
 }
 
+function chatGptPluginRedirect(clientId: string): string | undefined {
+  const pluginId = CHATGPT_PLUGIN_CLIENT_ID_PATTERN.exec(clientId)?.[1]
+  return pluginId === undefined ? undefined : `${CHATGPT_CIMD_ORIGIN}/connector/oauth/${pluginId}`
+}
+
 function selectedPublicAuthMethod(
   clientId: string,
   metadataUrl: URL,
@@ -350,13 +356,13 @@ function selectedPublicAuthMethod(
   if (method === 'none' && (supported === undefined || supported.includes('none'))) {
     return 'none'
   }
-  const stableChatGptChoice =
-    clientId === CHATGPT_OAUTH_CLIENT_ID &&
+  const chatGptPublicChoice =
+    (clientId === CHATGPT_OAUTH_CLIENT_ID || chatGptPluginRedirect(clientId) !== undefined) &&
     metadataUrl.origin === CHATGPT_CIMD_ORIGIN &&
     method === 'private_key_jwt' &&
     supported?.includes('none') === true &&
     supported.includes('private_key_jwt')
-  if (stableChatGptChoice) return 'none'
+  if (chatGptPublicChoice) return 'none'
 
   throw new Error('OAuth client must support public PKCE exchange')
 }
@@ -387,7 +393,8 @@ function validateCimdClientId(clientId: string, cimdOrigins: readonly string[]):
   ) {
     throw new Error('unknown OAuth client')
   }
-  if (metadataUrl.origin === CHATGPT_CIMD_ORIGIN && clientId !== CHATGPT_OAUTH_CLIENT_ID) {
+  if (metadataUrl.origin === CHATGPT_CIMD_ORIGIN &&
+    clientId !== CHATGPT_OAUTH_CLIENT_ID && chatGptPluginRedirect(clientId) === undefined) {
     throw new Error('unknown OAuth client')
   }
   if (metadataUrl.origin === CLAUDE_CIMD_ORIGIN && clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID) {
@@ -494,6 +501,12 @@ export async function resolveMarketOAuthClient(
         (redirectUris.length !== 1 || redirectUris[0] !== CHATGPT_OAUTH_REDIRECT_URI)
       ) {
         throw new Error('ChatGPT OAuth client metadata has an unexpected redirect URI')
+      }
+      const pluginRedirect = chatGptPluginRedirect(clientId)
+      if (pluginRedirect !== undefined &&
+        (!Array.isArray(decoded.redirect_uris) || decoded.redirect_uris.length !== 1 ||
+          redirectUris[0] !== pluginRedirect)) {
+        throw new Error('ChatGPT plugin OAuth client metadata has an unexpected redirect URI')
       }
       if (clientId === CLAUDE_CODE_OAUTH_CLIENT_ID &&
         (redirectUris.length !== 2 || !CLAUDE_CODE_REDIRECT_URIS.every(uri => redirectUris.includes(uri)))) {

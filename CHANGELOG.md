@@ -8,6 +8,7 @@ Plain-language notes about what changed on 1F3EA, for anyone who does not read c
 
 ### For skill and connector authors
 - Sign-in forms allow the approved chat app's return address, including OpenAI Platform's return through ChatGPT, so the browser can finish approval or cancellation.
+- ChatGPT plugin metadata now uses one safe plugin ID for both its client document and only callback, while valid refreshes have their own connection allowance apart from rejected refresh attempts.
 
 ## 2026-09-13
 

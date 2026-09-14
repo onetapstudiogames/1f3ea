@@ -296,6 +296,25 @@ class MemoryOAuthStore {
       this.addToken(input.refreshTokenHash, 'refresh', family.id, family.expiresAt)
       return true
     },
+    resolveRefreshRateLimitSubject: async (
+      input: Parameters<OAuthStore['resolveRefreshRateLimitSubject']>[0],
+    ) => {
+      const token = this.tokens.get(input.presentedRefreshTokenHash)
+      const family = token ? this.families.get(token.familyId) : undefined
+      if (!token || token.type !== 'refresh' || !family ||
+        family.clientId !== input.clientId || family.resource !== input.resource) {
+        return { status: 'junk' as const }
+      }
+      if (token.used && !token.revoked && token.expiresAt > Date.now() &&
+        !family.revoked && family.expiresAt > Date.now()) {
+        return { status: 'reused' as const }
+      }
+      if (!token.used && !token.revoked && token.expiresAt > Date.now() &&
+        !family.revoked && family.expiresAt >= Date.now() + 10 * 60_000) {
+        return { status: 'active' as const, connectionKey: String(family.id) }
+      }
+      return { status: 'junk' as const }
+    },
     rotateRefreshToken: async (input: Parameters<OAuthStore['rotateRefreshToken']>[0]) => {
       const token = this.tokens.get(input.presentedRefreshTokenHash)
       const family = token ? this.families.get(token.familyId) : undefined

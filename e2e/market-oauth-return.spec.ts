@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { authorizationUrl, MERCHANT_KEY, STATE } from '../test/support/market-oauth-flow-harness.ts'
 import {
-  RETURN_CALLBACKS, RETURN_TEST_CLIENT, RETURN_TEST_ORIGIN, RETURN_TEST_PORT,
+  RETURN_CALLBACKS, RETURN_TEST_CLIENT, RETURN_TEST_ORIGIN, RETURN_TEST_PLUGIN_CALLBACK, RETURN_TEST_PORT,
   startReturnTestServer,
 } from './market-oauth-return-server.ts'
 
@@ -19,13 +19,37 @@ test.beforeEach(() => server.reset())
 test.afterEach(async ({ page }) => { await page.close() })
 test.afterAll(async () => { await server?.close() })
 
-async function openConsent(page: Page, callback: string) {
+async function openConsent(page: Page, callback: string, clientId = 'market-browser-return-test') {
   const response = await page.goto(`${RETURN_TEST_ORIGIN}${authorizationUrl({
-    client_id: RETURN_TEST_CLIENT,
+    client_id: clientId,
     redirect_uri: callback,
     resource: `${RETURN_TEST_ORIGIN}/mcp/connect`,
   })}`)
   expect(response?.status()).toBe(200)
+}
+
+for (const action of ['approve', 'cancel'] as const) {
+  test(`${action} accepts the canonical ChatGPT plugin metadata client and completes the platform return`, async ({ page }) => {
+    await openConsent(page, RETURN_TEST_PLUGIN_CALLBACK, RETURN_TEST_CLIENT)
+    const response = await submit(page, action)
+    const location = new URL(response.headers().location!)
+    expect(location.origin + location.pathname).toBe(RETURN_TEST_PLUGIN_CALLBACK)
+    expect(location.searchParams.get('state')).toBe(STATE)
+    expect(location.searchParams.get('iss')).toBe(RETURN_TEST_ORIGIN)
+    if (action === 'approve') {
+      expect(location.searchParams.get('code')).toMatch(/^1f3ea_ac_[0-9a-f]{64}$/u)
+      expect(location.searchParams.has('error')).toBe(false)
+    } else {
+      expect(location.searchParams.get('error')).toBe('access_denied')
+      expect(location.searchParams.has('code')).toBe(false)
+    }
+    await expect(page.getByRole('heading', { name: 'OpenAI app return completed' })).toBeVisible()
+    expect(server.metadataRequests()).toEqual([{ url: RETURN_TEST_CLIENT, method: 'GET' }])
+    expect(server.receipts()).toEqual([
+      { origin: 'https://chatgpt.com', path: new URL(RETURN_TEST_PLUGIN_CALLBACK).pathname, method: 'GET', status: 302 },
+      { origin: 'https://platform.openai.com', path: '/apps-manage/oauth', method: 'GET', status: 200 },
+    ])
+  })
 }
 
 async function submit(page: Page, action: 'approve' | 'cancel') {
