@@ -838,7 +838,9 @@ test('hosted merchant OAuth is atomic against real PostgreSQL', async t => {
       assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'junk' })
       await testDatabase.query(`UPDATE oauth_token_families SET expires_at = now() + interval '1 day'
         WHERE merchant_id = $1`, [seeded.id])
-      await testDatabase.query(`UPDATE oauth_tokens SET expires_at = now() - interval '1 minute'
+      await testDatabase.query(`UPDATE oauth_tokens
+        SET created_at = now() - interval '2 minutes',
+          expires_at = now() - interval '1 minute'
         WHERE token_hash = $1`, [refreshTokenHash])
       assert.deepEqual(await store.resolveRefreshRateLimitSubject(bound), { status: 'junk' })
       await testDatabase.query(`UPDATE oauth_tokens SET expires_at = now() + interval '1 day'
