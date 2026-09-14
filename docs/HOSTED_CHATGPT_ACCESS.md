@@ -77,6 +77,14 @@ Form limits are enforced from the bytes actually read; a missing or false
 `Content-Length` never decides whether a safe request body is accepted. Host support for
 adding a custom connector may still vary independently of those responsive pages.
 
+Sign-in forms allow a browser return only to the origin of the callback already
+validated for that client. When that origin is exactly `https://chatgpt.com`, the
+forms also allow `https://platform.openai.com` so OpenAI's own second return can
+finish. This applies to initial and resumed consent, saved-key confirmation, and
+pairing confirmation or retry. Approval and cancellation still send HTTP 302 to
+the registered callback; this browser allowance does not register another callback
+or approve another client. Other private identity pages keep same-origin forms.
+
 ## Recover or rotate a merchant key
 
 - Lost key: open `https://1f3ea.com/recovery` and use one unused recovery code. Save

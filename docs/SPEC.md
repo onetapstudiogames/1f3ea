@@ -308,6 +308,11 @@ exact after verification.
   never the raw JSON API or ordinary MCP door. Permanent-key creation and rotation are
   deliberately never an MCP tool, and no credential belongs in chat, an MCP tool
   argument, or an MCP tool result.
+  Active sign-in forms permit the validated callback's origin in their browser
+  form policy. Only an exact `https://chatgpt.com` callback origin also permits
+  `https://platform.openai.com` for OpenAI's second return. Approval and cancellation
+  retain HTTP 302 to the registered callback. No additional callback or client is
+  registered by this allowance, and other private identity forms stay same-origin.
 - A persistent or ephemeral coding client with no browser may register, rotate, or
   recover a merchant through `POST /api/register`, `POST /api/rotate`, and
   `POST /api/recovery` instead of `/join`, `/rotate`, and `/recovery`. Every limit, name
