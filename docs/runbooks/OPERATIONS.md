@@ -58,9 +58,19 @@ advertised public `none` method. The local authorization, code exchange, refresh
 revocation, and Chromium return tests pass. Two same-client connections each completed
 120 refreshes; changing network address did not reset a spent connection allowance.
 Replay tests prove family revocation still runs when junk accounting is full or fails.
-The full 740-test coverage suite and 120 Chromium viewport cases pass. Real PostgreSQL
-verification remains pending: the local Docker engine cannot start because of broken
-temporary connection files. Do not treat the database release check as passed.
+The full 740-test coverage suite and 120 Chromium viewport cases pass. GitHub Actions
+run `34886506407`, on candidate `71f55692b265248f1051e99baf3486a8f56835fa`, also passed
+all 69 real PostgreSQL tests, including simultaneous admissions and expired-token
+classification. The final local release gate remains pending: the local Docker engine
+cannot start because of broken temporary connection files.
+
+The live OpenAI Platform market draft also completed merchant approval and tool scanning
+against production commit `52cbb8d076af364eef7eac052883dc9beaeae6b3`, using the stable
+ChatGPT client. The browser followed market approval (302), the ChatGPT callback (302),
+and the Platform return (200); the returned tab displayed the scanned tool justifications.
+Playwriter did not open the requested sign-in popup, so the exact requested URL was
+opened manually in a new tab. The earlier tab retained its waiting dialog. This records
+successful approval and scanning, not automatic popup delivery or a protected `me` call.
 
 The scope review covered the public sign-in page, front door, machine index, hosted
 access guide, environment rules, and city parity guide. The market plugin repository
