@@ -397,9 +397,9 @@ function validateCimdClientId(clientId: string, cimdOrigins: readonly string[]):
     clientId !== CHATGPT_OAUTH_CLIENT_ID && chatGptPluginRedirect(clientId) === undefined) {
     throw new Error('unknown OAuth client')
   }
-  if (metadataUrl.origin === CLAUDE_CIMD_ORIGIN && clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID) {
-    throw new Error('unknown OAuth client')
-  }
+  // Any document on an exact allowlisted origin proceeds to bounded fetch and
+  // self-identity checks. Only exact Claude Code metadata gets the loopback
+  // callback exception below; every other client must declare exact HTTPS URLs.
   return metadataUrl
 }
 

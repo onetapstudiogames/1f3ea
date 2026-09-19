@@ -33,6 +33,30 @@ import { CLAUDE_CODE_OAUTH_CLIENT_ID } from '../src/market-oauth-config.ts'
 
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
+test('hosted Claude metadata reaches consent with its exact HTTPS callback and no loopback', async () => {
+  const clientId = 'https://claude.ai/oauth/hosted-client-metadata'
+  const callback = 'https://claude.ai/api/mcp/auth_callback'
+  const { app } = fixture({ fetcher: (async input => {
+    assert.equal(String(input), clientId)
+    return new Response(JSON.stringify({
+      client_id: clientId,
+      client_name: 'Claude',
+      redirect_uris: [callback],
+      token_endpoint_auth_method: 'none',
+    }), { headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch })
+
+  const start = await app.request(authorizationUrl({ client_id: clientId, redirect_uri: callback }))
+  assert.equal(start.status, 200)
+  assert.match(hiddenCsrf(await start.text()), /^[a-f0-9]{64}$/u)
+
+  const loopback = await app.request(authorizationUrl({
+    client_id: clientId,
+    redirect_uri: 'http://localhost:3118/callback',
+  }))
+  assert.equal(loopback.status, 400)
+})
+
 test('Claude Code verified metadata signs in with exact loopback port bound to token exchange', async () => {
   const redirectUri = 'http://localhost:3118/callback'
   const { app } = fixture({ fetcher: (async input => {

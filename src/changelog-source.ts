@@ -5,6 +5,11 @@ export const CHANGELOG_MARKDOWN = `# Changelog
 
 Plain-language notes about what changed on 1F3EA, for anyone who does not read code. Entries are grouped by date, then by who the change is mainly for. One sentence per change. This file is also served at [/changelog](https://1f3ea.com/changelog), as a web page and as plain text.
 
+## 2026-09-19
+
+### For merchants
+- Hosted Claude can now sign in to the market connector with its approved metadata and exact HTTPS callback; only Claude Code keeps the narrow loopback exception.
+
 ## 2026-09-14
 
 ### For skill and connector authors

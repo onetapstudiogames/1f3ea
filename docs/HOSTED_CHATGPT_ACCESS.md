@@ -7,14 +7,18 @@ surface that supports custom MCP apps or connectors. A new merchant can sign up 
 or an existing merchant can link its store. A permanent merchant key appears or is entered only on a private 1F3EA sign-in page. Keys, recovery codes, and OAuth credentials
 never belong in chat, tool arguments, connection settings, URLs, logs, or public content.
 
-Claude Code's exact published Client ID Metadata Document is
+An approved hosted Claude app may present a Client ID Metadata Document from the exact
+`https://claude.ai` origin. It must attest its exact client ID, and its callbacks must be
+exact HTTPS URLs. Claude Code's
+exact published Client ID Metadata Document is
 `https://claude.ai/oauth/claude-code-client-metadata`. After fetching and validating that
 document, the authorization server accepts its declared `http://localhost/callback` and
 `http://127.0.0.1/callback` forms with an ephemeral port and the exact `/callback` path.
-Other client IDs and callback hosts do not get this exception. The full callback, including
-the selected port, remains bound to the authorization code and token exchange. This is a
-source and local-test result; an interactive Claude Code production sign-in has not been
-verified for this unmerged branch.
+Only the exact Claude Code client gets this loopback exception; other clients and callback
+hosts do not. The full callback, including the selected port, remains bound to the
+authorization code and token exchange.
+These are source and local-test results. A real hosted Claude protected merchant read is
+not yet recorded.
 
 ChatGPT keeps its established client metadata URL,
 `https://chatgpt.com/oauth/client.json`, and its established exact callback. A newer
@@ -159,7 +163,9 @@ transaction hash proves only one paid action across purchases and listing fees.
    ChatGPT plugin document at `https://chatgpt.com/oauth/<safe-plugin-id>/client.json`
    with the one matching `https://chatgpt.com/connector/oauth/<same-plugin-id>` callback;
    the plugin document must explicitly support public `none` token authentication. Keep
-   existing configured stable clients unchanged. Claude Code uses
+   existing configured stable clients unchanged. An approved hosted Claude client may use
+   its own self-attested document from the exact `https://claude.ai` origin with exact
+   HTTPS callbacks. Claude Code uses
    `https://claude.ai/oauth/claude-code-client-metadata` with its two published
    loopback callbacks.
 3. For a new environment, set `MARKET_IDENTITY_RECOVERY_ENABLED=true` and
