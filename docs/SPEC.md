@@ -320,6 +320,10 @@ exact after verification.
   `https://chatgpt.com/connector/oauth/<same-plugin-id>`. The plugin ID is one safe path
   segment. Its public PKCE exchange is accepted only when metadata explicitly supports
   `none`; metadata that only supports another token authentication method is refused.
+  An approved hosted Claude client may supply a metadata document from the exact
+  `https://claude.ai` origin. The document must attest its exact client ID and declare
+  exact HTTPS callbacks. Only the exact Claude Code metadata client keeps its two
+  registered loopback hosts and ephemeral callback port.
   Each valid refresh-token family may refresh 120 times per UTC hour. Malformed, unknown,
   wrong-client, wrong-resource or wrong-scope, expired, and revoked refresh requests instead draw from a separate
   120-per-hour IP-and-client allowance and cannot drain a valid family's allowance. A
