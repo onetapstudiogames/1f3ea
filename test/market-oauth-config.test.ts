@@ -218,6 +218,76 @@ test('validated Claude Code metadata permits only its loopback callback path wit
     client_id: CLAUDE_CODE_OAUTH_CLIENT_ID, redirect_uri: 'http://localhost:3118/callback' }, unverified))
 })
 
+test('hosted Claude metadata uses exact HTTPS while only exact Claude Code keeps loopback', async () => {
+  const origins = parseMarketCimdOrigins(undefined)
+  const hostedClientId = 'https://claude.ai/oauth/hosted-client-metadata'
+  const hostedCallback = 'https://claude.ai/api/mcp/auth_callback'
+  const hostedMetadata = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    client_id: hostedClientId,
+    client_name: 'Claude',
+    redirect_uris: [hostedCallback],
+    token_endpoint_auth_method: 'none',
+    ...overrides,
+  })
+
+  let unapprovedFetches = 0
+  await assert.rejects(resolveMarketOAuthClient(
+    'https://unapproved.example/oauth/client.json', [], origins,
+    (async () => {
+      unapprovedFetches += 1
+      return jsonResponse(hostedMetadata())
+    }) as typeof fetch,
+  ))
+  assert.equal(unapprovedFetches, 0)
+
+  await assert.rejects(resolveMarketOAuthClient(
+    hostedClientId, [], origins,
+    (async () => jsonResponse(hostedMetadata({
+      client_id: 'https://claude.ai/oauth/different-client-metadata',
+    }))) as typeof fetch,
+  ))
+  await assert.rejects(resolveMarketOAuthClient(
+    hostedClientId, [], origins,
+    (async () => jsonResponse(hostedMetadata({
+      redirect_uris: ['http://localhost/callback'],
+    }))) as typeof fetch,
+  ))
+
+  const claudeCode = await resolveMarketOAuthClient(
+    CLAUDE_CODE_OAUTH_CLIENT_ID, [], origins,
+    (async () => jsonResponse(JSON.stringify({
+      client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+      token_endpoint_auth_method: 'none',
+    }))) as typeof fetch,
+  )
+  const claudeCodeCallback = 'http://localhost:3118/callback'
+  assert.equal(claudeCode.validatedClaudeCodeMetadata, true)
+  assert.equal(validateMarketAuthorizationRequest({
+    ...validRequest(),
+    client_id: CLAUDE_CODE_OAUTH_CLIENT_ID,
+    redirect_uri: claudeCodeCallback,
+  }, [claudeCode]).redirectUri, claudeCodeCallback)
+
+  const hostedClaude = await resolveMarketOAuthClient(
+    hostedClientId, [], origins,
+    (async () => jsonResponse(hostedMetadata())) as typeof fetch,
+  )
+  assert.deepEqual(hostedClaude.redirectUris, [hostedCallback])
+  assert.equal(hostedClaude.validatedClaudeCodeMetadata, undefined)
+  assert.equal(validateMarketAuthorizationRequest({
+    ...validRequest(),
+    client_id: hostedClientId,
+    redirect_uri: hostedCallback,
+  }, [hostedClaude]).redirectUri, hostedCallback)
+  assert.throws(() => validateMarketAuthorizationRequest({
+    ...validRequest(),
+    client_id: hostedClientId,
+    redirect_uri: 'http://localhost:3118/callback',
+  }, [hostedClaude]))
+})
+
 test('PKCE uses RFC 7636 S256 and credentials are recognized before public output or logs', () => {
   assert.equal(verifyMarketPkceS256(VERIFIER, CHALLENGE), true)
   assert.equal(verifyMarketPkceS256(`${VERIFIER}x`, CHALLENGE), false)
