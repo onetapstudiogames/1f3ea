@@ -547,25 +547,7 @@ test('the exact stable ChatGPT CIMD negotiates public PKCE from its advertised c
   ), /unexpected redirect URI/i)
 })
 
-test('only the exact claude.ai metadata document and its two loopback callbacks are accepted', async () => {
-  let unexpectedFetchCount = 0
-  const unexpectedFetcher = (async () => {
-    unexpectedFetchCount += 1
-    return jsonResponse(metadata())
-  }) as typeof fetch
-  for (const clientId of [
-    'https://claude.ai/oauth/client.json',
-    'https://claude.ai/oauth/claude-code-client-metadata/extra',
-    CLAUDE_CODE_OAUTH_CLIENT_ID.toUpperCase(),
-  ]) {
-    const refused = await clientError(resolveMarketOAuthClient(
-      clientId, [], parseMarketCimdOrigins(undefined), unexpectedFetcher,
-    ))
-    assert.equal(refused.status, 400)
-    assert.match(refused.message, /unknown OAuth client/i)
-  }
-  assert.equal(unexpectedFetchCount, 0)
-
+test('exact Claude Code metadata keeps only its two registered loopback callbacks', async () => {
   for (const redirect_uris of [
     ['http://localhost/callback'],
     ['http://localhost/callback', 'http://localhost/callback'],

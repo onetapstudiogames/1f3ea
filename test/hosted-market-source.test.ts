@@ -52,6 +52,28 @@ test('source wires a separate feature-gated hosted door without replacing the Wa
     assert.match(mcpContract, new RegExp(field))
 })
 
+test('hosted Claude uses exact HTTPS while only exact Claude Code keeps loopback', async () => {
+  const [config, guide, environment, decisions, changelog] = await Promise.all([
+    source('src/market-oauth-config.ts'),
+    source('docs/HOSTED_CHATGPT_ACCESS.md'),
+    source('docs/runbooks/ENVIRONMENT.md'),
+    source('docs/DECISIONS.md'),
+    source('CHANGELOG.md'),
+  ])
+
+  assert.doesNotMatch(
+    config,
+    /metadataUrl\.origin === CLAUDE_CIMD_ORIGIN && clientId !== CLAUDE_CODE_OAUTH_CLIENT_ID/u,
+  )
+  for (const text of [guide, environment, decisions]) {
+    assert.match(text, /hosted Claude/i)
+    assert.match(text, /attest[^\n.]*exact client ID/i)
+    assert.match(text, /exact HTTPS (?:URL|callback)/i)
+    assert.match(text, /only[^\n.]*exact Claude Code[^\n.]*loopback/i)
+  }
+  assert.match(changelog, /Hosted Claude can now sign in[^\n.]*exact HTTPS callback[^\n.]*only Claude Code[^\n.]*loopback exception\./u)
+})
+
 test('front doors and setup guide give the safe hosted path and an exact wrong-address fix', async () => {
   const [frontdoor, llms, readme, guide] = await Promise.all([
     source('src/frontdoor.txt'), source('src/llms.txt'), source('README.md'),
