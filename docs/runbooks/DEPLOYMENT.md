@@ -10,9 +10,10 @@ provider CLI, migration command, or `scripts/deploy.sh` invocation deploys the m
 
 1. Branch from the current `origin/main`. Keep payment work alone; keep structural code
    separate from documentation and copy so each receives the right review.
-2. Run `npm run typecheck` and `npm run test:coverage`. Run `npm run test:postgres` for
-   database or payment changes, and `npm run test:e2e` for served-page or critical-flow
-   changes. Record any skipped real-service check plainly.
+2. During edits, run the focused checks that exercise the changed behavior. Include a
+   focused real-Postgres or browser check when the change affects that boundary. The
+   required final CI runs typecheck, coverage, real-Postgres tests, and browser tests for
+   the complete candidate. Record any skipped real-service check plainly.
 3. Review `git status --short`, the complete diff, and ignored files relevant to the work.
    Compare the tracked-file count with the committed-tree count in step 4, then commit.
 4. Immediately before every push, run the repository trap exactly:
@@ -24,16 +25,21 @@ provider CLI, migration command, or `scripts/deploy.sh` invocation deploys the m
    Sanity-check that number against the real tracked file count and the known additions
    in the commit. Stop if it is unexpectedly small or the worktree contains unintended
    files. Never use `--no-verify`; fix any failure reported by Git, CI, or the release gate.
-5. Push the named branch normally with upstream tracking, then run:
+5. Push the named branch normally with upstream tracking, complete independent review,
+   open its pull request, and wait for the required `checks` job on that exact commit.
+6. Then run:
 
    ```sh
    bash scripts/deploy.sh --prepare
    ```
 
    This requires a clean branch whose exact `HEAD` is already on its matching origin
-   branch. It reruns typecheck, coverage, real-Postgres tests, and browser tests, and emits
-   `GATE_EXIT=0` only on success. It does not deploy or change Vercel, DNS, or provider
-   configuration.
+   branch. It verifies the latest required `checks` run for that exact commit completed
+   successfully under the approved GitHub Actions app, then proves the clean pushed commit
+   did not move. Missing, stale, pending, failed, cancelled, wrong-app, wrong-commit, or
+   older-green evidence cannot produce `GATE_EXIT=0`. The required CI job still runs
+   typecheck, coverage, real-Postgres tests, and browser tests in full. This helper does
+   not deploy or change Vercel, DNS, or provider configuration.
 
 For a docs/copy branch that describes companion code PRs, merge those code PRs first,
 rebase the docs branch onto the resulting `main`, then re-audit `docs/CITY_PARITY.md` and
@@ -42,7 +48,7 @@ that is absent from its merge base.
 
 ## Review and release
 
-Open a pull request with the problem, changed contract, risks, test evidence, real-service
+The pull request states the problem, changed contract, risks, test evidence, real-service
 evidence, and anything still unverified. Payment changes require the dedicated money-review
 panel and adversarial refuter evidence. Do not combine separate risk lanes to save ceremony.
 

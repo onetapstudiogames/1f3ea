@@ -12,10 +12,12 @@ A change is done when ALL of these are true, and not before:
 
 1. **The root cause is fixed, not the symptom site.** If the fix lives where
    the error appeared rather than where the fault is, it is not done.
-2. **Tests prove the fix**, and the full local suite passes: `npm run
-   typecheck` and `npm run test:coverage` (the 80% gate is a floor, not a
-   target). Release candidates also run `bash scripts/deploy.sh --prepare` on
-   a clean pushed branch and read its explicit exit result.
+2. **Tests prove the fix.** During edits, run the focused checks that exercise the
+   changed behavior. The required `checks` CI job keeps typecheck, the coverage gate,
+   real PostgreSQL, and the browser matrix fail-hard for the complete final candidate.
+   Release candidates run `bash scripts/deploy.sh --prepare` on a clean pushed branch;
+   it accepts only the latest completed successful required check for that exact commit,
+   then rechecks that the clean pushed commit did not move. Read its explicit exit result.
 3. **A feature touching an external service has one real run recorded.** A
    green suite against fakes has repeatedly failed on first contact with the
    live service — this repo's launch day was five production fire-drills in a

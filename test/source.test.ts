@@ -54,6 +54,7 @@ function runPreparedDeploy(dirty: boolean) {
     mkdirSync(fakeBin)
     const deployScript = join(scriptDirectory, 'deploy.sh')
     copyFileSync('scripts/deploy.sh', deployScript)
+    copyFileSync('scripts/verify-required-check.mjs', join(scriptDirectory, 'verify-required-check.mjs'))
 
     const fakeGit = join(fakeBin, 'git')
     writeFileSync(fakeGit, `#!/usr/bin/env bash
@@ -74,10 +75,11 @@ case "$1" in
   *) exit 98 ;;
 esac
 `)
-    for (const name of ['npm', 'npx']) {
-      writeFileSync(join(fakeBin, name), '#!/usr/bin/env bash\nexit 0\n')
-    }
-    for (const name of ['git', 'npm', 'npx']) chmodSync(join(fakeBin, name), 0o755)
+    const fakeGh = join(fakeBin, 'gh')
+    writeFileSync(fakeGh, `#!/usr/bin/env bash
+printf '%s\\n' '{"check_runs":[{"id":10,"name":"checks","head_sha":"${FAKE_COMMIT}","status":"completed","conclusion":"success","app":{"id":15368}}]}'
+`)
+    for (const name of ['git', 'gh']) chmodSync(join(fakeBin, name), 0o755)
 
     const launcher = `
 fake_bin="$1"
@@ -406,10 +408,13 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.match(deploy, /git config --get "branch\.\$branch\.remote"/)
   assert.match(deploy, /git config --get "branch\.\$branch\.merge"/)
   assert.match(deploy, /git ls-remote/)
-  assert.match(deploy, /npm run typecheck/)
-  assert.match(deploy, /^npm run test:coverage$/m)
-  assert.match(deploy, /^npm run test:postgres$/m)
-  assert.doesNotMatch(deploy, /^npm test$/m)
+  assert.match(deploy, /repos\/onetapstudiogames\/1f3ea\/commits\/\$commit\/check-runs/)
+  assert.match(deploy, /node scripts\/verify-required-check\.mjs "\$commit"/)
+  assert.doesNotMatch(deploy, /npm run typecheck/)
+  assert.doesNotMatch(deploy, /^npm run test:coverage$/m)
+  assert.doesNotMatch(deploy, /^npm run test:postgres$/m)
+  assert.doesNotMatch(deploy, /playwright install chromium|npm run test:e2e/)
+  assert.match(deploy, /verify_required_ci[\s\S]*prove the tested commit did not move[\s\S]*verify_pushed_candidate/)
   assert.match(deploy, /merg(?:e|ing).*GitHub.*main/is)
   assert.match(deploy, /Vercel.*exact.*main commit/is)
   assert.doesNotMatch(deploy, /api\.(?:vercel|porkbun)\.com/i)
@@ -448,7 +453,7 @@ test('deployment helper ends a rejected dirty prepare with its nonzero gate stat
   assert.equal(finalOutputLine(run.stdout), 'GATE_EXIT=1')
 })
 
-test('the human window browser matrix is installed and part of the release gate', () => {
+test('the human window browser matrix stays required in CI without a local release repeat', () => {
   const packageJson = JSON.parse(read('package.json')) as {
     scripts?: Record<string, string>
     devDependencies?: Record<string, string>
@@ -474,7 +479,7 @@ test('the human window browser matrix is installed and part of the release gate'
   assert.match(browserSpec, /scrollWidth/)
   assert.match(tsconfig, /e2e\/\*\*\/\*\.ts/)
   assert.match(gitignore, /test-results\//)
-  assert.match(deploy, /playwright install chromium[\s\S]*npm run test:e2e/)
+  assert.doesNotMatch(deploy, /playwright install chromium|npm run test:e2e/)
   assert.match(ci, /playwright install --with-deps chromium/)
   assert.match(ci, /npm run test:e2e/)
 })
