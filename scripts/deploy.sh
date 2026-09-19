@@ -10,10 +10,10 @@ show_guidance() {
   cat <<'EOF'
 Manual production deployment is disabled.
 
-Run scripts/deploy.sh --prepare on a clean branch that is already pushed to origin.
-Then open a GitHub pull request and merge it into main. Vercel's GitHub integration
-builds and ships that exact main commit; this helper never uploads a local folder or
-changes provider configuration or DNS.
+Run scripts/deploy.sh --prepare on a clean branch that is already pushed to origin
+after its required GitHub checks pass. Then merge its reviewed pull request.
+Vercel's GitHub integration builds and ships that exact main commit; this helper never
+uploads a local folder or changes provider configuration or DNS.
 EOF
 }
 
@@ -78,16 +78,33 @@ verify_pushed_candidate() {
   echo "   clean branch verified at its exact pushed origin commit"
 }
 
+verify_required_ci() {
+  local commit
+  commit=$(git rev-parse --verify HEAD)
+
+  command -v gh >/dev/null || {
+    echo "!! GitHub CLI is required to verify the required checks for this candidate"
+    return 1
+  }
+  command -v node >/dev/null || {
+    echo "!! Node.js is required to verify the required checks for this candidate"
+    return 1
+  }
+
+  gh api \
+    -H 'Accept: application/vnd.github+json' \
+    "repos/onetapstudiogames/1f3ea/commits/$commit/check-runs?per_page=100" |
+    node scripts/verify-required-check.mjs "$commit" || {
+      echo "!! required checks evidence must be completed and successful for this exact candidate"
+      return 1
+    }
+}
+
 echo "== 1. verify pushed release candidate"
 verify_pushed_candidate
 
-echo "== 2. run local release gates"
-[ -d node_modules ] || npm ci --no-audit --no-fund
-npm run typecheck
-npm run test:coverage
-npm run test:postgres
-npx playwright install chromium
-npm run test:e2e
+echo "== 2. verify required CI for this exact candidate"
+verify_required_ci
 
 echo "== 3. prove the tested commit did not move"
 verify_pushed_candidate
@@ -95,6 +112,6 @@ verify_pushed_candidate
 cat <<'EOF'
 
 Prepared only; this helper did not deploy or change a provider.
-Next: open the GitHub pull request and merge it into main after review.
+Next: merge the reviewed GitHub pull request into main.
 Vercel then builds the exact GitHub main commit.
 EOF
