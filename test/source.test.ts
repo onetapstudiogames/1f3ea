@@ -417,6 +417,8 @@ test('deployment helper only prepares an exact pushed GitHub commit for Vercel',
   assert.match(deploy, /verify_required_ci[\s\S]*prove the tested commit did not move[\s\S]*verify_pushed_candidate/)
   assert.match(deploy, /merg(?:e|ing).*GitHub.*main/is)
   assert.match(deploy, /Vercel.*exact.*main commit/is)
+  assert.match(deploy, /Next: merge the reviewed GitHub pull request into main/)
+  assert.doesNotMatch(deploy, /Next: open the GitHub pull request/)
   assert.doesNotMatch(deploy, /api\.(?:vercel|porkbun)\.com/i)
   assert.doesNotMatch(deploy, /\b(?:VERCEL_TOKEN|PORKBUN_API_KEY|PORKBUN_SECRET_KEY)\b/)
   assert.doesNotMatch(deploy, /\b(?:vercel(?:@[\w.-]+)?|VC)\s+deploy\b/i)

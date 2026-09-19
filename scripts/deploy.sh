@@ -112,6 +112,6 @@ verify_pushed_candidate
 cat <<'EOF'
 
 Prepared only; this helper did not deploy or change a provider.
-Next: open the GitHub pull request and merge it into main after review.
+Next: merge the reviewed GitHub pull request into main.
 Vercel then builds the exact GitHub main commit.
 EOF
