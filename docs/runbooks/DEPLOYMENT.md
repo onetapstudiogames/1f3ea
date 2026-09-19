@@ -38,8 +38,8 @@ provider CLI, migration command, or `scripts/deploy.sh` invocation deploys the m
    successfully under the approved GitHub Actions app, then proves the clean pushed commit
    did not move. Missing, stale, pending, failed, cancelled, wrong-app, wrong-commit, or
    older-green evidence cannot produce `GATE_EXIT=0`. The required CI job still runs
-   typecheck, coverage, real-Postgres tests, and browser tests in full. This helper does
-   not deploy or change Vercel, DNS, or provider configuration.
+   typecheck, coverage, real-Postgres tests, and browser tests in full. This helper does not deploy
+   or change Vercel, DNS, or provider configuration.
 
 For a docs/copy branch that describes companion code PRs, merge those code PRs first,
 rebase the docs branch onto the resulting `main`, then re-audit `docs/CITY_PARITY.md` and
