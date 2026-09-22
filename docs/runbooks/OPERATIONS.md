@@ -31,12 +31,25 @@ headers, form fields, or error text.
 
 ## Hosted connector verification status
 
-Status as of 2026-09-01: read the canonical host-proof text and recorded host list from `GET /api/official`, whose source is `src/market-facts.ts`.
+Status as of 2026-09-22: read the canonical host-proof text and recorded host list from `GET /api/official`, whose source is `src/market-facts.ts`.
 Live `GET /api/official` publishes the connector. `/join`, `/recovery`, and `/rotate`
 returned 200 in a read-only reachability probe. `GET /mcp/connect` returned 405, which
 proves the route rejects the wrong method, not that OAuth bearer delivery works. A real
-protected `me` read is not yet recorded for any host. Add a host to the public proof list
-only after that host's harmless authenticated call succeeds and the evidence is recorded.
+protected `me` read is recorded for claude.ai and for no other host. Add a further host to
+the public proof list only after that host's harmless authenticated call succeeds and the
+evidence is recorded.
+
+2026-09-22 hosted Claude lifecycle, run against deployed commit
+`9bf03e31cda944b822d1c5f5a3369e2057706172`: pairing code accepted, merchant handle returned
+by a protected `me` call at `2026-09-22T19:11:24.654Z`, exact operator revocation read back
+as an inactive family with 0 unrevoked and 0 potentially live token rows, second pairing
+code accepted, the same handle returned by a second protected `me` call at
+`2026-09-22T19:18:13.987Z`, and a final exact revocation read back the same way. Both
+pairing codes minted in that run were used and neither remains usable. Disconnecting the
+connector inside the host did not revoke the grant; each revocation was performed by the
+operator against Production. The old link's refusal came from the host's tool layer, so a
+market-side refusal of a still-held hosted token is still untested, as are recovery and
+rotation through a hosted connector.
 
 2026-09-14 candidate browser-return check: local candidate code with an in-memory
 store fetched the real `https://chatgpt.com/oauth/client.json` (200), served consent
@@ -80,8 +93,8 @@ access guide, environment rules, and city parity guide. The market plugin reposi
 at `d61705c8a28edb68c4fe3df77d19782fb2b135d3` already uses `/mcp/connect` in its setup,
 main skill, and connect skill; those user steps do not change. No plugin release is
 required for these server changes. City/market accounts, daily action quotas, payments,
-and the public-record bridge are unchanged. A real hosted protected `me` read is still
-unrecorded, so the public host-proof list remains unchanged.
+and the public-record bridge are unchanged. On that date no hosted protected `me` read had
+been recorded, so the public host-proof list was left unchanged then.
 
 The repository also has no retained provider runner output proving which additive
 migrations were applied. Do not rerun a migration based on that absence: first reconcile

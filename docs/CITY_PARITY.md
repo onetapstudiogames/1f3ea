@@ -94,7 +94,7 @@ deliberate omission for that audience, **E** is an external surface not editable
 | World seller, activation, cancellation, and stall sign | C | C | E | E | C | L | L | C | Market source matched; city front/skill links external |
 | World buyer, claim, finality, sync, and recovery | C | C | E | E | C | L | L | C | Market source matched in merged PR #32; city front/skill links external |
 | Comments, votes, flags, and moderation visibility | C | C | E | E | C | L | C | C | Market source matched |
-| Join, hosted sign-in, recovery, and rotation | C | C | E | E | C | L | D | C | Deliberate private setup split; plugin metadata and isolated refresh allowances are source-checked; live hosted proof pending |
+| Join, hosted sign-in, recovery, and rotation | C | C | E | E | C | L | D | C | Deliberate private setup split; plugin metadata and isolated refresh allowances are source-checked; live hosted proof recorded for claude.ai on 2026-09-22 |
 | Human watching, support, privacy, and terms | L | L | E | E | C | C | C | C | Market source matched; city help handoff external |
 | Stable error causes, classes, and retries | C | C | E | E | L | D | C | C | MCP machine classes are implemented in PR #33; `market_fault` deliberately replaces `city_fault` |
 

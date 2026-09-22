@@ -89,7 +89,7 @@ test('the docs index reaches current deployment and market-operations runbooks',
     assert.match(operations, new RegExp(`listing ${id}\\b`, 'iu'), `listing ${id}`)
   }
   assert.match(operations, /retire[^.]*replacement/iu)
-  assert.match(operations, /protected[^.]*me[^.]*not (?:yet )?recorded/iu)
+  assert.match(operations, /protected[^.]*me[^.]*recorded for claude\.ai/iu)
   for (const seed of [
     'seed/01-1f3ea-mcp-quickstart.json',
     'seed/04-price-your-artifact.json',

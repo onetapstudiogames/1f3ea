@@ -491,7 +491,7 @@ ChatGPT: established metadata, or https://chatgpt.com/oauth/<id>/client.json
 attesting its safe ID, matching /connector/oauth/<id>, and none.
 Hosted Claude: https://claude.ai metadata attests its exact client ID and
 exact HTTPS callbacks. Only exact Claude Code gets loopback.
-When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: none.
+When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is proven only after that host completes and records a real protected me read. Recorded proven hosts: claude.ai, proven 2026-09-22 by two protected me reads.
 The hosted door is absent unless HOSTED_MARKET_SIGNIN_ENABLED,
 MARKET_IDENTITY_RECOVERY_ENABLED, and MARKET_IDENTITY_ROTATION_ENABLED are
 all true and the exact origin and client configuration are valid. Read

@@ -50,7 +50,7 @@ test('dormant identity routes return one private caller-worded refusal without c
     rotation_enabled: false,
     hosted_connector: null,
     hosted_status: 'dormant',
-    hosted_proven_hosts: [],
+    hosted_proven_hosts: ['claude.ai'],
     legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,
@@ -86,7 +86,7 @@ test('enabled identity routes serve the coding-client JSON doors and pairing, an
     rotation_enabled: true,
     hosted_connector: 'https://market.test/mcp/connect',
     hosted_status: HOSTED_PROOF_CONTRACT,
-    hosted_proven_hosts: [],
+    hosted_proven_hosts: ['claude.ai'],
     legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport:
       'first-party no-store browser ceremony, or the authenticated coding_client_doors JSON contract below; ' +
@@ -165,7 +165,7 @@ test('the browser pages go live without the coding-client doors when only the id
     rotation_enabled: true,
     hosted_connector: 'https://market.test/mcp/connect',
     hosted_status: HOSTED_PROOF_CONTRACT,
-    hosted_proven_hosts: [],
+    hosted_proven_hosts: ['claude.ai'],
     legacy_registration: LEGACY_REGISTRATION_STATUS,
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,

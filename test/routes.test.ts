@@ -4208,7 +4208,7 @@ test('/api/official states the dormant private-identity and hosted-sign-in contr
     rotation_enabled: false,
     hosted_connector: null,
     hosted_status: 'dormant',
-    hosted_proven_hosts: [],
+    hosted_proven_hosts: ['claude.ai'],
     legacy_registration: 'retired: the former one-call POST /api/register and POST /api/rotate secret-returning flow; current staged coding-client doors reuse those addresses only when coding_client_doors is published',
     merchant_key_transport: 'first-party no-store browser ceremony; never chat, MCP arguments or results, URLs, or logs',
     coding_client_doors: null,

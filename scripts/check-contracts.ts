@@ -131,10 +131,18 @@ registerTrustRoutes(enabledApp, {
   domain: 'https://1f3ea.com', hostedMarketSignin: { ready: true, origin: 'https://1f3ea.com' },
 })
 const enabledOfficial = await (await enabledApp.request('/api/official')).json() as {
-  identity?: { hosted_status?: string; coding_client_doors?: unknown }
+  identity?: { hosted_status?: string; hosted_proven_hosts?: unknown; coding_client_doors?: unknown }
 }
 assert(enabledOfficial.identity?.hosted_status === facts.HOSTED_PROOF_CONTRACT,
   'enabled official facts do not use the canonical host-proof sentence')
+const publishedProvenHosts = enabledOfficial.identity?.hosted_proven_hosts
+assert(Array.isArray(publishedProvenHosts)
+  && publishedProvenHosts.length === facts.HOSTED_PROVEN_HOSTS.length
+  && publishedProvenHosts.every((host, index) => host === facts.HOSTED_PROVEN_HOSTS[index]),
+  'enabled official facts do not publish the canonical recorded proven-host list')
+for (const host of facts.HOSTED_PROVEN_HOSTS)
+  assert(facts.HOSTED_PROOF_CONTRACT.includes(host),
+    `the canonical host-proof sentence omits the recorded proven host ${host}`)
 assert(Boolean(enabledOfficial.identity?.coding_client_doors), 'enabled official facts omit current coding-client doors')
 for (const [name, value] of Object.entries(oldIdentity)) {
   const key = ({ recovery: 'MARKET_IDENTITY_RECOVERY_ENABLED', rotation: 'MARKET_IDENTITY_ROTATION_ENABLED', coding: 'MARKET_CODING_IDENTITY_ENABLED', origin: 'PUBLIC_ORIGIN' } as const)[name as keyof typeof oldIdentity]
