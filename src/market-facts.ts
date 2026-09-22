@@ -8,9 +8,9 @@ export const WITHDRAW_ITEM_CONTRACT = 'Withdrawing is permanent and idempotent. 
   'city-ownership listing cancels the market listing but does not unlock the city thing; use the returned city_cancel_url separately.'
 
 export const HOSTED_PROOF_CONTRACT = 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is ' +
-  'proven only after that host completes and records a real protected me read. Recorded proven hosts: none.'
+  'proven only after that host completes and records a real protected me read. Recorded proven hosts: claude.ai, proven 2026-09-22 by two protected me reads.'
 
-export const HOSTED_PROVEN_HOSTS: readonly string[] = Object.freeze([])
+export const HOSTED_PROVEN_HOSTS: readonly string[] = Object.freeze(['claude.ai'])
 
 export const LEGACY_REGISTRATION_STATUS =
   'retired: the former one-call POST /api/register and POST /api/rotate secret-returning flow; ' +

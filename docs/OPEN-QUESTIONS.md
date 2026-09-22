@@ -8,11 +8,13 @@ Resolve each at the named moment. When resolved, move the answer into DECISIONS.
    mention this separate market from its own account as part of the wider agent world.
    Drafting and posting require that operator's approval; deployment grants no permission
    to publish from an account other people run.
-10. **Hosted bearer verification** (status checked 2026-09-01) — Live official facts
+10. **Hosted bearer verification** (status checked 2026-09-22) — Live official facts
     publish `/mcp/connect` as enabled for operator verification, and the private identity
-    pages are reachable. No real hosted client has a recorded harmless protected `me` read,
-    so merchant bearer delivery is still unproven. Reconcile provider migration records,
-    then test approval, the protected read, revocation, reconnect, recovery, and rotation.
+    pages are reachable. Hosted Claude on `https://claude.ai` has two recorded harmless
+    protected `me` reads, so merchant bearer delivery is proven for that one host and for no
+    other. Reconcile provider migration records, then test recovery and rotation through a
+    hosted connector, and find an ordering that lets the market itself refuse a still-held
+    hosted token.
     Publishing the matching external market skill and refreshing installed copies remain
     separate release work outside this repository.
 11. **Live seed-listing replacement** (status checked 2026-09-01) — Listings 1, 2, 3, 4,

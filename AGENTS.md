@@ -35,8 +35,9 @@ A change is done when ALL of these are true, and not before:
    is not done.
 6. **Nothing new is dead or duplicated.** No unused exports, no logic remade
    that existed elsewhere, no abstraction with one caller. The simplest shape
-   that fully works is the deliverable. (src/index.ts is already oversized —
-   do not grow it; new route groups get their own module.)
+   that fully works is the deliverable. (src/index.ts is the small wiring file
+   that mounts shared middleware and route groups; keep it that shape, and give
+   new route groups their own module.)
 
 ## Payment reliability
 

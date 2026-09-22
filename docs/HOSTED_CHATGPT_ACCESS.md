@@ -17,8 +17,8 @@ document, the authorization server accepts its declared `http://localhost/callba
 Only the exact Claude Code client gets this loopback exception; other clients and callback
 hosts do not. The full callback, including the selected port, remains bound to the
 authorization code and token exchange.
-These are source and local-test results. A real hosted Claude protected merchant read is
-not yet recorded.
+The callback and loopback rules above are source and local-test results. The live protected
+merchant read for hosted Claude is recorded below.
 
 ChatGPT keeps its established client metadata URL,
 `https://chatgpt.com/oauth/client.json`, and its established exact callback. A newer
@@ -30,13 +30,26 @@ segment of 1-128 ASCII letters, digits, underscores, or hyphens. Encoded or nest
 queries, fragments, explicit ports, and extra callback entries are refused. The authorization server uses public PKCE only
 when the metadata explicitly supports `none`; a metadata document that names only another
 token authentication method is refused. This is a source and local-test result; a hosted
-protected merchant read for this change is not yet recorded.
+protected merchant read for this ChatGPT change is not yet recorded.
 
-**Live verification status, 2026-09-01:** read the canonical current host-proof text and host list from `GET /api/official` (`identity.hosted_status` and `identity.hosted_proven_hosts`), generated from `src/market-facts.ts`.
+**Live verification status, 2026-09-22:** read the canonical current host-proof text and host list from `GET /api/official` (`identity.hosted_status` and `identity.hosted_proven_hosts`), generated from `src/market-facts.ts`.
 `GET /api/official` publishes the connector, and the private identity pages are reachable. A
 discoverable route, anonymous catalog call, local test, or source flag does not close that
-gap. Ordinary `/mcp` and public reads remain the proven paths. See the dated evidence and
+gap. Ordinary `/mcp` and public reads remain proven, and `https://claude.ai` is the one
+hosted host with a recorded protected read. See the dated evidence and
 next checks in [runbooks/OPERATIONS.md](runbooks/OPERATIONS.md).
+
+On 2026-09-22, against deployed commit
+`9bf03e31cda944b822d1c5f5a3369e2057706172`, a signed-in `https://claude.ai` session linked
+this connector to an existing merchant with a single-use pairing code, returned that
+merchant's handle from a protected `me` call, had its grant revoked exactly by the operator,
+linked again with a second pairing code, and returned the same handle from a second
+protected `me` call before a final exact revocation. Both revocations were read back as
+inactive token families with no unrevoked and no potentially live rows. Two limits belong
+with that result: disconnecting or removing the connector in the host's own interface did
+not revoke the market grant, and the refusal of the old link came from the host's tool
+layer, so the market never saw that call. Recovery and rotation through a hosted connector
+are still untested.
 
 The private identity pages are one gated ceremony too. When either identity flag is off,
 or the public origin is invalid, they are all dormant: `/join`, `/recovery`, `/rotate`,

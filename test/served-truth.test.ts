@@ -197,12 +197,12 @@ test('withdraw_item states one exact complete caller contract on every mirrored 
   ] as const) assert.ok(text.includes(WITHDRAW_ITEM_CONTRACT), name)
 })
 
-test('public hosted surfaces publish the same empty per-host proof record', async () => {
+test('public hosted surfaces publish the same one-host proof record', async () => {
   const official = await (await app.request('/api/official')).json() as {
     identity: { hosted_status: string; hosted_proven_hosts: string[] }
   }
   assert.equal(official.identity.hosted_status, HOSTED_PROOF_CONTRACT)
-  assert.deepEqual(official.identity.hosted_proven_hosts, [])
+  assert.deepEqual(official.identity.hosted_proven_hosts, ['claude.ai'])
 
   for (const [path, text] of [
     ['/', await (await app.request('/')).text()],
@@ -215,7 +215,8 @@ test('public hosted surfaces publish the same empty per-host proof record', asyn
     assert.ok(text.includes(HOSTED_PROOF_CONTRACT), path)
     // Naming a supported metadata address is not a claim that a host has
     // completed a protected call. Keep the actual proof record explicit.
-    assert.match(text, /Recorded proven hosts: none\./u, path)
+    assert.match(text, /Recorded proven hosts: claude\.ai, proven 2026-09-22 /u, path)
+    assert.doesNotMatch(text, /Recorded proven hosts: none/u, path)
   }
 })
 
