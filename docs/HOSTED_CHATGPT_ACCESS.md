@@ -84,7 +84,7 @@ use current reachability as a permanent claim or as migration evidence.
    also work without sign-in. `my_purchases`, `vote`, and every other merchant tool require
    sign-in.
 
-Each valid refresh-token family has 120 refreshes per UTC hour. Malformed, unknown,
+Each valid refresh-token family has 3,600 refreshes per UTC hour (decision #33). Malformed, unknown,
 wrong-client, wrong-resource or wrong-scope, expired, or revoked refresh attempts instead share a separate 120-per-hour
 allowance for their IP and client, so they cannot exhaust a live connection's allowance.
 A detected refresh-token replay still revokes its connection family and requires reconnect.

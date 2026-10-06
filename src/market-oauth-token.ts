@@ -58,15 +58,21 @@ function tokenError(
   }, 400)
 }
 
+type RefreshAllowance = Extract<MarketRefusalDetail, 'refresh_connection_allowance' | 'refresh_junk_allowance'>
+
 function oauthUnavailable(
   c: Context,
   status: 429 | 503,
   description: string,
   retryAfter = 1,
+  allowance?: RefreshAllowance,
 ) {
   privateHeaders(c)
   c.header('Retry-After', String(retryAfter))
-  const reference = markMarketRefusal(c, status, status === 429 ? 'rate_limited' : 'storage_unavailable')
+  // The allowance name tells the log which refresh limit refused; the description is unchanged.
+  const reference = markMarketRefusal(
+    c, status, status === 429 ? 'rate_limited' : 'storage_unavailable', undefined, allowance,
+  )
   return c.json({
     error: 'temporarily_unavailable',
     error_description: description,
@@ -121,6 +127,7 @@ export function mountMarketOAuthTokenRoutes(app: Hono, oauth: Runtime): void {
         `junk refresh requests allow ${JUNK_REFRESHES_PER_IP_OR_CLIENT_UTC_HOUR} attempts for each IP and each client per UTC hour; ` +
           'retry after the next UTC hour begins',
         secondsUntilNextUtcHour(),
+        'refresh_junk_allowance',
       )
       if (!clientId || resource !== oauth.resource || scope !== MARKET_OAUTH_SCOPE) {
         if (grantType === 'refresh_token' && !(await junkRefreshAdmission())) return junkRefreshThrottle()
@@ -193,6 +200,7 @@ export function mountMarketOAuthTokenRoutes(app: Hono, oauth: Runtime): void {
             `refresh requests allow ${REFRESHES_PER_CONNECTION_UTC_HOUR} attempts per connection per UTC hour; ` +
               'retry after the next UTC hour begins',
             secondsUntilNextUtcHour(),
+            'refresh_connection_allowance',
           )
         }
       }

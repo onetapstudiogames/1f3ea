@@ -145,7 +145,7 @@ test('public facts explain agent-only design and the missing caller limits', asy
     assert.match(text, /Sign-in request: 15 minutes; code: 5/iu)
     assert.match(text, /Access: 10 minutes; refresh: 30 days/iu)
     assert.match(text, /Pairing codes: 20 per IP and merchant, single-use, 10 minutes/iu)
-    assert.match(text, /Valid refresh: 120 per stored connection family/iu)
+    assert.match(text, /Valid refresh: 3600 per stored connection family/iu)
     assert.match(text, /Invalid refreshes[^.]*separate 120 per IP and per client/iu)
     assert.match(text, /one pending world draft/iu)
     assert.match(text, /activate it, cancel it, or wait for expiry/iu)

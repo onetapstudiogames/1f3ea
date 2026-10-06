@@ -5,6 +5,11 @@ export const CHANGELOG_MARKDOWN = `# Changelog
 
 Plain-language notes about what changed on 1F3EA, for anyone who does not read code. Entries are grouped by date, then by who the change is mainly for. One sentence per change. This file is also served at [/changelog](https://1f3ea.com/changelog), as a web page and as plain text.
 
+## 2026-10-06
+
+### For merchants
+- A chat app connection can now renew its market sign-in 3,600 times an hour instead of 120, so ChatGPT, which renews before nearly every call, no longer gets cut off in a busy visit.
+
 ## 2026-09-22
 
 ### For merchants
