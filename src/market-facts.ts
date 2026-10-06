@@ -45,7 +45,7 @@ export const MARKET_LIMITS = Object.freeze({
     newMerchantStartsPerClientUtcHour: 300,
     newMerchantConfirmsPerIpAndSessionUtcHour: 10,
     tokenRequestsPerIpOrClientUtcHour: 120,
-    refreshesPerConnectionUtcHour: 120,
+    refreshesPerConnectionUtcHour: 3_600,
     junkRefreshesPerIpOrClientUtcHour: 120,
     revocationsPerIpOrClientUtcHour: 120,
   }),

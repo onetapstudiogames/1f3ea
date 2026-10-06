@@ -5,8 +5,11 @@ import {
   mountMarketOAuthRoutes, sha256,
 } from './support/market-oauth-flow-harness.ts'
 import type { OAuthAttemptKind } from '../src/market-oauth-store.ts'
+import { MARKET_LIMITS } from '../src/market-facts.ts'
 
 const IP = '203.0.113.17'
+const CONNECTION_ALLOWANCE = MARKET_LIMITS.oauth.refreshesPerConnectionUtcHour
+const JUNK_ALLOWANCE = MARKET_LIMITS.oauth.junkRefreshesPerIpOrClientUtcHour
 const headers = { 'content-type': 'application/x-www-form-urlencoded', 'x-vercel-forwarded-for': IP }
 
 function fixture(options: { failAdmission?: () => boolean } = {}) {
@@ -53,20 +56,44 @@ async function refresh(
   return { response, body: await response.json() as Record<string, unknown> }
 }
 
-test('two connections with one client and IP each receive 120 refreshes; IP changes do not reset one', async () => {
-  const { app, attempts } = fixture()
+test('a refresh storm past 120 renewals in one UTC hour keeps one connection working', async () => {
+  // ChatGPT renews before nearly every tool call, so a busy visit passes 120 renewals an hour.
+  const { app } = fixture()
+  let token = await newConnection(app)
+  for (let index = 0; index < 600; index += 1) {
+    const result = await refresh(app, token)
+    assert.equal(result.response.status, 200, `renewal ${index + 1} must succeed, got ${result.response.status}`)
+    assert.notEqual(result.body.refresh_token, token, `renewal ${index + 1} must rotate the refresh token`)
+    token = String(result.body.refresh_token)
+  }
+})
+
+test('the connection allowance is 3,600 an hour and fits the stored counter cap', () => {
+  assert.equal(CONNECTION_ALLOWANCE, 3_600)
+  assert.equal(JUNK_ALLOWANCE, 120)
+  // oauth_rate_limits.used is SMALLINT CHECK (used BETWEEN 1 AND 10000).
+  assert.ok(CONNECTION_ALLOWANCE <= 10_000)
+})
+
+test('two connections with one client and IP each receive the full allowance; IP changes do not reset one', async () => {
+  const { app, attempts, memory } = fixture()
   let first = await newConnection(app)
   let second = await newConnection(app)
-  for (let index = 0; index < 120; index += 1) {
+  for (let index = 0; index < CONNECTION_ALLOWANCE; index += 1) {
     const result = await refresh(app, first)
     assert.equal(result.response.status, 200, `first connection refresh ${index + 1}`)
     first = String(result.body.refresh_token)
   }
   const denied = await refresh(app, first)
   assert.equal(denied.response.status, 429)
-  assert.match(String(denied.body.error_description), /120.*connection.*UTC hour/u)
+  assert.match(String(denied.body.error_description), /3600 attempts per connection per UTC hour/u)
+  assert.equal(denied.response.headers.get('x-1f3ea-cause'), 'refresh_connection_allowance')
   assert.equal((await refresh(app, first, CLIENT_ID, RESOURCE, 'market:merchant', '203.0.113.18')).response.status, 429)
-  for (let index = 0; index < 120; index += 1) {
+  // A refused refresh does not rotate: the last issued refresh token stays active.
+  assert.equal((await memory.api.resolveRefreshRateLimitSubject({
+    presentedRefreshTokenHash: sha256(first), clientId: CLIENT_ID, resource: RESOURCE,
+  })).status, 'active')
+  for (let index = 0; index < CONNECTION_ALLOWANCE; index += 1) {
     const result = await refresh(app, second)
     assert.equal(result.response.status, 200, `second connection refresh ${index + 1}`)
     second = String(result.body.refresh_token)
@@ -76,7 +103,7 @@ test('two connections with one client and IP each receive 120 refreshes; IP chan
 
   const refreshAttempts = attempts.filter(attempt => attempt.attemptKind === 'refresh')
   assert.equal(new Set(refreshAttempts.map(attempt => attempt.bucketHash)).size, 2)
-  assert.ok(refreshAttempts.every(attempt => attempt.maximum === 120))
+  assert.ok(refreshAttempts.every(attempt => attempt.maximum === CONNECTION_ALLOWANCE))
 })
 
 test('junk and wrong-client refreshes cannot spend an active connection allowance', async () => {
@@ -88,13 +115,14 @@ test('junk and wrong-client refreshes cannot spend an active connection allowanc
   assert.equal(wrongResource.response.status, 400)
   const wrongScope = await refresh(app, active, CLIENT_ID, RESOURCE, 'wrong:scope')
   assert.equal(wrongScope.response.status, 400)
-  for (let index = 3; index < 120; index += 1) {
+  for (let index = 3; index < JUNK_ALLOWANCE; index += 1) {
     const result = await refresh(app, `1f3ea_rt_${index.toString(16).padStart(64, '0')}`)
     assert.equal(result.response.status, 400)
   }
   const junkDenied = await refresh(app, 'short')
   assert.equal(junkDenied.response.status, 429)
   assert.match(String(junkDenied.body.error_description), /junk.*120.*IP.*client.*UTC hour/u)
+  assert.equal(junkDenied.response.headers.get('x-1f3ea-cause'), 'refresh_junk_allowance')
   const valid = await refresh(app, active)
   assert.equal(valid.response.status, 200)
   const refreshAttempts = attempts.filter(attempt => attempt.attemptKind === 'refresh')

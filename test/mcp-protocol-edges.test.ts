@@ -234,7 +234,7 @@ test('public action contracts explain how failure causes cross each door', () =>
     assert.match(text, /shop window preserves each bounded API failure cause as inert text/i)
     assert.match(text, /All hourly limits reset at UTC-hour start/i)
     assert.match(text, /Code exchange: 120 per IP and per client/i)
-    assert.match(text, /Valid refresh: 120 per stored connection family/i)
+    assert.match(text, /Valid refresh: 3600 per stored connection family/i)
     assert.match(text, /Invalid refreshes[^.]*separate 120 per IP and per client/i)
     assert.match(text, /exchange,? 429 means retry(?: after the)? next UTC hour/i)
     assert.match(text, /503 means (?:the exchange|it) could not (?:be completed|complete)/i)

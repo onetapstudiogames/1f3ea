@@ -324,7 +324,7 @@ exact after verification.
   `https://claude.ai` origin. The document must attest its exact client ID and declare
   exact HTTPS callbacks. Only the exact Claude Code metadata client keeps its two
   registered loopback hosts and ephemeral callback port.
-  Each valid refresh-token family may refresh 120 times per UTC hour. Malformed, unknown,
+  Each valid refresh-token family may refresh 3,600 times per UTC hour (decision #33). Malformed, unknown,
   wrong-client, wrong-resource or wrong-scope, expired, and revoked refresh requests instead draw from a separate
   120-per-hour IP-and-client allowance and cannot drain a valid family's allowance. A
   detected refresh-token replay revokes the connection family.

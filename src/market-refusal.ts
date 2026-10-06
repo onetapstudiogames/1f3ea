@@ -41,6 +41,8 @@ export type MarketRefusalDetail =
   | 'pairing_code_unavailable'
   | 'pairing_merchant_key_changed'
   | 'pairing_reservation_missing'
+  | 'refresh_connection_allowance'
+  | 'refresh_junk_allowance'
   | 'refresh_token_rejected'
   | 'refresh_token_shape'
   | 'signin_client_id'

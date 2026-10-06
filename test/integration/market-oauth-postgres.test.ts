@@ -68,6 +68,7 @@ mock.module(new URL('../../src/db.ts', import.meta.url).href, {
 })
 
 const { createMarketOAuthStore } = await import('../../src/market-oauth-store.ts')
+const { MARKET_LIMITS } = await import('../../src/market-facts.ts')
 const {
   confirmMerchantRecovery,
   confirmMerchantRotation,
@@ -820,6 +821,25 @@ test('hosted merchant OAuth is atomic against real PostgreSQL', async t => {
         `SELECT used FROM oauth_rate_limits WHERE bucket_hash = $1 AND attempt_kind = 'refresh'`,
         [firstBucket],
       )).rows, [{ used: 120 }])
+    })
+
+    await t.test('the stored refresh counter reaches the full connection allowance without a CHECK violation', async () => {
+      const allowance = MARKET_LIMITS.oauth.refreshesPerConnectionUtcHour
+      const bucketHash = sha256('market-oauth:connection:counter-cap-probe')
+      await testDatabase.query(
+        `INSERT INTO oauth_rate_limits (bucket_hash, attempt_kind, window_start, used)
+         VALUES ($1, 'refresh', date_trunc('hour', now(), 'UTC'), $2)`,
+        [bucketHash, allowance - 2],
+      )
+      const admitted = []
+      for (let index = 0; index < 3; index += 1) {
+        admitted.push(await store.consumeOAuthRateLimit({ bucketHash, attemptKind: 'refresh', maximum: allowance }))
+      }
+      assert.deepEqual(admitted, [true, true, false])
+      assert.deepEqual((await testDatabase.query(
+        `SELECT used FROM oauth_rate_limits WHERE bucket_hash = $1 AND attempt_kind = 'refresh'`,
+        [bucketHash],
+      )).rows, [{ used: allowance }])
     })
 
     await t.test('refresh routing sends wrong binding, expired and revoked tokens to junk, and flags first replay', async () => {
