@@ -8,6 +8,7 @@ import { renderWindowHtml } from './window-page.ts'
 import { resolveWindowShare, type WindowPublicRead } from './window-sharing.ts'
 import { WINDOW_CSS } from './window-style.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
+import { attachCityStatus, WORLD_CARD_CACHE_CONTROL, worldRowBinding } from './world.ts'
 
 const WINDOW_CSP = [
   "default-src 'none'",
@@ -201,8 +202,12 @@ export async function windowSnapshot(c: Context) {
   if (url.search || hasCredentials)
     return c.json({ error: 'the public shop window accepts no query or credential data' }, 400)
   const snapshot = await cachedWindowSnapshot()
-  c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
-  return c.json(snapshot)
+  // The market rows may come from the 30-second snapshot; the city status never does.
+  const cards = await attachCityStatus(snapshot.listings, snapshot.listings.map(worldRowBinding))
+  c.header('Cache-Control', cards.hasWorldCards
+    ? WORLD_CARD_CACHE_CONTROL
+    : 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
+  return c.json({ ...snapshot, listings: cards.items })
 }
 
 export async function windowPage(c: Context, publicRead: WindowPublicRead) {

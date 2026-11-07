@@ -275,7 +275,8 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     const body = detailContent('item', id, 'item #' + String(id))
     if (!body) return
     const listing = detail.listing
-    const stateName = safeText(listing.state, '')
+    // A city thing whose end has come shows the existing city record presentation.
+    const stateName = safeText(listing.state, '') === 'thing_ended' ? 'stale' : safeText(listing.state, '')
     const world = listing.delivery_kind === 'city_ownership'
     const merchant = safeHandle(listing.merchant) || 'unknown-store'
     const terminalTitles = {

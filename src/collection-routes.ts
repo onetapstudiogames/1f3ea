@@ -14,6 +14,9 @@ import {
   type CountedRow, type ShelfCursorScope,
 } from './public-pagination.ts'
 import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
+import {
+  attachCityStatus, hiddenWorldBindings, WORLD_CARD_CACHE_CONTROL, worldRowBinding,
+} from './world.ts'
 import { hasOnlyFields } from './request-fields.ts'
 import { MARKET_LIMITS } from './market-facts.ts'
 import { acceptsHtml } from './http-accept.ts'
@@ -30,6 +33,8 @@ const PUBLIC_LISTING = `l.id, m.handle AS merchant, l.title, l.description, l.pr
     THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS world_asset_url,
   (l.delivery_kind = 'city_ownership') AS requires_city_resident,
   'live'::text AS state`
+
+const PUBLIC_CACHE_CONTROL = 'public, max-age=15, s-maxage=60, stale-while-revalidate=300'
 
 const AISLE_COUNTS_CTE = `active_counts AS (
     SELECT aisle, count(*)::int AS count FROM active GROUP BY aisle
@@ -150,10 +155,11 @@ export function registerCollectionRoutes(app: Hono) {
     }
     const { id: _id, ...storeFields } = store
     const publicStore = { ...storeFields, listings: total }
-    c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
+    const cards = await attachCityStatus(listings, listings.map(worldRowBinding))
+    c.header('Cache-Control', cards.hasWorldCards ? WORLD_CARD_CACHE_CONTROL : PUBLIC_CACHE_CONTROL)
     return c.json({
       store: publicStore,
-      listings,
+      listings: cards.items,
       total,
       returned: listings.length,
       page_size: pageSize,
@@ -249,10 +255,11 @@ export function registerCollectionRoutes(app: Hono) {
     const aisles = AISLES.map(name => ({
       name, count: counts.get(name) ?? 0, url: `/api/shelves?aisle=${name}`,
     }))
-    c.header('Cache-Control', 'public, max-age=15, s-maxage=60, stale-while-revalidate=300')
+    const cards = await attachCityStatus(page.items, page.items.map(worldRowBinding))
+    c.header('Cache-Control', cards.hasWorldCards ? WORLD_CARD_CACHE_CONTROL : PUBLIC_CACHE_CONTROL)
     return c.json({
       aisles,
-      listings: page.items,
+      listings: cards.items,
       total: page.total,
       returned: page.items.length,
       page_size: requestedPage.limit,
@@ -296,6 +303,9 @@ export function registerCollectionRoutes(app: Hono) {
     } else if (listing.delivery_kind === 'city_ownership' && listing.world_state !== 'active') {
       listing.state = listing.world_state
     }
+    const carded = await attachCityStatus([listing], [worldRowBinding(listing)])
+    const shownListing = carded.items[0] ?? listing
+    if (carded.hasWorldCards) c.header('Cache-Control', WORLD_CARD_CACHE_CONTROL)
     const rawComments = (await sql`
       /* public:listing-comments */
       WITH eligible AS (
@@ -320,13 +330,13 @@ export function registerCollectionRoutes(app: Hono) {
     if (invalidPageCursor(rawComments))
       return err(c, 400, 'comments_after_id is not a comment on this listing')
     const comments = countedPage(rawComments, commentsPage.limit)
-    const artifact = listing.state !== 'live'
+    const artifact = shownListing.state !== 'live'
       ? 'unavailable — this listing is no longer for sale'
       : listing.delivery_kind === 'city_ownership'
         ? `ownership is delivered in the city — POST /api/world/checkout/${id}`
         : `purchase required — POST /api/buy/${id}`
     return c.json({
-      listing,
+      listing: shownListing,
       comments: comments.items,
       comments_total: comments.total,
       comments_returned: comments.items.length,
@@ -406,6 +416,11 @@ export function registerCollectionRoutes(app: Hono) {
         SELECT id, title, aisle, delivery_kind, world_state,
           price_usdc::float8 AS price_usdc, votes, sales, pinned,
           removed, removed_at, withdrawn, withdrawn_at, withdrawn_reason, created_at,
+          CASE WHEN delivery_kind = 'city_ownership' THEN jsonb_build_object(
+            'id', id, 'world_offer_id', world_offer_id, 'world_asset_id', world_asset_id,
+            'world_draft_id', world_draft_id, 'world_seller_handle', world_seller_handle,
+            'price_usdc', price_usdc::float8, 'seller_wallet', seller_wallet
+          ) END AS __world_binding,
           CASE
             WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
             WHEN removed THEN 'removed'
@@ -436,6 +451,7 @@ export function registerCollectionRoutes(app: Hono) {
     if (invalidPageCursor(rawListings))
       return err(c, 400, 'listings_before_id is not one of your listings')
     const listings = countedPage(rawListings, listingsPage.limit)
+    const listingCards = await attachCityStatus(listings.items, hiddenWorldBindings(rawListings, listings.items))
     const rawSales = (await sql`
       /* private:me-sales */
       WITH eligible AS (
@@ -466,7 +482,12 @@ export function registerCollectionRoutes(app: Hono) {
     const rawPurchases = (await sql`
       /* private:me-purchases */
       WITH eligible AS (
-        SELECT p.id, p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at
+        SELECT p.id, p.listing_id, l.title, l.delivery_kind, p.world_receipt, p.created_at,
+          CASE WHEN l.delivery_kind = 'city_ownership' THEN jsonb_build_object(
+            'id', l.id, 'world_offer_id', l.world_offer_id, 'world_asset_id', l.world_asset_id,
+            'world_draft_id', l.world_draft_id, 'world_seller_handle', l.world_seller_handle,
+            'price_usdc', l.price_usdc::float8, 'seller_wallet', l.seller_wallet
+          ) END AS __world_binding
         FROM purchases p JOIN listings l ON l.id = p.listing_id
         WHERE p.merchant_id = ${m.id}
       ), totals AS (
@@ -490,7 +511,8 @@ export function registerCollectionRoutes(app: Hono) {
     if (invalidPageCursor(rawPurchases))
       return err(c, 400, 'purchases_before_id is not one of your purchases')
     const purchases = countedPage(rawPurchases, purchasesPage.limit)
-    const safePurchases = purchases.items.map(row => row.delivery_kind === 'city_ownership'
+    const purchaseCards = await attachCityStatus(purchases.items, hiddenWorldBindings(rawPurchases, purchases.items))
+    const safePurchases = purchaseCards.items.map(row => row.delivery_kind === 'city_ownership'
       ? { ...row, ...safeWorldReceiptForHistory(row) }
       : row)
     const rawReplies = (await sql`
@@ -528,7 +550,7 @@ export function registerCollectionRoutes(app: Hono) {
         flags: QUOTAS.flags - m.comments_today,
         votes: QUOTAS.votes - m.votes_today,
       },
-      listings: listings.items,
+      listings: listingCards.items,
       listings_total: listings.total,
       listings_returned: listings.items.length,
       listings_page_size: listingsPage.limit,

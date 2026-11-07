@@ -10,6 +10,7 @@ import {
   type CountedRow,
 } from './public-pagination.ts'
 import { safeWorldReceiptForHistory } from './world-payment-sync.ts'
+import { attachCityStatus, hiddenWorldBindings } from './world.ts'
 
 export function registerPurchaseHistoryRoutes(app: Hono): void {
   app.get('/api/purchases', async c => {
@@ -29,7 +30,12 @@ export function registerPurchaseHistoryRoutes(app: Hono): void {
           CASE WHEN l.delivery_kind = 'artifact' THEN l.artifact END AS artifact,
           CASE WHEN l.delivery_kind = 'city_ownership' THEN p.world_receipt END AS world_receipt,
           CASE WHEN l.delivery_kind = 'city_ownership'
-            THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_receipt_url
+            THEN l.world_origin || '/api/world/offer/' || l.world_offer_id END AS city_receipt_url,
+          CASE WHEN l.delivery_kind = 'city_ownership' THEN jsonb_build_object(
+            'id', l.id, 'world_offer_id', l.world_offer_id, 'world_asset_id', l.world_asset_id,
+            'world_draft_id', l.world_draft_id, 'world_seller_handle', l.world_seller_handle,
+            'price_usdc', l.price_usdc::float8, 'seller_wallet', l.seller_wallet
+          ) END AS __world_binding
         FROM purchases p JOIN listings l ON l.id = p.listing_id
         WHERE p.merchant_id = ${merchant.id}
       ), totals AS (
@@ -53,7 +59,8 @@ export function registerPurchaseHistoryRoutes(app: Hono): void {
     if (invalidPageCursor(rawRows))
       return err(c, 400, 'before_id is not one of your purchases')
     const page = countedPage(rawRows, requestedPage.limit)
-    const purchases = page.items.map(row => {
+    const cards = await attachCityStatus(page.items, hiddenWorldBindings(rawRows, page.items))
+    const purchases = cards.items.map(row => {
       if (row.delivery_kind !== 'city_ownership') {
         const { world_receipt: _receipt, city_receipt_url: _cityUrl, ...artifactPurchase } = row
         return artifactPurchase

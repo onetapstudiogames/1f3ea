@@ -22,7 +22,7 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
   const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
   const SAFE_AISLES = new Set(['skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other'])
   const SAFE_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal', 'moderation'])
-  const SAFE_LISTING_STATES = new Set(['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale'])
+  const SAFE_LISTING_STATES = new Set(['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale', 'thing_ended'])
   const SAFE_CHANGED_FIELDS = new Set(${JSON.stringify(EDITABLE_LISTING_FIELDS)})
   const state = {
     events: [], eventsHaveMore: false, eventsTotal: 0, eventsMoreUrl: null,

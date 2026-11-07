@@ -16,6 +16,9 @@ function configuredOrigin(value: string): string {
 /** Trusted deployment configuration, never request input. */
 export const CITY_ORIGIN = configuredOrigin(process.env.CITY_ORIGIN ?? DEFAULT_CITY_ORIGIN)
 
+/** This market's own public origin, the one every city offer must name. */
+export const MARKET_ORIGIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
+
 export interface WorldDraftInput {
   title: string
   description: string
@@ -45,6 +48,23 @@ export type CityOfferPhase =
   | 'founder_review'
   | 'claimed'
   | 'canceled'
+  | 'thing_ended'
+
+export type CityAssetState = 'active' | 'remnant' | 'withdrawn'
+
+const CITY_OFFER_PHASES: readonly CityOfferPhase[] = [
+  'listed',
+  'reserved',
+  'payment_pending',
+  'payment_invalid',
+  'payment_expired',
+  'founder_review',
+  'claimed',
+  'canceled',
+  'thing_ended',
+]
+
+const CITY_ASSET_STATES: readonly CityAssetState[] = ['active', 'remnant', 'withdrawn']
 
 export interface CityOffer {
   id: number
@@ -77,6 +97,10 @@ export interface CityOffer {
   receipt?: Record<string, unknown> | null
   pending_x402_tx_hash: string | null
   pending_x402_at: string | null
+  asset_state?: CityAssetState
+  ending?: Record<string, unknown> | null
+  end_program_summary?: string | null
+  ending_checked_at?: string | null
 }
 
 export interface DraftBinding {
@@ -95,6 +119,10 @@ export interface ListingBinding {
   price_usdc: number
   seller_wallet: string
 }
+
+/** A world card binding; public reads that never select the draft or wallet omit them. */
+export type WorldCardBinding = Omit<ListingBinding, 'world_draft_id' | 'seller_wallet'> &
+  Partial<Pick<ListingBinding, 'world_draft_id' | 'seller_wallet'>>
 
 const exactKeys = (value: Record<string, unknown>, allowed: readonly string[]) => {
   const keys = Object.keys(value).sort()
@@ -182,15 +210,30 @@ function sameMoney(left: unknown, right: unknown): boolean {
   return Number.isFinite(a) && Number.isFinite(b) && Math.round(a * 1e6) === Math.round(b * 1e6)
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+const validDate = (candidate: unknown) =>
+  typeof candidate === 'string' && !Number.isNaN(new Date(candidate).getTime())
+
+const validNullableDate = (candidate: unknown) => candidate === null || validDate(candidate)
+
+// The four ending fields arrive with the city's thing-endings release. Today's
+// city omits them, so each is checked only when present.
+function validEndingFields(offer: Record<string, unknown>): boolean {
+  return (!('asset_state' in offer) || CITY_ASSET_STATES.includes(offer.asset_state as CityAssetState)) &&
+    (!('ending' in offer) || offer.ending === null || isPlainObject(offer.ending)) &&
+    (!('end_program_summary' in offer) || offer.end_program_summary === null ||
+      typeof offer.end_program_summary === 'string') &&
+    (!('ending_checked_at' in offer) || validNullableDate(offer.ending_checked_at))
+}
+
 function validOfferCore(value: unknown): value is CityOffer {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const offer = value as Record<string, unknown>
+  if (!isPlainObject(value)) return false
+  const offer = value
   const pendingHash = offer.pending_x402_tx_hash == null
     ? null
     : canonicalTxHash(offer.pending_x402_tx_hash)
-  const validDate = (candidate: unknown) =>
-    typeof candidate === 'string' && !Number.isNaN(new Date(candidate).getTime())
-  const validNullableDate = (candidate: unknown) => candidate === null || validDate(candidate)
   const paymentEvidencePhase = [
     'payment_pending',
     'payment_invalid',
@@ -198,17 +241,7 @@ function validOfferCore(value: unknown): value is CityOffer {
     'founder_review',
   ].includes(String(offer.phase))
   return Boolean(positiveId(offer.id)) && typeof offer.channel === 'string' &&
-    [
-      'listed',
-      'reserved',
-      'payment_pending',
-      'payment_invalid',
-      'payment_expired',
-      'founder_review',
-      'claimed',
-      'canceled',
-    ]
-      .includes(String(offer.phase)) &&
+    CITY_OFFER_PHASES.includes(offer.phase as CityOfferPhase) &&
     typeof offer.asset_type === 'string' &&
     Boolean(positiveId(offer.asset_id)) && typeof offer.asset_name === 'string' &&
     typeof offer.locked === 'boolean' && typeof offer.seller === 'string' &&
@@ -227,7 +260,10 @@ function validOfferCore(value: unknown): value is CityOffer {
     ((offer.pending_x402_tx_hash == null) === (offer.pending_x402_at == null)) &&
     (!paymentEvidencePhase || (
       offer.locked === true && pendingHash != null && offer.pending_x402_at != null
-    ))
+    )) &&
+    // thing_ended means the thing is due or ended with no payment evidence recorded.
+    (offer.phase !== 'thing_ended' || pendingHash == null) &&
+    validEndingFields(offer)
 }
 
 export function cityOfferMatchesDraft(
@@ -251,22 +287,30 @@ export function cityOfferMatchesDraft(
   return null
 }
 
-export function cityOfferMatchesListing(
-  value: unknown, listing: ListingBinding, marketOrigin: string,
+function cityOfferCardMismatch(
+  value: unknown, listing: WorldCardBinding, marketOrigin: string,
 ): string | null {
   if (!validOfferCore(value)) return 'city offer record is malformed'
   const offer = value as CityOffer
   if (offer.id !== listing.world_offer_id || offer.channel !== 'world') return 'city offer id or channel does not match'
   if (offer.asset_type !== 'thing' || offer.asset_id !== listing.world_asset_id) return 'city thing does not match the listing'
-  if (offer.market_draft_id !== listing.world_draft_id) return 'city offer draft does not match the listing'
+  if (listing.world_draft_id !== undefined && offer.market_draft_id !== listing.world_draft_id)
+    return 'city offer draft does not match the listing'
   if (offer.market_listing_id !== null && offer.market_listing_id !== listing.id)
     return 'city offer market listing does not match'
   if (offer.market_origin !== marketOrigin) return 'city offer market origin does not match'
   if (offer.seller !== listing.world_seller_handle) return 'city seller does not match the listing'
   if (!sameMoney(offer.price_usdc, listing.price_usdc)) return 'city offer price does not match the listing'
-  if (!WALLET_RE.test(offer.seller_wallet) || offer.seller_wallet.toLowerCase() !== listing.seller_wallet.toLowerCase())
+  if (listing.seller_wallet !== undefined && (!WALLET_RE.test(offer.seller_wallet) ||
+      offer.seller_wallet.toLowerCase() !== listing.seller_wallet.toLowerCase()))
     return 'city offer seller wallet does not match the listing'
   return null
+}
+
+export function cityOfferMatchesListing(
+  value: unknown, listing: ListingBinding, marketOrigin: string,
+): string | null {
+  return cityOfferCardMismatch(value, listing, marketOrigin)
 }
 
 export function isCityOfferAvailable(value: unknown, now = new Date()): boolean {
@@ -275,12 +319,15 @@ export function isCityOfferAvailable(value: unknown, now = new Date()): boolean 
   void now
   return offer.locked && offer.phase === 'listed' && offer.buyer === null &&
     offer.market_buyer === null && offer.market_checkout_id === null &&
-    offer.reserved_at === null && offer.reserved_until === null
+    offer.reserved_at === null && offer.reserved_until === null &&
+    (offer.asset_state === undefined || offer.asset_state === 'active')
 }
 
 export type PublicRecordResult<T> =
   | { ok: true; value: T }
   | { ok: false; kind: 'not_found' | 'unavailable' | 'invalid'; message: string }
+
+const RECORD_TOO_LARGE = 'city public record is too large'
 
 async function publicJson(path: string): Promise<PublicRecordResult<Record<string, unknown>>> {
   const controller = new AbortController()
@@ -297,12 +344,12 @@ async function publicJson(path: string): Promise<PublicRecordResult<Record<strin
     if (!response.ok) return { ok: false, kind: 'unavailable', message: 'city public records are unavailable' }
     const declaredLength = Number(response.headers.get('content-length'))
     if (Number.isFinite(declaredLength) && declaredLength > PUBLIC_RECORD_MAX_BYTES)
-      return { ok: false, kind: 'invalid', message: 'city public record is too large' }
+      return { ok: false, kind: 'invalid', message: RECORD_TOO_LARGE }
     const text = await response.text()
     if (text.length === 0)
       return { ok: false, kind: 'invalid', message: 'city returned an empty public record' }
     if (new TextEncoder().encode(text).byteLength > PUBLIC_RECORD_MAX_BYTES)
-      return { ok: false, kind: 'invalid', message: 'city public record is too large' }
+      return { ok: false, kind: 'invalid', message: RECORD_TOO_LARGE }
     let parsed: unknown
     try { parsed = JSON.parse(text) } catch {
       return { ok: false, kind: 'invalid', message: 'city returned invalid JSON' }
@@ -324,6 +371,154 @@ export async function fetchCityOffer(id: number): Promise<PublicRecordResult<Cit
     return { ok: false, kind: 'invalid', message: 'city returned a malformed offer record' }
   return { ok: true, value: response.value.offer as CityOffer }
 }
+
+/** The city's batch read (GET /api/world/offers?ids=) answers at most this many ids at once. */
+export const CITY_OFFER_BATCH_MAX = 50
+
+type OfferResult = PublicRecordResult<CityOffer>
+
+const MALFORMED_OFFER: OfferResult = { ok: false, kind: 'invalid', message: 'city returned a malformed offer record' }
+const MALFORMED_OFFER_LIST: OfferResult = { ok: false, kind: 'invalid', message: 'city returned a malformed offer list' }
+
+// One batch entry is a public offer, or {id, status} for a hidden or missing offer.
+// null means the entry breaks the list contract, which fails the whole page.
+function batchEntry(value: unknown, id: number): OfferResult | null {
+  if (!isPlainObject(value) || value.id !== id) return null
+  if (!('status' in value)) return validOfferCore(value) ? { ok: true, value: value as CityOffer } : MALFORMED_OFFER
+  if (Object.keys(value).length !== 2) return null
+  if (value.status === 'maintainer_hidden') return { ok: false, kind: 'not_found', message: 'city offer is not public' }
+  if (value.status === 'not_found') return { ok: false, kind: 'not_found', message: 'city record not found' }
+  return null
+}
+
+async function fetchOfferPage(ids: readonly number[]): Promise<Array<[number, OfferResult]>> {
+  const response = await publicJson(`/api/world/offers?ids=${ids.join(',')}`)
+  if (!response.ok && response.message === RECORD_TOO_LARGE && ids.length > 1) {
+    // One city read stays within the stated byte limit, so an oversized page is read in halves.
+    const half = Math.floor(ids.length / 2)
+    const first = await fetchOfferPage(ids.slice(0, half))
+    return [...first, ...await fetchOfferPage(ids.slice(half))]
+  }
+  const offers = response.ok ? response.value.offers : null
+  const entries = Array.isArray(offers) && offers.length === ids.length
+    ? ids.map((id, index) => batchEntry(offers[index], id))
+    : null
+  if (entries && entries.every(entry => entry !== null))
+    return ids.map((id, index) => [id, entries[index] as OfferResult])
+  const failure = response.ok ? MALFORMED_OFFER_LIST : response
+  return ids.map(id => [id, failure])
+}
+
+/** Reads many city offers fresh, never cached; every distinct requested id gets an entry. */
+export async function fetchCityOffers(ids: readonly number[]): Promise<Map<number, OfferResult>> {
+  const distinct = [...new Set(ids)]
+  const pages = Array.from({ length: Math.ceil(distinct.length / CITY_OFFER_BATCH_MAX) },
+    (_, index) => distinct.slice(index * CITY_OFFER_BATCH_MAX, (index + 1) * CITY_OFFER_BATCH_MAX))
+  const answered = await Promise.all(pages.map(fetchOfferPage))
+  return new Map(answered.flat())
+}
+
+/** The fresh city status a world card carries; checkout is open only when every check passes. */
+export interface WorldCardCityStatus {
+  state: 'current' | 'unavailable'
+  phase: CityOfferPhase | null
+  asset_state: CityAssetState | null
+  ending: Record<string, unknown> | null
+  end_program_summary: string | null
+  ending_checked_at: string | null
+  checkout_open: boolean
+}
+
+const UNAVAILABLE_CITY_STATUS: Readonly<WorldCardCityStatus> = Object.freeze({
+  state: 'unavailable',
+  phase: null,
+  asset_state: null,
+  ending: null,
+  end_program_summary: null,
+  ending_checked_at: null,
+  checkout_open: false,
+})
+
+function worldCardBinding(value: unknown): WorldCardBinding | null {
+  if (!isPlainObject(value)) return null
+  const id = positiveId(value.id)
+  const offerId = positiveId(value.world_offer_id)
+  const assetId = positiveId(value.world_asset_id)
+  const price = Number(value.price_usdc)
+  if (!id || !offerId || !assetId || typeof value.world_seller_handle !== 'string' || !Number.isFinite(price))
+    return null
+  const draftId = value.world_draft_id === undefined ? undefined : positiveId(value.world_draft_id)
+  const wallet = value.seller_wallet
+  if (draftId === null || (wallet !== undefined && typeof wallet !== 'string')) return null
+  return {
+    id, world_offer_id: offerId, world_asset_id: assetId, world_seller_handle: value.world_seller_handle,
+    price_usdc: price,
+    ...(draftId === undefined ? {} : { world_draft_id: draftId }),
+    ...(wallet === undefined ? {} : { seller_wallet: wallet }),
+  }
+}
+
+function worldCardStatus(
+  result: OfferResult | undefined, binding: WorldCardBinding, live: boolean,
+): WorldCardCityStatus {
+  if (!result?.ok || cityOfferCardMismatch(result.value, binding, MARKET_ORIGIN)) return UNAVAILABLE_CITY_STATUS
+  const offer = result.value
+  return {
+    state: 'current',
+    phase: offer.phase,
+    asset_state: offer.asset_state ?? null,
+    ending: offer.ending ?? null,
+    end_program_summary: offer.end_program_summary ?? null,
+    ending_checked_at: offer.ending_checked_at ?? null,
+    checkout_open: live && isCityOfferAvailable(offer),
+  }
+}
+
+export type WithCityStatus<T> = T & { city_status?: WorldCardCityStatus }
+
+/**
+ * Adds city_status to each world card from one fresh batch read. bindings[i] is the
+ * card's listing binding, or null for an artifact card. A card read as live whose
+ * city offer is thing_ended reads state thing_ended; nothing is written.
+ */
+export async function attachCityStatus<T extends Record<string, unknown>>(
+  items: readonly T[], bindings: readonly unknown[],
+): Promise<{ items: WithCityStatus<T>[]; hasWorldCards: boolean }> {
+  const cards = items.map((_, index) => bindings[index] == null
+    ? null
+    : { binding: worldCardBinding(bindings[index]) })
+  const offerIds = cards.flatMap(card => card?.binding ? [card.binding.world_offer_id] : [])
+  const results = offerIds.length ? await fetchCityOffers(offerIds) : new Map<number, OfferResult>()
+  const withStatus = items.map((item, index): WithCityStatus<T> => {
+    const card = cards[index]
+    if (!card) return item
+    const live = item.state === 'live'
+    const status = card.binding
+      ? worldCardStatus(results.get(card.binding.world_offer_id), card.binding, live)
+      : UNAVAILABLE_CITY_STATUS
+    return {
+      ...item,
+      ...(live && status.phase === 'thing_ended' ? { state: 'thing_ended' } : {}),
+      city_status: { ...status },
+    }
+  })
+  return { items: withStatus, hasWorldCards: cards.some(card => card !== null) }
+}
+
+/** Bindings for rows whose SQL selected a hidden __world_binding column, matched by row id. */
+export function hiddenWorldBindings(
+  rawRows: readonly Record<string, unknown>[], items: readonly { id: number }[],
+): unknown[] {
+  const byId = new Map(rawRows.map(row => [Number(row.id), row.__world_binding]))
+  return items.map(item => byId.get(item.id) ?? null)
+}
+
+/** Public world listing rows carry their own binding columns. */
+export const worldRowBinding = (row: Record<string, unknown>): Record<string, unknown> | null =>
+  row.delivery_kind === 'city_ownership' ? row : null
+
+/** Answers holding a world card are never shared from a cache: each read asks the city fresh. */
+export const WORLD_CARD_CACHE_CONTROL = 'private, no-store'
 
 export async function fetchCityResident(handle: string): Promise<PublicRecordResult<{ handle: string }>> {
   const response = await publicJson(`/api/world/resident/${encodeURIComponent(handle)}`)

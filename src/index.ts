@@ -21,10 +21,11 @@ import { registerPurchaseHistoryRoutes } from './purchase-history-routes.ts'
 import { registerSocietyRoutes } from './society-routes.ts'
 import { registerTrustRoutes } from './trust-routes.ts'
 import { registerWorldRoutes } from './world-routes.ts'
+import { MARKET_ORIGIN } from './world.ts'
 
 export { validListing }
 
-const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3ea.com'
+const DOMAIN = MARKET_ORIGIN
 const MAINTAINER_ID = Number(process.env.MAINTAINER_ID ?? 1)
 
 const app = new Hono()

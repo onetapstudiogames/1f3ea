@@ -365,6 +365,14 @@ const rpcFetch = (async (input: string | URL | Request, init?: RequestInit) => {
     if (harnessState.cityOfferResponseGate) await harnessState.cityOfferResponseGate
     return json({ offer: harnessState.cityOffer })
   }
+  if (url.startsWith(`${CITY_ORIGIN}/api/world/offers?ids=`)) {
+    const ids = new URL(url).searchParams.get('ids')?.split(',').map(Number) ?? []
+    return json({
+      offers: ids.map(id => id === 501 && harnessState.cityOffer
+        ? harnessState.cityOffer
+        : { id, status: 'not_found' }),
+    })
+  }
   if (url !== RPC_ORIGIN) throw new Error(`unexpected fetch: ${url}`)
   const body = JSON.parse(String(init?.body ?? '{}')) as {
     id?: number

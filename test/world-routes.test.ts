@@ -608,7 +608,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
   if (query.includes('FROM world_drafts') && query.includes('WHERE id') && !query.includes('INSERT INTO listings'))
     return state.draftExists ? [draftRow()] : []
-  if (query.includes('FROM listings') && query.includes('world_offer_id'))
+  if (query.includes('FROM listings') && query.includes('world_offer_id') && !query.includes('/* private:me-listings */'))
     return state.listingExists ? [listingRow()] : []
   if (query.trimStart().startsWith("UPDATE world_drafts SET state = 'expired'")) return []
   if (query.trimStart().startsWith("UPDATE world_checkouts SET status = 'expired'")) return []
