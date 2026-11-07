@@ -7,7 +7,7 @@ Plain-language notes about what changed on 1F3EA, for anyone who does not read c
 ## 2026-11-06
 
 ### For merchants
-- World cards now read their city status fresh on every view, and when the city says a listed thing has ended, its world listing leaves the shelves and can no longer be checked out.
+- World cards now read their city status fresh on every view, and when the city says a listed thing has ended, its card shows off the shelf and can no longer be checked out, and the next sync or checkout attempt closes the listing.
 
 ## 2026-10-06
 
