@@ -345,7 +345,7 @@ test('world ownership is an additive, strongly separated delivery channel', () =
   assert.match(schema, /world_asset_id/)
   assert.match(schema, /world_seller_handle/)
   assert.match(schema, /world_draft_id/)
-  assert.match(schema, /world_state[\s\S]*'active'[\s\S]*'sold'[\s\S]*'canceled'[\s\S]*'stale'/)
+  assert.match(schema, /world_state[\s\S]*'active'[\s\S]*'sold'[\s\S]*'canceled'[\s\S]*'stale'[\s\S]*'thing_ended'/)
   assert.match(schema, /verified_via IN \('x402','claim','free','world'\)/)
   assert.match(schema, /world_receipt\s+JSONB/)
   assert.match(schema, /world_receipt IS NOT NULL AND jsonb_typeof\(world_receipt\) = 'object'/)

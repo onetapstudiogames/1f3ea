@@ -152,6 +152,7 @@ test('release migration status names every registered migration without inferenc
     '20260827_market_identity.sql',
     '20260827_world_payment_finality.sql',
     '20260828_x402_payment_attempts.sql',
+    '20261106_world_thing_ended.sql',
   ]) {
     assert.match(runbook, new RegExp(`${migration.replace('.', '\\.')}[^\\n]*not recorded`, 'iu'), migration)
   }

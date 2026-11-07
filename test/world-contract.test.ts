@@ -145,6 +145,26 @@ test('checkout accepts only an explicitly listed city offer; the market never re
   assert.match(cityOfferMatchesListing({ ...offer, market_listing_id: 71 }, listing, 'https://1f3ea.com') ?? '', /listing/i)
 })
 
+test('the payment path match refuses a listing binding that omits its draft or wallet', () => {
+  const listing = {
+    id: 70,
+    world_offer_id: 33,
+    world_asset_id: 41,
+    world_draft_id: 12,
+    world_seller_handle: 'city-smith',
+    price_usdc: 2,
+    seller_wallet: SELLER,
+  }
+  const bound = { ...offer, market_listing_id: 70 }
+  const { world_draft_id: _draft, ...withoutDraft } = listing
+  const { seller_wallet: _wallet, ...withoutWallet } = listing
+  assert.equal(cityOfferMatchesListing(bound, listing, 'https://1f3ea.com'), null)
+  assert.equal(cityOfferMatchesListing(bound, withoutDraft as typeof listing, 'https://1f3ea.com'),
+    'city offer draft does not match the listing')
+  assert.equal(cityOfferMatchesListing(bound, withoutWallet as typeof listing, 'https://1f3ea.com'),
+    'city offer seller wallet does not match the listing')
+})
+
 test('terminal city payment outcomes require their locked checkout evidence', () => {
   const listing = {
     id: 70,

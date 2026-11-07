@@ -290,7 +290,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     const byline = element('div', 'detail-byline')
     byline.append(
       button('merchant-link', merchant, () => openStore(merchant)),
-      element('span', 'price-ticket', stateName === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF'),
+      element('span', 'price-ticket', shelfPriceLabel(listing)),
     )
     article.append(
       eyebrow,
@@ -477,7 +477,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
         control.append(
           element('span', '', 'ITEM #' + String(id)),
           element('strong', '', safeText(listing.title, 'Untitled item')),
-          element('span', 'price-ticket', priceLabel(listing.price_usdc)),
+          element('span', 'price-ticket', shelfPriceLabel(listing)),
         )
         goods.append(control)
       }

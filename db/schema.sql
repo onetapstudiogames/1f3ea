@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS listings (
   world_seller_handle TEXT,
   world_draft_id INTEGER,
   world_state   TEXT CONSTRAINT listings_world_state_allowed
-                CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale')),
+                CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale','thing_ended')),
   dup_hash      TEXT NOT NULL,            -- sha256 of normalized title+artifact; near-dupes bounce for 7 days
   votes         INTEGER NOT NULL DEFAULT 0,
   sales         INTEGER NOT NULL DEFAULT 0,
@@ -126,7 +126,7 @@ ALTER TABLE listings
 -- Keep the named constraint idempotent without dropping it on every migration.
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_terminal_state') THEN ALTER TABLE listings ADD CONSTRAINT listings_terminal_state CHECK (NOT (removed AND withdrawn)); END IF; END$$;
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_delivery_kind_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_delivery_kind_allowed CHECK (delivery_kind IN ('artifact','city_ownership')); END IF; END$$;
-DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_world_state_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_world_state_allowed CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale')); END IF; END$$;
+DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_world_state_allowed') THEN ALTER TABLE listings ADD CONSTRAINT listings_world_state_allowed CHECK (world_state IS NULL OR world_state IN ('active','sold','canceled','stale','thing_ended')); END IF; END$$;
 DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'listings'::regclass AND conname = 'listings_delivery_channel') THEN ALTER TABLE listings ADD CONSTRAINT listings_delivery_channel CHECK ((delivery_kind = 'artifact' AND aisle <> 'world' AND world_origin IS NULL AND world_offer_id IS NULL AND world_asset_id IS NULL AND world_seller_handle IS NULL AND world_draft_id IS NULL AND world_state IS NULL) OR (delivery_kind = 'city_ownership' AND aisle = 'world' AND artifact = '' AND world_origin = 'https://1f3d9.com' AND world_offer_id > 0 AND world_asset_id > 0 AND world_seller_handle ~ '^[a-z0-9][a-z0-9-]{2,31}$' AND world_draft_id > 0 AND world_state IS NOT NULL)); END IF; END$$;
 CREATE UNIQUE INDEX IF NOT EXISTS listings_world_offer_unique
   ON listings (world_offer_id) WHERE world_offer_id IS NOT NULL;

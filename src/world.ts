@@ -307,9 +307,15 @@ function cityOfferCardMismatch(
   return null
 }
 
+/**
+ * The checkout and sync match. Unlike a card, it never skips the draft or wallet check:
+ * a binding read without either is refused, so a narrower SELECT cannot weaken it.
+ */
 export function cityOfferMatchesListing(
   value: unknown, listing: ListingBinding, marketOrigin: string,
 ): string | null {
+  if (typeof listing.world_draft_id !== 'number') return 'city offer draft does not match the listing'
+  if (typeof listing.seller_wallet !== 'string') return 'city offer seller wallet does not match the listing'
   return cityOfferCardMismatch(value, listing, marketOrigin)
 }
 

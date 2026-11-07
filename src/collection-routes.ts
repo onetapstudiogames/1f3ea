@@ -292,7 +292,7 @@ export function registerCollectionRoutes(app: Hono) {
     } else if (listing.delivery_kind === 'city_ownership' && listing.world_state === 'sold') {
       listing.state = 'sold'
     } else if (listing.delivery_kind === 'city_ownership' &&
-        ['canceled', 'stale'].includes(String(listing.world_state)) &&
+        ['canceled', 'stale', 'thing_ended'].includes(String(listing.world_state)) &&
         listing.withdrawn_reason !== 'withdrawn by merchant') {
       listing.state = listing.world_state
     } else if (listing.withdrawn) {
@@ -425,7 +425,7 @@ export function registerCollectionRoutes(app: Hono) {
             WHEN delivery_kind = 'city_ownership' AND world_state = 'sold' THEN 'sold'
             WHEN removed THEN 'removed'
             WHEN withdrawn AND withdrawn_reason = 'withdrawn by merchant' THEN 'withdrawn'
-            WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale') THEN world_state
+            WHEN delivery_kind = 'city_ownership' AND world_state IN ('canceled','stale','thing_ended') THEN world_state
             WHEN withdrawn THEN 'withdrawn'
             ELSE 'live'
           END AS state

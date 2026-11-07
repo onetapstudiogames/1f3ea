@@ -6,6 +6,7 @@ export type ReleaseMigration =
   | 'market-coding-identity'
   | 'world-payment-finality'
   | 'x402-payment-attempts'
+  | 'world-thing-ended'
 
 export type MigrationEnvironment = Readonly<Record<string, string | undefined>>
 

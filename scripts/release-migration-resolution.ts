@@ -104,10 +104,11 @@ export function resolveReleaseMigration(
     && migration !== 'market-coding-identity'
     && migration !== 'world-payment-finality'
     && migration !== 'x402-payment-attempts'
+    && migration !== 'world-thing-ended'
   ) {
     throw new Error(
       'release migration requires --migration direct-payments|hosted-market-signin|market-identity|' +
-      'market-coding-identity|world-payment-finality|x402-payment-attempts',
+      'market-coding-identity|world-payment-finality|x402-payment-attempts|world-thing-ended',
     )
   }
   const databaseName = requireSafeDatabaseName(argumentsByName.get('database'))

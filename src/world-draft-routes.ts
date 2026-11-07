@@ -24,18 +24,24 @@ export interface WorldDraftRow extends WorldDraftInput {
 
 export const ACTIVE_WORLD_DRAFT_EXPIRY = '9999-12-31T23:59:59.999Z'
 
+// The city's draft reader knows only canceled for a listing the city ended, so the stale
+// and thing_ended listing states are answered as canceled and never passed through raw.
+const CITY_ENDED_LISTING_STATES = new Set(['canceled', 'stale', 'thing_ended'])
+
 function publicDraftStatus(row: WorldDraftRow) {
   if (row.state === 'pending' && dateIsPast(row.expires_at)) return 'expired' as const
   if (row.listing_state === 'sold') return 'sold' as const
   if (row.listing_removed || row.state === 'canceled') return 'canceled' as const
   if (row.state === 'withdrawn') return 'withdrawn' as const
-  if (row.listing_state === 'canceled' || row.listing_state === 'stale') return 'canceled' as const
+  if (row.listing_state && CITY_ENDED_LISTING_STATES.has(row.listing_state)) return 'canceled' as const
   if (row.listing_withdrawn) return 'withdrawn' as const
   return row.state
 }
 
 function draftEnvelope(row: WorldDraftRow) {
-  const listingState = row.listing_state === 'stale' ? 'canceled' : row.listing_state ?? null
+  const listingState = row.listing_state && CITY_ENDED_LISTING_STATES.has(row.listing_state)
+    ? 'canceled'
+    : row.listing_state ?? null
   // This read override covers drafts activated before sentinel writes shipped; no backfill was run.
   const expiresAt = row.state === 'active' && listingState === 'active'
     ? ACTIVE_WORLD_DRAFT_EXPIRY

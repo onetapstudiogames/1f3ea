@@ -1787,3 +1787,34 @@ test('a thing_ended world listing uses the existing city record presentation and
   assert.deepEqual(rendered.thing_ended, rendered.stale)
   assert.match(rendered.thing_ended?.detail ?? '', /The city no longer confirms this offer as available/)
 })
+
+test('shelf rows and store goods show OFF SHELF, not a price, for a card that is not live', async () => {
+  const card = (id: number, stateName: string) => ({
+    ...listingFixture(id, 'world'), price_usdc: 2, delivery_kind: 'city_ownership', state: stateName,
+  })
+  const snapshot = { ...boundedSnapshot(2, 2, 1, 1), aisles: aisleVector({ world: 2 }) }
+  snapshot.listings = [card(1, 'thing_ended'), card(2, 'live')]
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+      store: { ...merchantFixture(1), listings: 2 },
+      listings: [card(1, 'thing_ended'), card(2, 'live')],
+      total: 2,
+      returned: 2,
+      page_size: 2,
+      has_more: false,
+      next_before_id: null,
+    })
+  })
+  await settle()
+  const tickets = (root: ReturnType<typeof document.getElementById>) => descendants(root!)
+    .filter(element => element.className === 'price-ticket')
+    .map(element => element.textContent)
+  assert.deepEqual(tickets(document.getElementById('listing-list')), ['OFF SHELF', '2 USDC'])
+
+  const merchant = byAttribute(document, 'aria-label', 'Look into store-1 store')
+  assert.ok(merchant)
+  await merchant.click()
+  await settle()
+  assert.deepEqual(tickets(document.getElementById('listing-detail')), ['OFF SHELF', '2 USDC'])
+})

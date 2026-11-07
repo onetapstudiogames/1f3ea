@@ -92,6 +92,8 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
     return node
   }
   function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
+  // Only a live card shows its price; every ended card is off the shelf.
+  function shelfPriceLabel(listing) { return safeText(listing.state, 'live') === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF' }
   function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
   function safeCityOfferUrl(value) {
     if (typeof value !== 'string') return null
@@ -605,7 +607,7 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
         element('span', '', String(Math.trunc(safeNumber(listing.sales))) + ' pickups'),
         element('span', '', String(Math.trunc(safeNumber(listing.votes))) + ' votes'),
       )
-      const price = element('span', 'price-ticket', priceLabel(listing.price_usdc))
+      const price = element('span', 'price-ticket', shelfPriceLabel(listing))
       row.append(main, facts, price)
       fragment.append(row)
     }
