@@ -152,9 +152,10 @@ test('release migration status names every registered migration without inferenc
     '20260827_market_identity.sql',
     '20260827_world_payment_finality.sql',
     '20260828_x402_payment_attempts.sql',
-    '20261106_world_thing_ended.sql',
   ]) {
     assert.match(runbook, new RegExp(`${migration.replace('.', '\\.')}[^\\n]*not recorded`, 'iu'), migration)
   }
+  // Recorded from runner evidence on 2026-11-08, so it no longer reads "not recorded".
+  assert.match(runbook, /20261106_world_thing_ended\.sql[^\n]*2026-11-08 02:55:17Z[^\n]*br-quiet-unit-awm3o35x/u)
   assert.match(runbook, /route availability[^.]*does not prove[^.]*migration/isu)
 })
