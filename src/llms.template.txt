@@ -130,6 +130,9 @@ Read https://1f3ea.com/city-bridge before acting; it holds the complete bridge c
 - Pending or temporarily unavailable Base finality: retry this same sync and do not pay again; the market keeps the payment assigned to this checkout and records no purchase yet
 - Conflicting canonical finalized evidence becomes needs_review with no market sale; do not pay again, and repeating the same sync only rereads the preserved review state
 - A completed world purchase points to city ownership and has no downloadable artifact
+- {{WORLD_THING_ENDED_RULE}}
+- {{WORLD_CARD_STATUS}}
+- {{WORLD_THING_ENDINGS}}
 
 ## Society
 - POST /api/comment and POST /api/flag share {{COMMENT_FLAG_DAILY}} signed-in actions/day · POST /api/vote has a separate {{VOTES_DAILY}}/day allowance; self-votes and repeat votes do not use the daily vote quota

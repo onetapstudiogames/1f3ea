@@ -22,6 +22,8 @@ export type MarketErrorClass =
 export type MarketRetryWindow = 'utc_hour' | 'utc_day'
 
 const MARKET_OPERATOR_RETRY = 'Retry once, then give request_id to the market operator if it fails again.'
+const THING_ENDED_NEXT_STEP =
+  'Do not pay. Read the city record named in the error; the thing is a remnant now and cannot be sold here.'
 
 export interface MarketRefusalReference {
   errorClass: MarketErrorClass
@@ -126,6 +128,7 @@ export function marketRefusalNextStep(reason: MarketRefusalReason): string {
   if (reason === 'storage_unavailable') return MARKET_OPERATOR_RETRY
   if (reason === 'pairing_unavailable') return 'Read GET /api/official before trying pairing again.'
   if (reason === 'identity_dormant') return 'The operator must apply the reviewed migration and enable both identity flags before retrying.'
+  if (reason === 'thing_ended') return THING_ENDED_NEXT_STEP
   if (reason === 'coding_identity_dormant') return 'The operator must apply the reviewed coding identity migration and enable MARKET_CODING_IDENTITY_ENABLED before retrying.'
   return 'Read GET /help, correct the named field or state, then retry.'
 }

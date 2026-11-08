@@ -3055,6 +3055,19 @@ test('the draft answer never passes thing_ended through, whatever the draft stat
   }
 })
 
+const THING_ENDED_CHECKOUT = {
+  error: "This city thing's end has come, so no new purchase can start. Read its city record at https://1f3d9.com/api/world/offer/33.",
+  error_class: 'conflict',
+  reason: 'thing_ended',
+  next_step: 'Do not pay. Read the city record named in the error; the thing is a remnant now and cannot be sold here.',
+  front_door: 'https://1f3ea.com/',
+  help_page: 'https://1f3ea.com/help',
+}
+
+function thingEndedFields(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.keys(THING_ENDED_CHECKOUT).map(key => [key, body[key]]))
+}
+
 test('checkout refuses a thing_ended offer, ends the listing, and gives no payment entry', async () => {
   for (const mode of ['thing-ended', 'thing-ended-reserved'] as const) {
     reset()
@@ -3065,8 +3078,10 @@ test('checkout refuses a thing_ended offer, ends the listing, and gives no payme
       method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
     })
     assert.equal(response.status, 409, mode)
+    assert.equal(response.headers.get('x-1f3ea-reason'), 'thing_ended', mode)
     const body = await response.json() as Record<string, unknown>
-    assert.equal(body.error, 'city offer is not available for a new checkout', mode)
+    assert.deepEqual(thingEndedFields(body), THING_ENDED_CHECKOUT, mode)
+    assert.equal(typeof body.request_id, 'string', mode)
     assert.equal('city_claim_url' in body, false, mode)
     assert.equal('checkout_id' in body, false, mode)
     assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO world_checkouts')), false, mode)
@@ -3079,7 +3094,7 @@ test('checkout refuses a thing_ended offer, ends the listing, and gives no payme
       method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
     })
     assert.equal(again.status, 409, mode)
-    assert.equal((await again.json() as { error: string }).error, 'world listing is not live', mode)
+    assert.deepEqual(thingEndedFields(await again.json() as Record<string, unknown>), THING_ENDED_CHECKOUT, mode)
   }
 })
 

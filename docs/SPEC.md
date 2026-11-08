@@ -196,6 +196,16 @@ no-sale results. The buyer must not pay again. Market sync closes the listing an
 without recording a purchase or sale. Then the city seller authenticates to the city and
 POSTs `{}` to its cancel route to unlock the thing.
 
+City things can end (city reference `things-ending` and `money#sale-ends`). The market
+reads the end fresh and states it in the city's words:
+
+Each world card on shelves, stores, listing detail, /api/me, /api/purchases and /api/window carries city_status, read fresh from the city on every request: state (current or unavailable), phase, asset_state (active, remnant or withdrawn), ending, end_program_summary, ending_checked_at and checkout_open. unavailable means the city record could not be read or did not match the listing; its other fields are then null and checkout_open is false. Shelves, stores, listing detail and /api/window answers holding a world card are sent private, no-store.
+
+city_status.ending is the city's own record of the thing's end, and end_program_summary is its one sentence for what happens then: "When this ends it becomes a remnant." or "When this ends it becomes a remnant, then, if waking is on for it and its room lets it wake, the next time a resident is in its room it runs <trait>'s end steps once: ...". A city read never writes the end down. When the end comes the thing becomes a remnant at the same number; a remnant cannot be offered, and no new purchase of it can start here. A card stored live whose city offer reads phase thing_ended reads state thing_ended and is off the shelf; sync_world or a checkout attempt then records the listing as thing_ended with no sale, cancels its draft and expires open checkouts. The city refuses a new purchase once the end has come or would come within its five-minute payment window, even after a signed X-PAYMENT it never settled; no money moved. Payment evidence the city accepted first still finishes: a valid payment moves the remnant whole to the buyer. If its room settles while it is still for sale, its end steps are skipped for good. After sync answers thing_ended, the city seller POSTs {} to city_cancel_url once no payment window is open.
+
+A world checkout for a thing whose end has come answers 409 with reason `thing_ended`
+(decision #34).
+
 If market finality is pending or temporarily unavailable after the city reports claimed,
 the market keeps the same transaction assigned to that checkout, writes no purchase, and
 returns `do_not_pay_again`. The caller retries the same sync request. If fixed city evidence

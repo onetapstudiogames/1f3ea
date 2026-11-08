@@ -5,7 +5,7 @@ import type { HostedMarketSigninReadiness } from './hosted-market-readiness.ts'
 import { marketIdentityPublicFacts } from './market-identity-routes.ts'
 import { LISTING_FEE_USDC, TREASURY } from './pay.ts'
 import { CITY_ORIGIN } from './world.ts'
-import { ORDINARY_PAYMENT_TERMINALS } from './market-facts.ts'
+import { ORDINARY_PAYMENT_TERMINALS, WORLD_CARD_STATUS, WORLD_THING_ENDINGS } from './market-facts.ts'
 
 export function registerTrustRoutes(
   app: Hono,
@@ -64,6 +64,8 @@ export function registerTrustRoutes(
         'outcomes, do not pay again, then the city seller authenticates there and POSTs {} to the cancel URL; ' +
         'pending or unavailable market finality retries the same sync without paying again; needs_review records no ' +
         'market sale and repeating sync only rereads the preserved review state',
+      card_status: WORLD_CARD_STATUS,
+      thing_endings: WORLD_THING_ENDINGS,
       records: 'public only; neither site receives the other site bearer secret',
     },
     public_pagination: {
