@@ -51,7 +51,8 @@ test('the doors, docs and served pages carry the same ending facts', async () =>
   const spec = read('docs/SPEC.md')
   for (const value of [facts.WORLD_CARD_STATUS, facts.WORLD_THING_ENDINGS])
     assert.ok(spec.includes(value), `SPEC ${value.slice(0, 40)}`)
-  assert.match(read('README.md'), /on any card `city_status\.asset_state` reads `remnant`/u)
+  assert.match(read('README.md'), /on any card, `city_status\.asset_state` `remnant` means its end has come\./u)
+  assert.doesNotMatch(read('README.md'), /asset_state` reads `remnant`/u)
   assert.match(read('README.md'), /offer reads phase `thing_ended` reads state `thing_ended`/u)
 
   const official = await (await app.request('/api/official')).json() as { world: Record<string, unknown> }
@@ -71,7 +72,11 @@ test('the doors, docs and served pages carry the same ending facts', async () =>
 test('the world tools describe city_status, the remnant and the thing_ended results', () => {
   for (const name of ['browse', 'visit_store', 'read_listing', 'me', 'my_purchases'])
     assert.ok(tool(name).description.includes(facts.WORLD_CARD_TOOL_NOTE), name)
-  assert.match(tool('checkout_world').description, /409 with no payment entry and next_step Do not pay \(reason thing_ended on the JSON route; through MCP, error_class conflict and reason request_conflict\)\./u)
+  const checkout = tool('checkout_world').description
+  assert.match(checkout, /Once its city offer reads phase thing_ended \(the end came with no accepted payment evidence\), the thing is a remnant/u)
+  assert.match(checkout, /409 with no payment entry and next_step Do not pay \(reason thing_ended on the JSON route; through MCP, error_class conflict and reason request_conflict\)\./u)
+  assert.match(checkout, /In any other phase that is not open for a new checkout, it answers 409 with reason request_conflict, no payment entry and the generic next_step\./u)
+  assert.doesNotMatch(checkout, /Once the city thing's end has come/u)
   assert.match(tool('sync_world').description, /phase thing_ended[^.]*records the listing as thing_ended with no sale/u)
   assert.match(tool('sync_world').description, /city_cancel_url once no payment window is open/u)
   assert.match(tool('list_world').description, /A remnant cannot be offered in the city/u)

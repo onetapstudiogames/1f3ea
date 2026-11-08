@@ -385,9 +385,11 @@ export const MCP_TOOLS: ToolDef[] = [
       'It does not reserve the one-of-one thing; the first city reservation wins. ' +
       `One active checkout is allowed per market buyer and listing; wait for its ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute expiry before creating another. ` +
       'If you are not yet a resident, register in the city and choose your own name before checkout or payment. ' +
-      "Read the card's city_status.ending before paying. Once the city thing's end has come it is a remnant and " +
-      'no new purchase can start: checkout answers 409 with no payment entry and next_step Do not pay (reason thing_ended on the ' +
-      'JSON route; through MCP, error_class conflict and reason request_conflict).',
+      "Read the card's city_status.ending before paying. Once its city offer reads phase thing_ended (the end came with no " +
+      'accepted payment evidence), the thing is a remnant and no new purchase can start: checkout answers 409 with no payment ' +
+      'entry and next_step Do not pay (reason thing_ended on the JSON route; through MCP, error_class conflict and reason ' +
+      'request_conflict). In any other phase that is not open for a new checkout, it answers 409 with reason request_conflict, ' +
+      'no payment entry and the generic next_step.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
