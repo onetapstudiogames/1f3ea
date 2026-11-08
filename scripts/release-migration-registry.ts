@@ -347,6 +347,19 @@ export const MIGRATIONS = Object.freeze({
       index('oauth_pairing_reservations', 'oauth_pairing_reservations_expiry'),
     ],
   },
+  'world-thing-ended': {
+    file: 'db/migrations/20261106_world_thing_ended.sql',
+    // No preflightTable: the old four-value constraint has the same name and would read as drift.
+    postconditions: [
+      // Fragments match pg_get_constraintdef, which renders each allowed value as 'value'::text.
+      constraint('listings', 'listings_world_state_allowed', {
+        validated: true,
+        definitionIncludes: [
+          "'active'::text", "'sold'::text", "'canceled'::text", "'stale'::text", "'thing_ended'::text",
+        ],
+      }),
+    ],
+  },
 } as const satisfies Readonly<Record<ReleaseMigration, Readonly<{
   file: string
   postconditions: readonly Postcondition[]

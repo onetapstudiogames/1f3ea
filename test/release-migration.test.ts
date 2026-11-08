@@ -454,6 +454,47 @@ test('coding-client identity has its own guarded additive release migration, sep
   assert.equal(preview.migrationFile, run.migrationFile)
 })
 
+const WORLD_THING_ENDED_DEFINITION = [
+  "'active'::text", "'sold'::text", "'canceled'::text", "'stale'::text", "'thing_ended'::text",
+]
+
+test('world thing_ended has its own guarded migration that checks the widened definition', () => {
+  const run = resolveReleaseMigration([
+    '--target', 'production',
+    '--migration', 'world-thing-ended',
+    '--database', 'market',
+    '--endpoint', PRODUCTION_HOST,
+  ], productionEnvironment())
+  assert.equal(run.migration, 'world-thing-ended')
+  assert.equal(run.migrationFile, 'db/migrations/20261106_world_thing_ended.sql')
+  // The old constraint has the same name, so a preflight drift check would refuse every database.
+  assert.equal('preflightTable' in run, false)
+  assert.deepEqual(run.postconditions, [{
+    kind: 'constraint',
+    table: 'listings',
+    name: 'listings_world_state_allowed',
+    validated: true,
+    definitionIncludes: WORLD_THING_ENDED_DEFINITION,
+  }])
+
+  const preview = resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'world-thing-ended',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment())
+  assert.equal(preview.migrationFile, run.migrationFile)
+  assert.deepEqual(preview.postconditions, run.postconditions)
+  assert.throws(() => resolveReleaseMigration([
+    '--target', 'preview',
+    '--migration', 'world-thing-end',
+    '--database', 'market_preview',
+    '--endpoint', PREVIEW_HOST,
+    '--production-endpoint', PRODUCTION_HOST,
+  ], previewEnvironment()), /\|world-thing-ended$/u)
+})
+
 test('target resolution rejects pooled, mismatched, and generic database connections', () => {
   const args = [
     '--target', 'production',
@@ -623,12 +664,13 @@ test('execution rolls back if any required object is absent before commit', asyn
 })
 
 test('release SQL is additive and each delta matches the live schema contract', async () => {
-  const [direct, oauth, identity, worldFinality, x402Attempts] = await Promise.all([
+  const [direct, oauth, identity, worldFinality, x402Attempts, worldThingEnded] = await Promise.all([
     readFile(new URL('../db/migrations/20260823_direct_payments.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260822_hosted_market_signin.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260827_market_identity.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260827_world_payment_finality.sql', import.meta.url), 'utf8'),
     readFile(new URL('../db/migrations/20260828_x402_payment_attempts.sql', import.meta.url), 'utf8'),
+    readFile(new URL('../db/migrations/20261106_world_thing_ended.sql', import.meta.url), 'utf8'),
   ])
   assert.match(direct, /CREATE TABLE IF NOT EXISTS direct_purchase_intents/)
   assert.match(direct, /ADD COLUMN IF NOT EXISTS direct_purchase_intent_id/)
@@ -641,7 +683,15 @@ test('release SQL is additive and each delta matches the live schema contract', 
   assert.match(worldFinality, /ADD COLUMN IF NOT EXISTS world_payment_attempt_id/)
   assert.match(x402Attempts, /CREATE TABLE IF NOT EXISTS x402_payment_attempts/)
   assert.match(x402Attempts, /CREATE TRIGGER x402_payment_attempts_keep_history/)
-  for (const sql of [direct, oauth, identity, worldFinality, x402Attempts]) {
+  assert.match(worldThingEnded, /DROP CONSTRAINT listings_world_state_allowed/)
+  assert.match(worldThingEnded,
+    /ADD CONSTRAINT listings_world_state_allowed CHECK \(\s*world_state IS NULL OR world_state IN \('active','sold','canceled','stale','thing_ended'\)\s*\) NOT VALID/)
+  assert.match(worldThingEnded, /VALIDATE CONSTRAINT listings_world_state_allowed/)
+  assert.equal(splitMigrationSql(worldThingEnded).length, 2)
+  const schema = await readFile(new URL('../db/schema.sql', import.meta.url), 'utf8')
+  assert.equal(schema.split("world_state IN ('active','sold','canceled','stale','thing_ended')").length, 3)
+  assert.doesNotMatch(schema, /world_state IN \('active','sold','canceled','stale'\)/)
+  for (const sql of [direct, oauth, identity, worldFinality, x402Attempts, worldThingEnded]) {
     assert.doesNotMatch(sql, /\b(?:DROP TABLE|DROP COLUMN|TRUNCATE|DELETE FROM)\b/i)
     assert.doesNotMatch(sql, /^\s*(?:BEGIN|COMMIT|ROLLBACK)\s*;\s*$/im)
   }
@@ -681,6 +731,8 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(scripts['migrate:production:world-payment-finality'] ?? '', /--target production --migration world-payment-finality$/)
   assert.match(scripts['migrate:preview:x402-payment-attempts'] ?? '', /--target preview --migration x402-payment-attempts$/)
   assert.match(scripts['migrate:production:x402-payment-attempts'] ?? '', /--target production --migration x402-payment-attempts$/)
+  assert.match(scripts['migrate:preview:world-thing-ended'] ?? '', /--target preview --migration world-thing-ended$/)
+  assert.match(scripts['migrate:production:world-thing-ended'] ?? '', /--target production --migration world-thing-ended$/)
 
   assert.match(runbook, /PREVIEW_DATABASE_URL_UNPOOLED/)
   assert.match(runbook, /PRODUCTION_DATABASE_URL_UNPOOLED/)
@@ -702,6 +754,9 @@ test('package and runbook expose separate guarded preview and production command
   assert.match(runbook, /migrate:production:world-payment-finality/)
   assert.match(runbook, /migrate:preview:x402-payment-attempts/)
   assert.match(runbook, /migrate:production:x402-payment-attempts/)
+  assert.match(runbook, /migrate:preview:world-thing-ended/)
+  assert.match(runbook, /migrate:production:world-thing-ended/)
+  assert.match(runbook, /20261106_world_thing_ended\.sql/)
   assert.ok(
     runbook.indexOf('migrate:preview:world-payment-finality') <
     runbook.indexOf('migrate:preview:x402-payment-attempts'),

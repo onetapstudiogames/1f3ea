@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Hono } from 'hono'
-import { registerDoorRoutes } from '../src/door-routes.ts'
+
+// The door routes reach the city bridge parser (the window's world cards), which
+// needs the treasury configured at import, as every other route test sets it.
+process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
+const { registerDoorRoutes } = await import('../src/door-routes.ts')
 
 test('domain challenge serves only the configured portal token as plain text', async () => {
   const app = new Hono()

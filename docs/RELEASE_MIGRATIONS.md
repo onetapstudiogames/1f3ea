@@ -3,7 +3,8 @@
 > Status: current
 
 The direct-payment, hosted-sign-in, save-first identity, coding-client-identity,
-world-payment-finality, and x402-attempt changes have six additive database changes:
+world-payment-finality, x402-attempt, and world-thing-ended changes have seven additive
+database changes:
 
 1. `db/migrations/20260823_direct_payments.sql`
 2. `db/migrations/20260822_hosted_market_signin.sql`
@@ -11,6 +12,7 @@ world-payment-finality, and x402-attempt changes have six additive database chan
 4. `db/migrations/20260902_market_identity_json_doors.sql`
 5. `db/migrations/20260827_world_payment_finality.sql`
 6. `db/migrations/20260828_x402_payment_attempts.sql`
+7. `db/migrations/20261106_world_thing_ended.sql`
 
 ## Recorded application status
 
@@ -32,6 +34,7 @@ gate, `MARKET_CODING_IDENTITY_ENABLED`, precisely so the two are never conflated
 | `20260902_market_identity_json_doors.sql` | **2026-09-03 01:06Z**, runner `market-coding-identity`, fresh preview branch `br-curly-thunder-aw4b3209` (created from production parent `br-plain-moon-awqm279s`; the pinned `br-shy-sea-aw8771mn` was found stale and unusable), endpoint `ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech`, database `neondb`. Runner reported `{"target":"preview","migration":"market-coding-identity","database":"neondb","endpoint":"ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only check confirmed `merchant_pairing_codes` (`id`, `merchant_id`, `code_hash`, `created_at`, `expires_at`, `used_at`, `invalidated_at`) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` constraint including `pair_create`. Rehearsal branch deleted afterward. See "Recorded run evidence: market-coding-identity" below. | **2026-09-03 01:06Z**, runner `market-coding-identity`, production endpoint `ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`, database `neondb`, preceded by labelled snapshot branch `snapshot/pre-coding-identity-20260903-0106` (`br-floral-base-aw54cx5o`). Runner reported `{"target":"production","migration":"market-coding-identity","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only verification confirmed the same columns and constraint; `listings` 18 and `merchants` 23 unchanged. Live smoke with `MARKET_CODING_IDENTITY_ENABLED` still unset: `/api/official` `coding_client_doors` `null`; `POST /api/register` and `POST /api/pair` answer 503 `coding_identity_dormant`; `/join` 200. The flag has **not** been set yet — the four coding-client doors remain dormant until an operator sets it and redeploys. See "Recorded run evidence: market-coding-identity" below. |
 | `20260827_world_payment_finality.sql` | **Not recorded.** | **Not recorded.** Served finality copy and application tests do not prove the production writer fence exists. |
 | `20260828_x402_payment_attempts.sql` | **Not recorded.** | **Not recorded.** Source support for durable attempts does not prove its production table and triggers exist. |
+| `20261106_world_thing_ended.sql` | **Not recorded.** | **Not recorded.** Source support for the `thing_ended` world state does not prove the widened `listings_world_state_allowed` check exists. |
 
 Before any new run, inspect provider migration records and the target schema without
 changing it. Then use the guarded runner for the intended target and require every declared
@@ -61,6 +64,17 @@ Apply `x402-payment-attempts` only after `world-payment-finality`. Keep payment 
 closed until both runners report all checks passed. The x402 migration adds the durable
 record that is created before a facilitator settlement starts; it stores only a digest
 and public payment identity, never the opaque signed payment proof.
+
+`world-thing-ended` widens one check: `listings_world_state_allowed` also accepts
+`thing_ended`, which sync and a checkout attempt write when the city says the thing ended
+before it sold. It changes no row and old application code never writes the new value, so
+payment custody need not close. Run it, and require its postcondition, before the
+application change that writes `thing_ended` is deployed. Its postcondition reads the
+constraint's validated definition, not only its name, because the old four-value
+constraint has the same name. Take a labelled provider snapshot branch before the
+production run; this runner does not take one itself. Before and after each run, also
+check read-only that no listing has `world_state = 'thing_ended'` yet and that the
+listing count is unchanged.
 
 `market-coding-identity` is additive and unrelated to payment custody, but it is deliberately
 not folded into the first-three schema-first group: production can already have both
@@ -153,6 +167,15 @@ column) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` con
 present, then set `MARKET_CODING_IDENTITY_ENABLED=true` and redeploy before treating
 `/api/register`, `/api/rotate`, `/api/recovery`, or `/api/pair` as live in preview.
 
+Run the world-thing-ended migration, twice to prove it reruns cleanly:
+
+```text
+npm run migrate:preview:world-thing-ended -- --database <expected-database> --endpoint <exact-non-pooled-hostname> --production-endpoint <exact-production-hostname>
+```
+
+Require its runner to report `listings_world_state_allowed` validated, with `thing_ended`
+and the four older values in its definition.
+
 For `world-payment-finality`, use this order:
 
 1. Deploy the candidate to preview with `PAYMENT_CUSTODY_READY` absent.
@@ -211,6 +234,15 @@ already having both `MARKET_IDENTITY_RECOVERY_ENABLED` and `MARKET_IDENTITY_ROTA
 set to `true` is not sufficient by itself, and `/api/register`, `/api/rotate`,
 `/api/recovery`, and `/api/pair` keep answering 503 with no side effect until this migration
 has run and that flag is set, even while `/join`, `/recovery`, and `/rotate` are already live.
+
+Then run the world-thing-ended migration once, after its labelled snapshot branch,
+and before the application change that writes `thing_ended` is merged:
+
+```text
+npm run migrate:production:world-thing-ended -- --database <expected-database> --endpoint <exact-non-pooled-hostname>
+```
+
+Require the same validated definition as in preview.
 
 Then use this strict order for
 `world-payment-finality`:

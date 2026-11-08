@@ -164,7 +164,7 @@ const state = {
   x402Attempt: null as X402PaymentAttemptFixture | null,
   attemptReserveError: null as PostgresErrorFixture | null,
   cancelDraftDuringCityFetch: false,
-  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'payment-expired' | 'founder-review' | 'unknown-phase' | 'canceled' | 'claimed',
+  cityMode: 'ok' as 'ok' | 'outage' | 'bad-json' | 'framework-body' | 'huge-stream' | 'missing' | 'mismatch' | 'reserved' | 'reserved-expired' | 'payment-pending' | 'payment-invalid' | 'payment-expired' | 'founder-review' | 'unknown-phase' | 'canceled' | 'claimed' | 'thing-ended' | 'thing-ended-reserved',
   cityStreamPulls: 0,
   cityStreamCanceled: false,
   cityReservedAt: '2026-08-12T00:04:00.000Z',
@@ -308,8 +308,11 @@ function cityOffer() {
     'payment-invalid',
     'payment-expired',
     'founder-review',
+    'thing-ended-reserved',
   ]
-  const currentCheckoutModes = checkoutBoundModes.filter(mode => mode !== 'reserved-expired')
+  // A thing can end while an older reservation still names a buyer and a lapsed checkout.
+  const lapsedBindingModes = ['reserved-expired', 'thing-ended-reserved']
+  const currentCheckoutModes = checkoutBoundModes.filter(mode => !lapsedBindingModes.includes(mode))
   const paymentEvidenceModes = ['payment-pending', 'payment-invalid', 'payment-expired', 'founder-review']
   const base = {
     id: 33,
@@ -321,7 +324,8 @@ function cityOffer() {
             : state.cityMode === 'payment-invalid' ? 'payment_invalid'
               : state.cityMode === 'payment-expired' ? 'payment_expired'
                 : state.cityMode === 'founder-review' ? 'founder_review'
-                  : state.cityMode === 'unknown-phase' ? 'surprise' : 'listed',
+                  : state.cityMode === 'unknown-phase' ? 'surprise'
+                    : ['thing-ended', 'thing-ended-reserved'].includes(state.cityMode) ? 'thing_ended' : 'listed',
     asset_type: 'thing',
     asset_id: state.cityMode === 'mismatch' ? 999 : 41,
     asset_name: 'Pocket observatory',
@@ -337,11 +341,11 @@ function cityOffer() {
     market_draft_id: 12,
     market_listing_id: state.draftListingId,
     market_checkout_id: currentCheckoutModes.includes(state.cityMode) ? 60
-      : state.cityMode === 'reserved-expired' ? 59 : null,
+      : lapsedBindingModes.includes(state.cityMode) ? 59 : null,
     reserved_at: currentCheckoutModes.includes(state.cityMode) ? state.cityReservedAt
-      : state.cityMode === 'reserved-expired' ? '2020-01-01T00:00:00.000Z' : null,
+      : lapsedBindingModes.includes(state.cityMode) ? '2020-01-01T00:00:00.000Z' : null,
     reserved_until: currentCheckoutModes.includes(state.cityMode) ? state.cityReservedUntil
-      : state.cityMode === 'reserved-expired' ? '2020-01-01T00:05:00.000Z' : null,
+      : lapsedBindingModes.includes(state.cityMode) ? '2020-01-01T00:05:00.000Z' : null,
     created_at: '2026-08-12T00:00:30.000Z',
     claimed_at: state.cityMode === 'claimed' ? state.cityClaimedAt : null,
     canceled_at: state.cityMode === 'canceled' ? '2026-08-12T00:05:00.000Z' : null,
@@ -608,7 +612,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
   if (query.includes('FROM world_drafts d')) return state.draftExists ? [draftRow()] : []
   if (query.includes('FROM world_drafts') && query.includes('WHERE id') && !query.includes('INSERT INTO listings'))
     return state.draftExists ? [draftRow()] : []
-  if (query.includes('FROM listings') && query.includes('world_offer_id'))
+  if (query.includes('FROM listings') && query.includes('world_offer_id') && !query.includes('/* private:me-listings */'))
     return state.listingExists ? [listingRow()] : []
   if (query.trimStart().startsWith("UPDATE world_drafts SET state = 'expired'")) return []
   if (query.trimStart().startsWith("UPDATE world_checkouts SET status = 'expired'")) return []
@@ -668,13 +672,15 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state.draftState = 'canceled'
     return [{ id: 70 }]
   }
-  if (query.includes('WITH terminal_payment_listing AS')) {
+  if (query.includes('WITH city_ended_listing AS')) {
     const changed = state.listingWorldState === 'active'
-    const terminalReason = params.find(value => typeof value === 'string' && value.startsWith('city '))
+    const endedState = params.find(value => value === 'stale' || value === 'thing_ended')
+    const endedReason = params.find(value => typeof value === 'string' && value.startsWith('city '))
+    assert.ok(typeof endedState === 'string' && typeof endedReason === 'string', query)
     if (changed) {
-      state.listingWorldState = 'stale'
+      state.listingWorldState = endedState
       state.listingWithdrawn = true
-      state.listingWithdrawnReason = typeof terminalReason === 'string' ? terminalReason : 'city payment invalid'
+      state.listingWithdrawnReason = endedReason
       state.draftState = 'canceled'
       state.checkoutStatus = 'expired'
     }
@@ -709,7 +715,7 @@ function dbRespond(query: string, params: unknown[]): Record<string, unknown>[] 
     state: state.listingWorldState === 'sold' ? 'sold'
       : state.listingRemoved ? 'removed'
         : state.listingWithdrawn && state.listingWithdrawnReason === 'withdrawn by merchant' ? 'withdrawn'
-          : ['canceled', 'stale'].includes(state.listingWorldState) ? state.listingWorldState
+          : ['canceled', 'stale', 'thing_ended'].includes(state.listingWorldState) ? state.listingWorldState
             : state.listingWithdrawn ? 'withdrawn' : 'live',
   }]
   if (query.includes('JOIN merchants b ON b.id = p.merchant_id')) return []
@@ -2967,6 +2973,136 @@ test('terminal city payment sync preserves an earlier merchant withdrawal', asyn
   assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false)
 })
 
+const THING_ENDED_SYNC = {
+  listing_id: 70,
+  status: 'thing_ended',
+  city_phase: 'thing_ended',
+  city_unlock_required: true,
+  city_cancel_url: 'https://1f3d9.com/api/world/offer/33/cancel',
+}
+
+test('sync writes thing_ended like the stale path, with structured pointers and no new words', async () => {
+  for (const mode of ['thing-ended', 'thing-ended-reserved'] as const) {
+    reset()
+    state.merchantId = 10
+    state.draftListingId = 70
+    state.cityMode = mode
+
+    const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(response.status, 200, mode)
+    assert.deepEqual(routeFields(await response.json()), THING_ENDED_SYNC, mode)
+    assert.equal(state.listingWorldState, 'thing_ended', mode)
+    assert.equal(state.listingWithdrawn, true, mode)
+    assert.equal(state.listingWithdrawnReason, 'city thing ended', mode)
+    assert.equal(state.draftState, 'canceled', mode)
+    assert.equal(state.checkoutStatus, 'expired', mode)
+    const ended = state.dbCalls.filter(call => call.query.includes('WITH city_ended_listing AS'))
+    assert.equal(ended.length, 1, mode)
+    assert.match(ended[0]!.query, /INSERT INTO events[\s\S]*'world_canceled'/, mode)
+    assert.match(ended[0]!.query, /world_state = 'active' AND NOT removed/, mode)
+    assert.ok(ended[0]!.params.includes('city thing ended'), mode)
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO purchases')), false, mode)
+    assert.equal(state.cityCalls.some(call => call.includes('/claim')), false, mode)
+
+    const repeated = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+    assert.equal(repeated.status, 200, mode)
+    assert.deepEqual(routeFields(await repeated.json()), THING_ENDED_SYNC, mode)
+  }
+})
+
+test('a thing_ended listing answers thing_ended on its record and canceled on its draft', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'thing-ended'
+  const synced = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(synced.status, 200)
+
+  const listing = await app.request('/api/listing/70')
+  assert.equal(listing.status, 200)
+  const record = (await listing.json() as {
+    listing: { state: string; world_state: string; title: string }
+  }).listing
+  assert.equal(record.state, 'thing_ended')
+  assert.equal(record.world_state, 'thing_ended')
+  assert.equal(record.title, 'Pocket observatory')
+
+  const draft = await app.request('/api/world/draft/12')
+  assert.equal(draft.status, 200)
+  const publicDraft = (await draft.json() as {
+    draft: { status: string; listing_id: number; listing_state: string }
+  }).draft
+  assert.equal(publicDraft.status, 'canceled')
+  assert.equal(publicDraft.listing_id, 70)
+  assert.equal(publicDraft.listing_state, 'canceled')
+})
+
+test('the draft answer never passes thing_ended through, whatever the draft state', async () => {
+  for (const draftState of ['active', 'canceled', 'withdrawn'] as const) {
+    reset()
+    state.draftListingId = 70
+    state.draftState = draftState
+    state.listingWorldState = 'thing_ended'
+    state.listingWithdrawn = true
+    state.listingWithdrawnReason = 'city thing ended'
+    const response = await app.request('/api/world/draft/12')
+    assert.equal(response.status, 200)
+    const text = await response.text()
+    assert.doesNotMatch(text, /thing_ended/, draftState)
+    const publicDraft = (JSON.parse(text) as { draft: { status: string; listing_state: string } }).draft
+    assert.equal(publicDraft.status, draftState === 'withdrawn' ? 'withdrawn' : 'canceled', draftState)
+    assert.equal(publicDraft.listing_state, 'canceled', draftState)
+  }
+})
+
+test('checkout refuses a thing_ended offer, ends the listing, and gives no payment entry', async () => {
+  for (const mode of ['thing-ended', 'thing-ended-reserved'] as const) {
+    reset()
+    state.merchantId = 9
+    state.draftListingId = 70
+    state.cityMode = mode
+    const response = await app.request('/api/world/checkout/70', {
+      method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
+    })
+    assert.equal(response.status, 409, mode)
+    const body = await response.json() as Record<string, unknown>
+    assert.equal(body.error, 'city offer is not available for a new checkout', mode)
+    assert.equal('city_claim_url' in body, false, mode)
+    assert.equal('checkout_id' in body, false, mode)
+    assert.equal(state.dbCalls.some(call => call.query.includes('INSERT INTO world_checkouts')), false, mode)
+    assert.equal(state.listingWorldState, 'thing_ended', mode)
+    assert.equal(state.listingWithdrawnReason, 'city thing ended', mode)
+    assert.equal(state.draftState, 'canceled', mode)
+    assert.equal(state.checkoutStatus, 'expired', mode)
+
+    const again = await app.request('/api/world/checkout/70', {
+      method: 'POST', headers: auth, body: JSON.stringify({ city_handle: 'new-neighbor' }),
+    })
+    assert.equal(again.status, 409, mode)
+    assert.equal((await again.json() as { error: string }).error, 'world listing is not live', mode)
+  }
+})
+
+test('a thing_ended sync keeps an earlier merchant withdrawal', async () => {
+  reset()
+  state.merchantId = 10
+  state.draftListingId = 70
+  state.cityMode = 'thing-ended'
+  state.draftState = 'withdrawn'
+  state.listingWorldState = 'canceled'
+  state.listingWithdrawn = true
+  state.listingWithdrawnReason = 'withdrawn by merchant'
+  state.listingWithdrawnAt = '2026-08-12T00:06:00.000Z'
+  state.checkoutStatus = 'expired'
+
+  const response = await app.request('/api/world/sync/70', { method: 'POST', headers: auth, body: '{}' })
+  assert.equal(response.status, 200)
+  assert.deepEqual(routeFields(await response.json()), { ...THING_ENDED_SYNC, status: 'canceled' })
+  assert.equal(state.listingWorldState, 'canceled')
+  assert.equal(state.listingWithdrawnReason, 'withdrawn by merchant')
+  assert.equal(state.draftState, 'withdrawn')
+})
+
 test('unknown city offer phases fail closed', async () => {
   reset()
   state.merchantId = 10
@@ -3089,18 +3225,19 @@ test('maintainer removal after a completed sale preserves sold state', async () 
 })
 
 test('/api/me reports truthful world terminal states, including merchant withdrawal', async () => {
-  for (const expected of ['sold', 'canceled', 'withdrawn'] as const) {
+  for (const expected of ['sold', 'canceled', 'withdrawn', 'thing_ended'] as const) {
     reset()
-    state.listingWorldState = expected === 'sold' ? 'sold' : 'canceled'
+    state.listingWorldState = expected === 'sold' ? 'sold' : expected === 'thing_ended' ? 'thing_ended' : 'canceled'
     state.listingWithdrawn = expected !== 'sold'
-    state.listingWithdrawnReason = expected === 'withdrawn' ? 'withdrawn by merchant' : 'city offer canceled'
+    state.listingWithdrawnReason = expected === 'withdrawn' ? 'withdrawn by merchant'
+      : expected === 'thing_ended' ? 'city thing ended' : 'city offer canceled'
     const response = await app.request('/api/me', { headers: auth })
     assert.equal(response.status, 200)
     const body = await response.json() as { listings: Array<{ state: string }> }
     assert.equal(body.listings[0]!.state, expected)
     const query = state.dbCalls.find(call => call.query.includes('FROM listings WHERE merchant_id'))?.query ?? ''
     assert.match(query, /world_state = 'sold'/)
-    assert.match(query, /world_state IN \('canceled','stale'\)/)
+    assert.match(query, /world_state IN \('canceled','stale','thing_ended'\)/)
     assert.match(query, /withdrawn_reason = 'withdrawn by merchant'/)
   }
 })

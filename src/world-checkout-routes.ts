@@ -41,7 +41,7 @@ interface WorldListingRow extends ListingBinding {
   title: string
   delivery_kind: 'artifact' | 'city_ownership'
   world_origin: string
-  world_state: 'active' | 'sold' | 'canceled' | 'stale'
+  world_state: 'active' | 'sold' | 'canceled' | 'stale' | 'thing_ended'
   removed: boolean
   removed_at: string | null
   withdrawn: boolean
@@ -96,6 +96,48 @@ function cityNoSaleOutcome(phase: CityOfferPhase): CityNoSaleOutcome | null {
     default:
       return null
   }
+}
+
+const THING_ENDED_REASON = 'city thing ended'
+
+/**
+ * End an active world listing because the city says its offer can no longer sell: the
+ * listing leaves the shelves, its draft is canceled, open checkouts expire, and one
+ * world_canceled event is written. A repeat call changes nothing and keeps the first times.
+ * Returns whether this call ended the listing.
+ */
+async function endWorldListingForCity(
+  listing: WorldListingRow,
+  worldState: 'stale' | 'thing_ended',
+  reason: string,
+): Promise<boolean> {
+  const rows = await sql`
+    WITH city_ended_listing AS (
+      UPDATE listings SET world_state = ${worldState}, withdrawn = TRUE,
+        withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = ${reason}
+      WHERE id = ${listing.id} AND delivery_kind = 'city_ownership'
+        AND world_state = 'active' AND NOT removed
+      RETURNING id, world_draft_id
+    ), city_ended_draft AS (
+      UPDATE world_drafts draft SET state = 'canceled',
+        canceled_at = coalesce(draft.canceled_at, now()),
+        canceled_reason = coalesce(draft.canceled_reason, ${reason})
+      FROM city_ended_listing listing
+      WHERE draft.id = listing.world_draft_id AND draft.state <> 'sold'
+        AND (draft.state <> 'canceled' OR draft.canceled_at IS NULL OR draft.canceled_reason IS NULL)
+    ), expired_checkouts AS (
+      UPDATE world_checkouts checkout SET status = 'expired'
+      WHERE checkout.listing_id IN (SELECT id FROM city_ended_listing)
+        AND checkout.status = 'active'
+    ), new_event AS (
+      INSERT INTO events (kind, actor, detail)
+      SELECT 'world_canceled', ${listing.market_seller}, jsonb_build_object(
+        'listing_id', id, 'city_offer_id', ${listing.world_offer_id}::integer,
+        'reason', ${reason}::text
+      ) FROM city_ended_listing
+    )
+    SELECT id FROM city_ended_listing`
+  return rows.length > 0
 }
 
 function checkoutEnvelope(row: WorldCheckoutRow) {
@@ -237,6 +279,11 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
     if (!cityRecord.ok) return err(c, upstreamStatus(cityRecord), cityRecord.message)
     const mismatch = cityOfferMatchesListing(cityRecord.value, listing, config.marketOrigin)
     if (mismatch) return err(c, 409, mismatch)
+    if (cityRecord.value.phase === 'thing_ended') {
+      // The thing ended in the city: close the market lane before any payment entry is given.
+      await endWorldListingForCity(listing, 'thing_ended', THING_ENDED_REASON)
+      return err(c, 409, 'city offer is not available for a new checkout')
+    }
     if (!isCityOfferAvailable(cityRecord.value)) return err(c, 409, 'city offer is not available for a new checkout')
     if (cityRecord.value.seller === parsed.city_handle)
       return err(c, 403, 'the city seller cannot buy their own thing')
@@ -410,6 +457,17 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
         city_offer_url: cityOfferUrl(listing.world_offer_id),
       })
     }
+    // A thing_ended offer may still name an older reservation, so it needs no checkout binding.
+    if (cityRecord.value.phase === 'thing_ended') {
+      const ended = await endWorldListingForCity(listing, 'thing_ended', THING_ENDED_REASON)
+      return c.json({
+        listing_id: listing.id,
+        status: ended ? 'thing_ended' : (await readWorldListing(listing.id))?.world_state ?? 'thing_ended',
+        city_phase: 'thing_ended' as const,
+        city_unlock_required: true,
+        city_cancel_url: cityCancelUrl(listing.world_offer_id),
+      })
+    }
     const checkoutBoundPhases: CityOfferPhase[] = [
       'reserved',
       'payment_pending',
@@ -445,33 +503,8 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
 
     const noSaleOutcome = cityNoSaleOutcome(cityRecord.value.phase)
     if (noSaleOutcome) {
-      const rows = await sql`
-        WITH terminal_payment_listing AS (
-          UPDATE listings SET world_state = 'stale', withdrawn = TRUE,
-            withdrawn_at = coalesce(withdrawn_at, now()), withdrawn_reason = ${noSaleOutcome.withdrawnReason}
-          WHERE id = ${listing.id} AND delivery_kind = 'city_ownership'
-            AND world_state = 'active' AND NOT removed
-          RETURNING id, world_draft_id
-        ), terminal_payment_draft AS (
-          UPDATE world_drafts draft SET state = 'canceled',
-            canceled_at = coalesce(draft.canceled_at, now()),
-            canceled_reason = coalesce(draft.canceled_reason, ${noSaleOutcome.withdrawnReason})
-          FROM terminal_payment_listing listing
-          WHERE draft.id = listing.world_draft_id AND draft.state <> 'sold'
-            AND (draft.state <> 'canceled' OR draft.canceled_at IS NULL OR draft.canceled_reason IS NULL)
-        ), expired_checkouts AS (
-          UPDATE world_checkouts checkout SET status = 'expired'
-          WHERE checkout.listing_id IN (SELECT id FROM terminal_payment_listing)
-            AND checkout.status = 'active'
-        ), new_event AS (
-          INSERT INTO events (kind, actor, detail)
-          SELECT 'world_canceled', ${listing.market_seller}, jsonb_build_object(
-            'listing_id', id, 'city_offer_id', ${listing.world_offer_id}::integer,
-            'reason', ${noSaleOutcome.withdrawnReason}::text
-          ) FROM terminal_payment_listing
-        )
-        SELECT id FROM terminal_payment_listing`
-      const status = rows.length ? 'stale' : (await readWorldListing(listing.id))?.world_state ?? 'stale'
+      const ended = await endWorldListingForCity(listing, 'stale', noSaleOutcome.withdrawnReason)
+      const status = ended ? 'stale' : (await readWorldListing(listing.id))?.world_state ?? 'stale'
       return c.json({
         listing_id: listing.id,
         status,

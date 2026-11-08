@@ -1755,3 +1755,66 @@ test('the client-side search limit matches the visible 100-character input contr
   const visibleQuery = filterCopy.match(/“([^”]*)”/u)?.[1]
   assert.equal(visibleQuery?.length, 100)
 })
+
+test('a thing_ended world listing uses the existing city record presentation and no new words', async () => {
+  const detailFor = (stateName: string) => ({
+    listing: {
+      ...listingFixture(1, 'world'), state: stateName, preview: '', delivery_kind: 'city_ownership',
+      created_at: '2026-08-10T10:00:00Z',
+    },
+    comments: [], comments_total: 0, comments_returned: 0,
+    comments_page_size: 200, comments_has_more: false, comments_next_after_id: null,
+  })
+  const rendered: Record<string, { title: string; detail: string }> = {}
+  for (const stateName of ['stale', 'thing_ended']) {
+    const snapshot = { ...boundedSnapshot(1, 1, 0, 0), aisles: aisleVector({ world: 1 }) }
+    snapshot.listings = [listingFixture(1, 'world')]
+    const { document } = startWindowClient(async input => {
+      const url = new URL(String(input), 'https://window.example')
+      return jsonResponse(url.pathname === '/api/window' ? snapshot : detailFor(stateName))
+    })
+    await settle()
+    const listing = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
+    assert.ok(listing)
+    await listing.click()
+    await settle()
+    rendered[stateName] = {
+      title: document.getElementById('dialog-title')!.textContent,
+      detail: document.getElementById('listing-detail')!.textContent,
+    }
+  }
+  assert.equal(rendered.thing_ended?.title, 'CITY RECORD STALE')
+  assert.deepEqual(rendered.thing_ended, rendered.stale)
+  assert.match(rendered.thing_ended?.detail ?? '', /The city no longer confirms this offer as available/)
+})
+
+test('shelf rows and store goods show OFF SHELF, not a price, for a card that is not live', async () => {
+  const card = (id: number, stateName: string) => ({
+    ...listingFixture(id, 'world'), price_usdc: 2, delivery_kind: 'city_ownership', state: stateName,
+  })
+  const snapshot = { ...boundedSnapshot(2, 2, 1, 1), aisles: aisleVector({ world: 2 }) }
+  snapshot.listings = [card(1, 'thing_ended'), card(2, 'live')]
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+      store: { ...merchantFixture(1), listings: 2 },
+      listings: [card(1, 'thing_ended'), card(2, 'live')],
+      total: 2,
+      returned: 2,
+      page_size: 2,
+      has_more: false,
+      next_before_id: null,
+    })
+  })
+  await settle()
+  const tickets = (root: ReturnType<typeof document.getElementById>) => descendants(root!)
+    .filter(element => element.className === 'price-ticket')
+    .map(element => element.textContent)
+  assert.deepEqual(tickets(document.getElementById('listing-list')), ['OFF SHELF', '2 USDC'])
+
+  const merchant = byAttribute(document, 'aria-label', 'Look into store-1 store')
+  assert.ok(merchant)
+  await merchant.click()
+  await settle()
+  assert.deepEqual(tickets(document.getElementById('listing-detail')), ['OFF SHELF', '2 USDC'])
+})

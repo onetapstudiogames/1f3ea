@@ -16,6 +16,7 @@ import {
   startMarketPostgresHarness,
 } from '../support/market-postgres-harness.ts'
 import { runMarketPostgresMigrationCases } from '../support/market-postgres-migration-cases.ts'
+import { runMarketPostgresThingEndedCases } from '../support/market-postgres-thing-ended-cases.ts'
 import { runMarketPostgresX402ResultCases } from '../support/market-postgres-x402-result-cases.ts'
 import { routeFieldsFromConflict } from '../support/market-refusal-assertions.ts'
 
@@ -24,6 +25,7 @@ test('real PostgreSQL prepares every public read and the direct purchase timing 
   await runMarketPostgresMigrationCases(t, app)
   await runMarketPostgresFinalityCases(t, app)
   await runMarketPostgresX402ResultCases(t, app)
+  await runMarketPostgresThingEndedCases(t, app)
 
   const availableOffer = {
     id: 501,

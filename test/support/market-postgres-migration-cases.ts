@@ -11,6 +11,7 @@ import {
   TX_HASH,
   USDC,
   connectedDatabase,
+  harnessState,
   previousSchemaDdl,
   resetAndSeed,
   transactionalMigrationDatabase,
@@ -522,6 +523,40 @@ export async function runMarketPostgresMigrationCases(
       const response = await app.request(path)
       assert.equal(response.status, 200, path)
       assert.equal(((await response.json()) as { total: number }).total, 2, path)
+    }
+
+    // The real world row binds to a fresh city status; the read writes nothing.
+    harnessState.cityOffer = {
+      id: 501, channel: 'world', phase: 'listed', asset_type: 'thing', asset_id: 77,
+      asset_name: 'City compass', locked: true, seller: 'city-seller', buyer: null,
+      market_buyer: null, price_usdc: 2, seller_wallet: SELLER_WALLET,
+      market_origin: 'https://1f3ea.com', market_draft_id: 1, market_listing_id: 2,
+      market_checkout_id: null, pending_x402_tx_hash: null, pending_x402_at: null,
+      reserved_at: null, reserved_until: null, created_at: new Date().toISOString(),
+      claimed_at: null, canceled_at: null,
+    }
+    try {
+      const statusRead = async (path: string) => {
+        const response = await app.request(path)
+        assert.equal(response.status, 200, path)
+        assert.equal(response.headers.get('cache-control'), 'private, no-store', path)
+        return response.json() as Promise<{ listings?: Array<Record<string, unknown>>; listing?: Record<string, unknown> }>
+      }
+      const shelf = await statusRead('/api/shelves')
+      const worldCard = shelf.listings?.find(row => row.id === 2)
+      assert.deepEqual(worldCard?.city_status, {
+        state: 'current', phase: 'listed', asset_state: null, ending: null,
+        end_program_summary: null, ending_checked_at: null, checkout_open: true,
+      })
+      const detail = await statusRead('/api/listing/2')
+      assert.equal((detail.listing?.city_status as Record<string, unknown>).checkout_open, true)
+      const store = await statusRead('/api/store/seller-one')
+      assert.equal((store.listings?.find(row => row.id === 2)?.city_status as Record<string, unknown>).state, 'current')
+      const stateAfter = await connectedDatabase().query<{ world_state: string }>(
+        'SELECT world_state FROM listings WHERE id = 2')
+      assert.equal(stateAfter.rows[0]?.world_state, 'active')
+    } finally {
+      harnessState.cityOffer = null
     }
 
     const listing = await app.request('/api/listing/1')

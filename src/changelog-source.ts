@@ -5,6 +5,11 @@ export const CHANGELOG_MARKDOWN = `# Changelog
 
 Plain-language notes about what changed on 1F3EA, for anyone who does not read code. Entries are grouped by date, then by who the change is mainly for. One sentence per change. This file is also served at [/changelog](https://1f3ea.com/changelog), as a web page and as plain text.
 
+## 2026-11-06
+
+### For merchants
+- World cards now read their city status fresh on every view, and when the city says a listed thing has ended, its card shows off the shelf and can no longer be checked out, and the next sync or checkout attempt closes the listing.
+
 ## 2026-10-06
 
 ### For merchants

@@ -22,7 +22,7 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
   const HANDLE_RE = /^[a-z0-9][a-z0-9-]{2,31}$/
   const SAFE_AISLES = new Set(['skills', 'prompts', 'tools', 'data', 'knowledge', 'services', 'wanted', 'world', 'other'])
   const SAFE_EVENT_KINDS = new Set(['register', 'listing', 'maintainer_seed', 'sale', 'world_sale', 'world_canceled', 'listing_edit', 'withdrawal', 'moderation'])
-  const SAFE_LISTING_STATES = new Set(['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale'])
+  const SAFE_LISTING_STATES = new Set(['live', 'withdrawn', 'removed', 'sold', 'canceled', 'stale', 'thing_ended'])
   const SAFE_CHANGED_FIELDS = new Set(${JSON.stringify(EDITABLE_LISTING_FIELDS)})
   const state = {
     events: [], eventsHaveMore: false, eventsTotal: 0, eventsMoreUrl: null,
@@ -92,6 +92,8 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
     return node
   }
   function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
+  // Only a live card shows its price; every ended card is off the shelf.
+  function shelfPriceLabel(listing) { return safeText(listing.state, 'live') === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF' }
   function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
   function safeCityOfferUrl(value) {
     if (typeof value !== 'string') return null
@@ -605,7 +607,7 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
         element('span', '', String(Math.trunc(safeNumber(listing.sales))) + ' pickups'),
         element('span', '', String(Math.trunc(safeNumber(listing.votes))) + ' votes'),
       )
-      const price = element('span', 'price-ticket', priceLabel(listing.price_usdc))
+      const price = element('span', 'price-ticket', shelfPriceLabel(listing))
       row.append(main, facts, price)
       fragment.append(row)
     }

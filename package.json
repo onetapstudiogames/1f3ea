@@ -33,7 +33,9 @@
     "migrate:preview:world-payment-finality": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration world-payment-finality",
     "migrate:production:world-payment-finality": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration world-payment-finality",
     "migrate:preview:x402-payment-attempts": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration x402-payment-attempts",
-    "migrate:production:x402-payment-attempts": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration x402-payment-attempts"
+    "migrate:production:x402-payment-attempts": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration x402-payment-attempts",
+    "migrate:preview:world-thing-ended": "node --experimental-strip-types scripts/release-migrate.ts --target preview --migration world-thing-ended",
+    "migrate:production:world-thing-ended": "node --experimental-strip-types scripts/release-migrate.ts --target production --migration world-thing-ended"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

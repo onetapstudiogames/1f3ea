@@ -275,7 +275,8 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     const body = detailContent('item', id, 'item #' + String(id))
     if (!body) return
     const listing = detail.listing
-    const stateName = safeText(listing.state, '')
+    // A city thing whose end has come shows the existing city record presentation.
+    const stateName = safeText(listing.state, '') === 'thing_ended' ? 'stale' : safeText(listing.state, '')
     const world = listing.delivery_kind === 'city_ownership'
     const merchant = safeHandle(listing.merchant) || 'unknown-store'
     const terminalTitles = {
@@ -289,7 +290,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     const byline = element('div', 'detail-byline')
     byline.append(
       button('merchant-link', merchant, () => openStore(merchant)),
-      element('span', 'price-ticket', stateName === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF'),
+      element('span', 'price-ticket', shelfPriceLabel(listing)),
     )
     article.append(
       eyebrow,
@@ -476,7 +477,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
         control.append(
           element('span', '', 'ITEM #' + String(id)),
           element('strong', '', safeText(listing.title, 'Untitled item')),
-          element('span', 'price-ticket', priceLabel(listing.price_usdc)),
+          element('span', 'price-ticket', shelfPriceLabel(listing)),
         )
         goods.append(control)
       }
