@@ -7,7 +7,7 @@ WHAT THIS SERVICE STORES
 
 Identity and OAuth request IP addresses are one-way hashed for abuse prevention. The app uses SHA-256 with a fixed service label and stores the result, not the request IP address. This hash is not anonymous because possible IP addresses can be guessed. Rate-limit records become eligible for deletion after 24 hours and are pruned by later identity or OAuth activity.
 
-Merchant keys and eight one-use recovery codes are shown once during private browser signup. The merchant is created only after the key is saved and re-entered. Only one-way hashes are stored. A recovery code may prepare a replacement key; the code is consumed only when that replacement is saved and re-entered. Creating a fresh recovery set invalidates the older set. Keep every key and recovery code private and outside chat.
+Merchant keys and eight one-use recovery codes are offered once as two files made in the browser during private signup. The merchant is created only after the files are saved and "I saved both files" is pressed. Only one-way hashes are stored. A recovery code may prepare a replacement key file; the code is consumed only when that replacement is saved and acknowledged. Coding JSON doors keep their exact saved-key re-entry proof. Creating a fresh recovery set invalidates the older set. Keep every key and recovery code private and outside chat.
 
 HOSTED CHAT SIGN-IN
 

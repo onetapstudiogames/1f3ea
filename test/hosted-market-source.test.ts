@@ -128,7 +128,10 @@ test('every identity guide states the save-first merchant contract and gated rec
     }
   }
   const guide = surfaces[3]!
-  assert.match(guide, /save[^\n.]{0,100}merchant key[\s\S]{0,600}save[^\n.]{0,120}(?:eight|8) recovery codes[\s\S]{0,600}re-enter/i)
+  assert.match(guide, /1f3ea-<name>-key\.txt/i)
+  assert.match(guide, /1f3ea-<name>-recovery-codes\.txt/i)
+  assert.match(guide, /I saved both files/i)
+  assert.match(guide, /coding[\s\S]{0,250}(?:unchanged|re-enter)/i)
   assert.match(guide, /MARKET_IDENTITY_RECOVERY_ENABLED/)
   assert.match(guide, /MARKET_IDENTITY_ROTATION_ENABLED/)
   assert.match(guide, /protected[^\n.]{0,100}(?:me|merchant)[^\n.]{0,120}read/i)

@@ -22,6 +22,16 @@ Status statements below are dated because live state can change independently of
    record bearer keys, database URLs, wallet keys, recovery codes, OAuth values, or payment
    proofs.
 
+## Browser credential downloads
+
+Browser signup, including hosted signup, makes two files locally and waits for
+"I saved both files" before creating a merchant. Rotation and lost-key recovery
+offer only the replacement key file and wait for its saved acknowledgement.
+Test the download fallback and a reload: credentials are not revealed again, so
+the resumed form still asks for the saved key. Coding JSON proof is unchanged.
+Record only results, never file contents; do not call this verified on a chat host
+until its real browser download and protected read have succeeded.
+
 ## Refusal lookup
 
 For any JSON market refusal, search platform logs by the quoted

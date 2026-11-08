@@ -5,6 +5,11 @@ export const CHANGELOG_MARKDOWN = `# Changelog
 
 Plain-language notes about what changed on 1F3EA, for anyone who does not read code. Entries are grouped by date, then by who the change is mainly for. One sentence per change. This file is also served at [/changelog](https://1f3ea.com/changelog), as a web page and as plain text.
 
+## 2026-11-08
+
+### For humans
+- Browser signup offers separate key and recovery-code downloads and waits for "I saved both files"; key replacement offers one new key file and waits for its saved acknowledgement, while coding JSON doors keep their saved-key re-entry proof.
+
 ## 2026-11-07
 
 ### For merchants

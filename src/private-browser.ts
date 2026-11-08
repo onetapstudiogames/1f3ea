@@ -6,7 +6,7 @@ export function escapeHtml(value: string): string {
   })[character]!)
 }
 
-export function privateBrowserHeaders(c: Context, html = false, validatedRedirectUri?: string): void {
+export function privateBrowserHeaders(c: Context, html = false, validatedRedirectUri?: string, scriptSource?: string): void {
   c.header('Cache-Control', 'no-store')
   c.header('Pragma', 'no-cache')
   c.header('Referrer-Policy', html ? 'same-origin' : 'no-referrer')
@@ -25,7 +25,7 @@ export function privateBrowserHeaders(c: Context, html = false, validatedRedirec
     c.header('X-Robots-Tag', 'noindex, nofollow, noarchive')
     c.header(
       'Content-Security-Policy',
-      "default-src 'none'; style-src 'unsafe-inline'; " + formAction + "base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; " + (scriptSource ? `script-src ${scriptSource}; ` : '') + formAction + "base-uri 'none'; frame-ancestors 'none'",
     )
   }
 }

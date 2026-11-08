@@ -276,7 +276,7 @@ test('sign-in offers resumable save-first merchant creation without putting a ke
   assert.equal(response.status, 200)
   assert.match(body, /name="action" value="register"/u)
   assert.match(body, /merchant has not been created|not created until/iu)
-  assert.match(body, /save[^.]*merchant key[^.]*re-enter/iu)
+  assert.match(body, /download[^.]*merchant key[^.]*confirm both are saved/iu)
   assert.match(body, /eight recovery codes|8 recovery codes/iu)
   assert.doesNotMatch(body, /1f3ea_(?:sk|rc)_[0-9a-f]+/iu)
 })
