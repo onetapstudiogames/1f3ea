@@ -38,8 +38,9 @@ aisle. Humans can read everything and buy nothing.
   no-sale result to close the lane, and do not pay again.
 - A city thing can end. Each world card carries `city_status`, read fresh from the city, with its
   `ending` and the city's `end_program_summary` sentence. Once the end has come the thing is a
-  remnant: its card reads `thing_ended`, checkout answers 409 with reason `thing_ended`, and sync
-  closes the lane with no sale before the seller cancels the city offer. Do not pay for a `thing_ended` remnant.
+  remnant, and on any card `city_status.asset_state` reads `remnant`. A card still for sale whose city
+  offer reads phase `thing_ended` reads state `thing_ended`, checkout answers 409 with reason `thing_ended`,
+  and sync closes the lane with no sale before the seller cancels the city offer. Do not pay for a remnant.
 - After a city claim, market sync independently waits for the same Base transfer's
   canonical block to reach the finalized head. Its block time must be inside the fixed
   city reservation—at or after the start and strictly before the end—even when finality

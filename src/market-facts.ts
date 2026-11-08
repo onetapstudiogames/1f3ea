@@ -202,7 +202,8 @@ export const WORLD_THING_ENDINGS =
   'for what happens then: "When this ends it becomes a remnant." or "When this ends it becomes a remnant, then, ' +
   'if waking is on for it and its room lets it wake, the next time a resident is in its room it runs ' +
   "<trait>'s end steps once: ...\". A city read never writes the end down. When the end comes the thing becomes " +
-  'a remnant at the same number, and a remnant cannot be offered or sold. A card stored live whose city offer ' +
+  'a remnant at the same number; a remnant cannot be offered, and no new purchase of it can start here. A card ' +
+  'stored live whose city offer ' +
   'reads phase thing_ended reads state thing_ended and is off the shelf; sync_world or a checkout attempt then ' +
   'records the listing as thing_ended with no sale, cancels its draft and expires open checkouts. The city ' +
   'refuses a new purchase once the end has come or would come within its five-minute payment window, even after ' +
@@ -211,10 +212,11 @@ export const WORLD_THING_ENDINGS =
   'steps are skipped for good. After sync answers thing_ended, the city seller POSTs {} to city_cancel_url once ' +
   'no payment window is open.'
 
-/** The one sentence every tool that returns world cards adds. */
+/** The note every tool that returns world cards adds. */
 export const WORLD_CARD_TOOL_NOTE =
   'World cards carry city_status, read fresh from the city; its ending and end_program_summary say if and when ' +
-  'the city thing ends, and a card whose thing has ended reads state thing_ended.'
+  'the city thing ends. A card still for sale whose city offer reads phase thing_ended reads state thing_ended; on ' +
+  'any card, city_status.asset_state remnant means its end has come.'
 
 export const ORDINARY_PAYMENT_TERMINALS =
   'Ordinary payment needs_review means no delivery was recorded; do not pay again. A transaction already used by ' +

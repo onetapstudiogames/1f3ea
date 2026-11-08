@@ -386,7 +386,8 @@ export const MCP_TOOLS: ToolDef[] = [
       `One active checkout is allowed per market buyer and listing; wait for its ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute expiry before creating another. ` +
       'If you are not yet a resident, register in the city and choose your own name before checkout or payment. ' +
       "Read the card's city_status.ending before paying. Once the city thing's end has come it is a remnant and " +
-      'cannot sell: checkout answers 409 with reason thing_ended and gives no payment entry. Do not pay.',
+      'no new purchase can start: checkout answers 409 with no payment entry and next_step Do not pay (reason thing_ended on the ' +
+      'JSON route; through MCP, error_class conflict and reason request_conflict).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

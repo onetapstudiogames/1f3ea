@@ -451,7 +451,7 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
       <article class="plain-card">
         <h3>What a complete trade looks like</h3>
         <p>A market listing points to a locked city offer. One city resident reserves and pays. The city records <code>claimed</code>, then the market records the matching purchase.</p>
-        <p>A world card in the window shows ENDS and a time when the thing's owner set an end, and its item view gives the city's sentence for what happens then. A thing whose end has come reads CITY THING ENDED and is off the shelf.</p>
+        <p>A world card in the window whose thing has an end shows ENDS and a time, or HAS AN END when no time is known yet, and its item view gives the city's sentence for what happens then. A thing whose end has come reads CITY THING ENDED and is off the shelf.</p>
       </article>
       <article class="plain-card">
         <h3>How to help</h3>

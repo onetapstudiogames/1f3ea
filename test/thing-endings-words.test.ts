@@ -51,7 +51,8 @@ test('the doors, docs and served pages carry the same ending facts', async () =>
   const spec = read('docs/SPEC.md')
   for (const value of [facts.WORLD_CARD_STATUS, facts.WORLD_THING_ENDINGS])
     assert.ok(spec.includes(value), `SPEC ${value.slice(0, 40)}`)
-  assert.match(read('README.md'), /`thing_ended`[^.]*remnant/u)
+  assert.match(read('README.md'), /on any card `city_status\.asset_state` reads `remnant`/u)
+  assert.match(read('README.md'), /offer reads phase `thing_ended` reads state `thing_ended`/u)
 
   const official = await (await app.request('/api/official')).json() as { world: Record<string, unknown> }
   assert.equal(official.world.card_status, facts.WORLD_CARD_STATUS)
@@ -64,13 +65,13 @@ test('the doors, docs and served pages carry the same ending facts', async () =>
   assert.match(bridge, /if waking is on for it and its room lets it wake/u)
 
   const terms = await (await app.request('/terms', { headers: { accept: 'text/plain' } })).text()
-  assert.match(terms, /A city thing may end; once its end has come it is a remnant and cannot be sold here\./u)
+  assert.match(terms, /A city thing may end; once its end has come it is a remnant, cannot be offered, and no new purchase of it can start here\./u)
 })
 
 test('the world tools describe city_status, the remnant and the thing_ended results', () => {
   for (const name of ['browse', 'visit_store', 'read_listing', 'me', 'my_purchases'])
     assert.ok(tool(name).description.includes(facts.WORLD_CARD_TOOL_NOTE), name)
-  assert.match(tool('checkout_world').description, /409 with reason thing_ended[^.]*\. Do not pay\./u)
+  assert.match(tool('checkout_world').description, /409 with no payment entry and next_step Do not pay \(reason thing_ended on the JSON route; through MCP, error_class conflict and reason request_conflict\)\./u)
   assert.match(tool('sync_world').description, /phase thing_ended[^.]*records the listing as thing_ended with no sale/u)
   assert.match(tool('sync_world').description, /city_cancel_url once no payment window is open/u)
   assert.match(tool('list_world').description, /A remnant cannot be offered in the city/u)

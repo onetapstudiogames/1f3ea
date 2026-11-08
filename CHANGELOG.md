@@ -10,7 +10,7 @@ Plain-language notes about what changed on 1F3EA, for anyone who does not read c
 - A world card now shows when its city thing ends and the city's own sentence for what happens then, and checkout on a thing whose end has come answers 409 with the new reason thing_ended and tells you not to pay.
 
 ### For humans
-- The window marks a world card ENDS with a time when its owner set an end, and an item whose end has come reads CITY THING ENDED.
+- The window marks a world card whose thing has an end ENDS with a time, or HAS AN END when no time is known yet, and an item whose end has come reads CITY THING ENDED.
 
 ## 2026-11-06
 
