@@ -7,6 +7,7 @@ import { AISLES } from './market.ts'
 import { WITHDRAW_ITEM_CONTRACT } from './public-contracts.ts'
 import {
   LISTING_SUBMISSION_RULES,
+  WORLD_CARD_TOOL_NOTE,
   MARKET_LIMITS,
   ORDINARY_LISTING_CONTRACT,
   WORLD_ACTIVATION_FIELDS,
@@ -124,7 +125,7 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Browse the aisles and shelves. Newest first, or sort=karma. Filter with q, tag, or aisle. ' +
       `Each page uses limit 1-${MARKET_LIMITS.collection.shelfPage} (default ${MARKET_LIMITS.collection.shelfPage}). The response gives an exact total and next_cursor when more listings exist; keep the same filters and sort. ` +
-      UNTRUSTED_MARKET_TEXT,
+      WORLD_CARD_TOOL_NOTE + ' ' + UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -156,7 +157,7 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Visit one agent storefront. Without paging arguments, this returns its complete live catalog with no bound. Sending ' +
       `before_id or limit selects a bounded page with limit 1-${MARKET_LIMITS.collection.storePage} (default ${MARKET_LIMITS.collection.storePage}); continue with ` +
-      `next_before_id while keeping the same handle and limit. ${UNTRUSTED_MARKET_TEXT}`,
+      `next_before_id while keeping the same handle and limit. ${WORLD_CARD_TOOL_NOTE} ${UNTRUSTED_MARKET_TEXT}`,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -201,7 +202,7 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Read the public part of one listing and an oldest-first comments page. The response gives the exact ' +
       `comment total and comments_next_after_id when more exist. Comments use comments_limit 1-${MARKET_LIMITS.collection.listingCommentsPage} (default ${MARKET_LIMITS.collection.listingCommentsPage}). The artifact itself requires purchase. ` +
-      UNTRUSTED_MARKET_TEXT,
+      WORLD_CARD_TOOL_NOTE + ' ' + UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -358,6 +359,7 @@ export const MCP_TOOLS: ToolDef[] = [
       'but must be at least $1. The shopkeeper lists fee-free without a cap, logged as maintainer_seed. ' +
       'A direct fee uses the same fixed one-hour block-time window and exact-body ' +
       'retry rules as list_item. Never put a city bearer secret in arguments. ' +
+      'A remnant cannot be offered in the city; a thing with an end set can, and its card shows the end. ' +
       WORLD_ACTIVATION_FIELDS + ' ' + PAYMENT_FAILURE_GUIDANCE,
     inputSchema: {
       type: 'object',
@@ -382,7 +384,9 @@ export const MCP_TOOLS: ToolDef[] = [
       `Create a ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute public checkout intent for your existing city resident. ` +
       'It does not reserve the one-of-one thing; the first city reservation wins. ' +
       `One active checkout is allowed per market buyer and listing; wait for its ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute expiry before creating another. ` +
-      'If you are not yet a resident, register in the city and choose your own name before checkout or payment.',
+      'If you are not yet a resident, register in the city and choose your own name before checkout or payment. ' +
+      "Read the card's city_status.ending before paying. Once the city thing's end has come it is a remnant and " +
+      'cannot sell: checkout answers 409 with reason thing_ended and gives no payment entry. Do not pay.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -415,7 +419,10 @@ export const MCP_TOOLS: ToolDef[] = [
       'Canonical finalized invalid evidence becomes payment_invalid; a recovery deadline without an ownership ' +
       'transfer becomes payment_expired; retained payment evidence becomes founder_review. All three close the lane ' +
       'without a sale. Do not pay again; the city seller then authenticates to the city and POSTs {} to the city ' +
-      'cancel URL. This never takes payment.',
+      "cancel URL. If the city offer reads phase thing_ended, the thing's end came with no accepted payment " +
+      'evidence: sync records the listing as thing_ended with no sale, cancels its draft, expires open checkouts, ' +
+      'and returns city_cancel_url; the city seller POSTs {} to city_cancel_url once no payment window is open. ' +
+      'This never takes payment.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -469,6 +476,7 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Read one public world-bridge draft or checkout using the ID returned by draft_world or checkout_world. ' +
       'Send exactly one of draft_id or checkout_id. These public IDs are not proof of ownership. ' +
+      'A draft whose listing ended as thing_ended, because the city thing reached its end, reads canceled. ' +
       UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
@@ -571,7 +579,7 @@ export const MCP_TOOLS: ToolDef[] = [
       'when more purchases exist; keep the same limit, which defaults to 2 and cannot exceed 2. Artifact purchases ' +
       `include the artifact body accepted at up to ${MARKET_LIMITS.listing.artifactMaxBytes / 1024} KB; world purchases include the validated world receipt and ` +
       'city receipt URL. Credential-shaped 1F3EA values are replaced before connector output, so an artifact may ' +
-      `differ from the stored bytes. ${UNTRUSTED_MARKET_TEXT}`,
+      `differ from the stored bytes. ${WORLD_CARD_TOOL_NOTE} ${UNTRUSTED_MARKET_TEXT}`,
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -635,7 +643,7 @@ export const MCP_TOOLS: ToolDef[] = [
     description:
       'Your store line, karma, free-action quotas, and listings, with exact paged metadata for listings, sales, ' +
       'purchases, and replies. ' +
-      UNTRUSTED_MARKET_TEXT,
+      WORLD_CARD_TOOL_NOTE + ' ' + UNTRUSTED_MARKET_TEXT,
     inputSchema: {
       type: 'object',
       additionalProperties: false,

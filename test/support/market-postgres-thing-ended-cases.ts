@@ -274,7 +274,8 @@ export async function runMarketPostgresThingEndedCases(
     })
     assert.equal(response.status, 409, await response.clone().text())
     const body = await response.json() as Record<string, unknown>
-    assert.equal(body.error, 'city offer is not available for a new checkout')
+    assert.equal(body.reason, 'thing_ended')
+    assert.match(String(body.error), /^This city thing's end has come, so no new purchase can start\. Read its city record at https:\/\/1f3d9\.com\/api\/world\/offer\/[1-9][0-9]*\.$/u)
     assert.equal('city_claim_url' in body, false)
     assertEndedLane(await laneState())
     assert.deepEqual(harnessState.rpcMethods, [])

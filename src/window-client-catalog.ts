@@ -94,6 +94,31 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
   function priceLabel(value) { const amount = safeNumber(value); return amount === 0 ? 'FREE' : amount.toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' USDC' }
   // Only a live card shows its price; every ended card is off the shelf.
   function shelfPriceLabel(listing) { return safeText(listing.state, 'live') === 'live' ? priceLabel(listing.price_usdc) : 'OFF SHELF' }
+  // A world card's city_status, read fresh from the city. Only the fixed city fields are trusted here.
+  const ENDED_STATUSES = new Set(['due_waiting_settle', 'ended'])
+  function cityStatusOf(listing) {
+    const status = listing && listing.city_status
+    return status && typeof status === 'object' && !Array.isArray(status) ? status : null
+  }
+  function cityEnding(status) {
+    const ending = status && status.ending
+    return ending && typeof ending === 'object' && !Array.isArray(ending) ? ending : null
+  }
+  function cityThingEnded(status) {
+    const ending = cityEnding(status)
+    return status.asset_state === 'remnant' || Boolean(ending && ENDED_STATUSES.has(ending.status))
+  }
+  function cityEndFact(listing) {
+    const status = cityStatusOf(listing)
+    if (!status) return null
+    if (status.state === 'unavailable') return 'CITY STATUS UNAVAILABLE'
+    if (status.state !== 'current') return null
+    if (cityThingEnded(status)) return 'ENDED'
+    const ending = cityEnding(status)
+    if (!ending || ending.status !== 'active') return null
+    const at = safeDate(ending.soonest_known_end)
+    return at ? 'ENDS ' + formatDate(at) : 'HAS AN END'
+  }
   function listingPath(id) { const safe = safeId(id); return safe ? '/api/listing/' + String(safe) : null }
   function safeCityOfferUrl(value) {
     if (typeof value !== 'string') return null
@@ -601,9 +626,11 @@ export const WINDOW_JS_CATALOG = String.raw`(() => {
         event.stopPropagation()
         openStore(merchant)
       })
+      const endFact = world && safeText(listing.state, 'live') === 'live' ? cityEndFact(listing) : null
       facts.append(
         merchantButton,
         ...(world ? [element('span', '', 'CITY OWNERSHIP')] : []),
+        ...(endFact ? [element('span', '', endFact)] : []),
         element('span', '', String(Math.trunc(safeNumber(listing.sales))) + ' pickups'),
         element('span', '', String(Math.trunc(safeNumber(listing.votes))) + ' votes'),
       )

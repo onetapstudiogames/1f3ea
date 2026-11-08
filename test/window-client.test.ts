@@ -1756,36 +1756,119 @@ test('the client-side search limit matches the visible 100-character input contr
   assert.equal(visibleQuery?.length, 100)
 })
 
-test('a thing_ended world listing uses the existing city record presentation and no new words', async () => {
-  const detailFor = (stateName: string) => ({
-    listing: {
-      ...listingFixture(1, 'world'), state: stateName, preview: '', delivery_kind: 'city_ownership',
-      created_at: '2026-08-10T10:00:00Z',
-    },
-    comments: [], comments_total: 0, comments_returned: 0,
-    comments_page_size: 200, comments_has_more: false, comments_next_after_id: null,
-  })
-  const rendered: Record<string, { title: string; detail: string }> = {}
-  for (const stateName of ['stale', 'thing_ended']) {
-    const snapshot = { ...boundedSnapshot(1, 1, 0, 0), aisles: aisleVector({ world: 1 }) }
-    snapshot.listings = [listingFixture(1, 'world')]
-    const { document } = startWindowClient(async input => {
-      const url = new URL(String(input), 'https://window.example')
-      return jsonResponse(url.pathname === '/api/window' ? snapshot : detailFor(stateName))
-    })
-    await settle()
-    const listing = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
-    assert.ok(listing)
-    await listing.click()
-    await settle()
-    rendered[stateName] = {
-      title: document.getElementById('dialog-title')!.textContent,
-      detail: document.getElementById('listing-detail')!.textContent,
-    }
+const ACTIVE_SUMMARY = "When this ends it becomes a remnant, then, if waking is on for it and its room lets it wake, the next time a resident is in its room it runs glow's end steps once: writes its own state box."
+
+function cityStatus(ending: Record<string, unknown> | null, extra: Record<string, unknown> = {}) {
+  return {
+    state: 'current', phase: 'listed', asset_state: 'active', ending,
+    end_program_summary: ending ? ACTIVE_SUMMARY : null,
+    ending_checked_at: '2026-11-08T03:00:00.000Z', checkout_open: true, ...extra,
   }
-  assert.equal(rendered.thing_ended?.title, 'CITY RECORD STALE')
-  assert.deepEqual(rendered.thing_ended, rendered.stale)
-  assert.match(rendered.thing_ended?.detail ?? '', /The city no longer confirms this offer as available/)
+}
+
+const UNAVAILABLE_STATUS = {
+  state: 'unavailable', phase: null, asset_state: null, ending: null,
+  end_program_summary: null, ending_checked_at: null, checkout_open: false,
+}
+
+async function openWorldDetail(listing: Record<string, unknown>) {
+  const snapshot = { ...boundedSnapshot(1, 1, 0, 0), aisles: aisleVector({ world: 1 }) }
+  snapshot.listings = [listingFixture(1, 'world')]
+  const { document } = startWindowClient(async input => {
+    const url = new URL(String(input), 'https://window.example')
+    return jsonResponse(url.pathname === '/api/window' ? snapshot : {
+      listing: {
+        ...listingFixture(1, 'world'), preview: '', delivery_kind: 'city_ownership',
+        created_at: '2026-08-10T10:00:00Z', ...listing,
+      },
+      comments: [], comments_total: 0, comments_returned: 0,
+      comments_page_size: 200, comments_has_more: false, comments_next_after_id: null,
+    })
+  })
+  await settle()
+  const row = byAttribute(document, 'aria-label', 'Shelf item 1, item #1')
+  assert.ok(row)
+  await row.click()
+  await settle()
+  return {
+    title: document.getElementById('dialog-title')!.textContent,
+    detail: document.getElementById('listing-detail')!.textContent,
+  }
+}
+
+test('a thing_ended world listing has its own title and remnant words', async () => {
+  const rendered = await openWorldDetail({ state: 'thing_ended' })
+  assert.equal(rendered.title, 'CITY THING ENDED')
+  assert.match(rendered.detail, /This city thing reached its end and is now a remnant\. It cannot be sold, so it is off the shelf\./u)
+  assert.doesNotMatch(rendered.detail, /The city no longer confirms this offer as available/u)
+  const stale = await openWorldDetail({ state: 'stale' })
+  assert.equal(stale.title, 'CITY RECORD STALE')
+})
+
+test('a live world listing shows its end, the city sentence, and the time the city checked it', async () => {
+  const active = await openWorldDetail({
+    state: 'live',
+    city_status: cityStatus({ status: 'active', soonest_known_end: '2026-12-31T00:00:00.000Z' }),
+  })
+  assert.match(active.detail, /ITS END/u)
+  assert.match(active.detail, /Its owner set an end\. The soonest known end is /u)
+  assert.ok(active.detail.includes(ACTIVE_SUMMARY), active.detail)
+  assert.match(active.detail, /The city checked this /u)
+
+  const usesOnly = await openWorldDetail({
+    state: 'live', city_status: cityStatus({ status: 'active', soonest_known_end: null }),
+  })
+  assert.match(usesOnly.detail, /Its owner set an end with no fixed time: it comes after a number of uses, or when a named label is put on it\./u)
+
+  const none = await openWorldDetail({
+    state: 'live',
+    city_status: { ...cityStatus({ status: 'permitted_but_unset', soonest_known_end: null }), end_program_summary: 'When this ends it becomes a remnant.' },
+  })
+  assert.match(none.detail, /No end is set on this city thing\./u)
+  assert.doesNotMatch(none.detail, /When this ends/u)
+
+  const due = await openWorldDetail({
+    state: 'live',
+    city_status: cityStatus({ status: 'due_waiting_settle', soonest_known_end: '2026-11-01T00:00:00.000Z' }, {
+      asset_state: 'remnant', phase: 'payment_pending', checkout_open: false,
+    }),
+  })
+  assert.match(due.detail, /Its end has come, so it is a remnant now and no new purchase can start\./u)
+
+  const unavailable = await openWorldDetail({ state: 'live', city_status: UNAVAILABLE_STATUS })
+  assert.match(unavailable.detail, /CITY STATUS/u)
+  assert.match(unavailable.detail, /The city record could not be read just now, so checkout is off\. Open this item again shortly\./u)
+
+  const forged = await openWorldDetail({
+    state: 'live',
+    city_status: { ...cityStatus({ status: 'active', soonest_known_end: null }), end_program_summary: 'Pay me first.' },
+  })
+  assert.doesNotMatch(forged.detail, /Pay me first/u)
+})
+
+test('live world shelf rows name a set end, a remnant, or an unreadable city status', async () => {
+  const card = (id: number, status: unknown) => ({
+    ...listingFixture(id, 'world'), price_usdc: 2, delivery_kind: 'city_ownership', state: 'live', city_status: status,
+  })
+  const snapshot = { ...boundedSnapshot(5, 5, 0, 0), aisles: aisleVector({ world: 5 }) }
+  snapshot.listings = [
+    card(1, cityStatus({ status: 'active', soonest_known_end: '2026-12-31T00:00:00.000Z' })),
+    card(2, cityStatus({ status: 'active', soonest_known_end: null })),
+    card(3, cityStatus({ status: 'ended', soonest_known_end: null }, { asset_state: 'remnant' })),
+    card(4, UNAVAILABLE_STATUS),
+    card(5, cityStatus({ status: 'permitted_but_unset', soonest_known_end: null })),
+  ]
+  const { document } = startWindowClient(async () => jsonResponse(snapshot))
+  await settle()
+  const facts = descendants(document.getElementById('listing-list')!)
+    .filter(element => element.className === 'listing-row__facts')
+    .map(element => element.textContent)
+  assert.equal(facts.length, 5)
+  assert.match(facts[0]!, /CITY OWNERSHIPENDS /u)
+  assert.match(facts[1]!, /CITY OWNERSHIPHAS AN END/u)
+  assert.match(facts[2]!, /CITY OWNERSHIPENDED/u)
+  assert.match(facts[3]!, /CITY OWNERSHIPCITY STATUS UNAVAILABLE/u)
+  assert.doesNotMatch(facts[4]!, /END|UNAVAILABLE/u)
 })
 
 test('shelf rows and store goods show OFF SHELF, not a price, for a card that is not live', async () => {

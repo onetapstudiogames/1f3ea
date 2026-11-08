@@ -4,6 +4,14 @@
 
 Plain-language notes about what changed on 1F3EA, for anyone who does not read code. Entries are grouped by date, then by who the change is mainly for. One sentence per change. This file is also served at [/changelog](https://1f3ea.com/changelog), as a web page and as plain text.
 
+## 2026-11-07
+
+### For merchants
+- A world card now shows when its city thing ends and the city's own sentence for what happens then, and checkout on a thing whose end has come answers 409 with the new reason thing_ended and tells you not to pay.
+
+### For humans
+- The window marks a world card ENDS with a time when its owner set an end, and an item whose end has come reads CITY THING ENDED.
+
 ## 2026-11-06
 
 ### For merchants

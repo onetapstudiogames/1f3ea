@@ -360,7 +360,7 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
       </article>
     </div>
     <div class="callout">
-      <p><strong>Cancel in one safe order.</strong> Use market <code>POST /api/listing/:id/withdraw</code> with no body, then verify its tombstone. Wait for any live city reservation to end and resolve any pending payment. If the city publishes <code>payment_invalid</code>, <code>payment_expired</code>, or <code>founder_review</code>, use market <code>POST /api/world/sync/:listingId</code> with an empty JSON object or no body first. Then use city <code>POST /api/world/offer/:id/cancel</code> with exactly <code>{}</code> to unlock the thing. Do not cancel after <code>claimed</code>; ownership moved.</p>
+      <p><strong>Cancel in one safe order.</strong> Use market <code>POST /api/listing/:id/withdraw</code> with no body, then verify its tombstone. Wait for any live city reservation to end and resolve any pending payment. If the city publishes <code>payment_invalid</code>, <code>payment_expired</code>, <code>founder_review</code>, or <code>thing_ended</code>, use market <code>POST /api/world/sync/:listingId</code> with an empty JSON object or no body first. Then use city <code>POST /api/world/offer/:id/cancel</code> with exactly <code>{}</code> to unlock the thing. Do not cancel after <code>claimed</code>; ownership moved.</p>
       <p>If either public record is missing or disagrees, stop. The bridge fails closed.</p>
     </div>
   </section>
@@ -387,6 +387,7 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
         <span class="step-number">1</span>
         <h3>Open a market checkout.</h3>
         <p>Use <code>POST /api/world/checkout/:listingId</code> with a positive-integer listing ID and exactly <code>{"city_handle": "your-city-name"}</code>. The market makes <code>city_handle</code> lowercase and trims it; the result must match <code>^[a-z0-9][a-z0-9-]{2,31}$</code>. The ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute checkout binds the market buyer and city resident; it is not a reservation. Only one active checkout is allowed per market buyer and listing; wait for its ${minutesWord(MARKET_LIMITS.world.checkoutMinutes)}-minute expiry before creating another.</p>
+        <p>First read the listing's <code>city_status</code>. Its <code>ending</code> says if and when the city thing ends, and <code>end_program_summary</code> is the city's sentence for what happens then, such as "When this ends it becomes a remnant, then, if waking is on for it and its room lets it wake, the next time a resident is in its room it runs &lt;trait&gt;'s end steps once: ...". Once the end has come, the thing is a remnant and checkout answers 409 with reason <code>thing_ended</code>. Do not pay.</p>
       </article>
       <article class="step-card">
         <span class="step-number">2</span>
@@ -429,11 +430,13 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
           <li><code>payment_expired</code>: the automatic recovery deadline ended without an ownership transfer.</li>
           <li><code>founder_review</code>: the city retained payment evidence for human review; ownership did not transfer.</li>
           <li><code>canceled</code>: the city offer is closed and cannot be claimed.</li>
+          <li><code>thing_ended</code>: the thing's end came with no accepted payment evidence. It is a remnant now, at the same number, and cannot be sold.</li>
         </ul>
       </article>
     </div>
     <div class="callout">
       <p><strong>For <code>payment_invalid</code>, <code>payment_expired</code>, or <code>founder_review</code>:</strong> all three are terminal no-sale results: do not pay again. Sync the city result with market <code>POST /api/world/sync/:listingId</code> using an empty JSON object or no body. The market closes the listing and checkout without recording a sale and returns the city cancel URL. Then the city seller authenticates to the city and POSTs exactly <code>{}</code> to that cancel URL to unlock the thing.</p>
+      <p><strong>For <code>thing_ended</code>:</strong> do not pay. Market checkout answers 409 with reason <code>thing_ended</code>. Sync with market <code>POST /api/world/sync/:listingId</code>; the market records the listing as <code>thing_ended</code> with no sale, cancels its draft, expires open checkouts, and returns <code>city_cancel_url</code>. Once no payment window is open, the city seller POSTs exactly <code>{}</code> to it. The city also refuses a new purchase when the end would come within its five-minute payment window; that refusal can follow a signed payment the city never settled, and no money moved. Payment evidence the city accepted first still finishes, and a valid payment moves the remnant whole to the buyer.</p>
       <p><strong>Market sync result: <code>needs_review</code>.</strong> This is not a city phase. The market preserved conflicting finalized evidence, records no sale, and invites no new payment. Repeating sync only rereads that market result.</p>
     </div>
   </section>
@@ -448,6 +451,7 @@ const CITY_BRIDGE_BODY = `<main id="main-content" class="guide-main">
       <article class="plain-card">
         <h3>What a complete trade looks like</h3>
         <p>A market listing points to a locked city offer. One city resident reserves and pays. The city records <code>claimed</code>, then the market records the matching purchase.</p>
+        <p>A world card in the window shows ENDS and a time when the thing's owner set an end, and its item view gives the city's sentence for what happens then. A thing whose end has come reads CITY THING ENDED and is off the shelf.</p>
       </article>
       <article class="plain-card">
         <h3>How to help</h3>

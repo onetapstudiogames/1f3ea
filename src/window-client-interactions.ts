@@ -270,18 +270,46 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
     }
     return wrapper
   }
+  // The city's end_program_summary is shown only in its fixed city form.
+  const END_SUMMARY_START = 'When this ends it becomes a remnant'
+  function cityEndSection(status) {
+    if (!status) return null
+    if (status.state === 'unavailable') {
+      return detailSection('CITY STATUS', element('p', '',
+        'The city record could not be read just now, so checkout is off. Open this item again shortly.'),
+      'detail-section--notice')
+    }
+    if (status.state !== 'current') return null
+    const ending = cityEnding(status)
+    if (!ending && !cityThingEnded(status)) return null
+    const body = element('div', '')
+    if (cityThingEnded(status)) {
+      body.append(element('p', '', 'Its end has come, so it is a remnant now and no new purchase can start.'))
+    } else if (ending && ending.status === 'active') {
+      const at = safeDate(ending.soonest_known_end)
+      body.append(element('p', '', at
+        ? 'Its owner set an end. The soonest known end is ' + formatDate(at) + '.'
+        : 'Its owner set an end with no fixed time: it comes after a number of uses, or when a named label is put on it.'))
+      const summary = safeText(status.end_program_summary, '')
+      if (summary.startsWith(END_SUMMARY_START)) body.append(element('p', '', summary))
+    } else {
+      body.append(element('p', '', 'No end is set on this city thing.'))
+    }
+    const checked = safeDate(status.ending_checked_at)
+    if (checked) body.append(element('p', '', 'The city checked this ' + formatDate(checked) + '.'))
+    return detailSection('ITS END', body, 'detail-section--notice')
+  }
   function renderListingDetail(detail, id) {
     if (!nodes.detail || !nodes.dialogTitle) return
     const body = detailContent('item', id, 'item #' + String(id))
     if (!body) return
     const listing = detail.listing
-    // A city thing whose end has come shows the existing city record presentation.
-    const stateName = safeText(listing.state, '') === 'thing_ended' ? 'stale' : safeText(listing.state, '')
+    const stateName = safeText(listing.state, '')
     const world = listing.delivery_kind === 'city_ownership'
     const merchant = safeHandle(listing.merchant) || 'unknown-store'
     const terminalTitles = {
       withdrawn: 'WITHDRAWN BY MERCHANT', removed: 'REMOVED BY THE SHOPKEEPER', sold: 'SOLD IN THE CITY',
-      canceled: 'CITY OFFER CANCELED', stale: 'CITY RECORD STALE',
+      canceled: 'CITY OFFER CANCELED', stale: 'CITY RECORD STALE', thing_ended: 'CITY THING ENDED',
     }
     nodes.dialogTitle.textContent = stateName === 'live' ? 'ITEM #' + String(id) : terminalTitles[stateName]
     const article = element('article', 'item-detail')
@@ -309,6 +337,8 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
       article.append(detailSection('CITY OFFER', cityOfferLink, 'detail-section--notice'))
     }
     if (world && stateName === 'live') {
+      const end = cityEndSection(cityStatusOf(listing))
+      if (end) article.append(end)
       article.append(detailSection(
         'DELIVERY',
         element('p', '', 'Ownership is delivered in the city. A buyer must already be a city resident; nothing is downloaded here.'),
@@ -322,6 +352,7 @@ export const WINDOW_JS_INTERACTIONS = String.raw`  async function selectAisle(na
         sold: 'This city ownership moved to its city buyer. The market receipt and public comments remain.',
         canceled: 'The city offer was canceled. This item is no longer for sale here.',
         stale: 'The city no longer confirms this offer as available. This item is off the shelf.',
+        thing_ended: 'This city thing reached its end and is now a remnant. It cannot be sold, so it is off the shelf.',
       }
       article.append(detailSection(
         'OFF THE SHELF',

@@ -1,8 +1,9 @@
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import { toUnits } from './chain.ts'
 import { auth, authRequired, err, WALLET_RE } from './core.ts'
 import { sql } from './db.ts'
 import { canonicalTxHash, paymentReadinessResponse } from './pay.ts'
+import { marketJsonRefusal } from './market-refusal.ts'
 import { postgresErrorDetails } from './postgres-error.ts'
 import {
   readWorldPaymentAttemptForListing,
@@ -99,6 +100,12 @@ function cityNoSaleOutcome(phase: CityOfferPhase): CityNoSaleOutcome | null {
 }
 
 const THING_ENDED_REASON = 'city thing ended'
+
+/** Checkout on a city thing whose end has come: reason thing_ended, before any payment entry. */
+function thingEndedRefusal(c: Context, offerId: number): Response {
+  return marketJsonRefusal(c, 409, 'thing_ended',
+    `This city thing's end has come, so no new purchase can start. Read its city record at ${cityOfferUrl(offerId)}.`)
+}
 
 /**
  * End an active world listing because the city says its offer can no longer sell: the
@@ -265,6 +272,7 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
     if (!listing) return err(c, 404, `listing id ${listingId} was not found. Read GET /api/shelves before retrying.`)
     if (listing.delivery_kind !== 'city_ownership') return err(c, 409, 'this is an artifact listing; use POST /api/buy/:id')
     if (listing.merchant_id === merchant.id) return err(c, 403, 'you cannot buy your own goods')
+    if (!listing.removed && listing.world_state === 'thing_ended') return thingEndedRefusal(c, listing.world_offer_id)
     if (listing.removed || listing.withdrawn || listing.world_state !== 'active')
       return err(c, 409, 'world listing is not live')
 
@@ -282,7 +290,7 @@ export function registerWorldCheckoutRoutes(app: Hono, config: WorldCheckoutRout
     if (cityRecord.value.phase === 'thing_ended') {
       // The thing ended in the city: close the market lane before any payment entry is given.
       await endWorldListingForCity(listing, 'thing_ended', THING_ENDED_REASON)
-      return err(c, 409, 'city offer is not available for a new checkout')
+      return thingEndedRefusal(c, listing.world_offer_id)
     }
     if (!isCityOfferAvailable(cityRecord.value)) return err(c, 409, 'city offer is not available for a new checkout')
     if (cityRecord.value.seller === parsed.city_handle)
