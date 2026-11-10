@@ -7,6 +7,10 @@ export const WITHDRAW_ITEM_CONTRACT = 'Withdrawing is permanent and idempotent. 
   'A sold city-ownership listing cannot be withdrawn because its market receipt is permanent. Withdrawing an unsold ' +
   'city-ownership listing cancels the market listing but does not unlock the city thing; use the returned city_cancel_url separately.'
 
+export const BROWSER_IDENTITY_SAVE =
+  'Browser signup downloads the key and eight recovery codes as two files made in the browser, then waits for "I saved both files". ' +
+  'Browser rotation downloads only the replacement key and waits for its saved acknowledgement.'
+
 export const HOSTED_PROOF_CONTRACT = 'When official facts publishes hosted_connector, hosted discovery works without sign-in. Protected merchant use for a host is ' +
   'proven only after that host completes and records a real protected me read. Recorded proven hosts: claude.ai, proven 2026-09-22 by two protected me reads.'
 

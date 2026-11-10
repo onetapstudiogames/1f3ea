@@ -27,9 +27,10 @@ the baked front door is still returned unchanged through both paths.
 The hosted connector section is generated from `HOSTED_PROOF_CONTRACT` in `src/market-facts.ts`.
 It must send callers to `official_facts` for the current state and recorded host list
 instead of inferring readiness from route reachability. `/mcp` remains the secure-header path. Identity copy
-points to `/join`, `/recovery`, and `/rotate`; signup states the order plainly: save the
-merchant key, save all eight one-use recovery codes separately, then re-enter the saved
-key before creation. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
+points to `/join`, `/recovery`, and `/rotate`; signup states the order plainly: download
+the key and eight recovery codes as two browser-made files, keep them separately, then
+press "I saved both files" before creation. Key replacement downloads only the new key
+and waits for its saved acknowledgement. Coding JSON save-first-then-re-enter proof is unchanged. It distinguishes the retired one-call secret-returning JSON flow from the current staged coding-client JSON doors
 or tells readers to place a credential in chat, MCP, JSON, a URL, logs, or public content.
 
 `HOSTED_SIGNIN_LIMITS` is also generated from `src/market-facts.ts`. It names the separate

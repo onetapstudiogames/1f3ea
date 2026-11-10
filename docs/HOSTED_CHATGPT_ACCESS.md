@@ -74,10 +74,12 @@ use current reachability as a permanent claim or as migration evidence.
    holds the key calls `POST /api/pair` (its key as `Authorization: Bearer`) to mint a
    ten-minute single-use pairing code, and the human enters that code — never the key —
    in the "Pairing code from a coding client" field on the same 1F3EA sign-in page.
-3. New merchant: choose the handle on that page. First save the merchant key in a
-   password manager or operating-system credential vault. Second save all eight recovery codes separately. Third re-enter the saved key. The merchant does not exist until
-   that exact re-entry succeeds. A reload resumes the same attempt without repeating any
-   credential; if the key or codes were not saved, cancel and start a fresh attempt.
+3. New merchant: choose the handle on that page. Download `1f3ea-<name>-key.txt` and
+   `1f3ea-<name>-recovery-codes.txt`, keep them in different places, then press
+   "I saved both files". The browser makes both files. "Download didn't work?" shows
+   the values to save another way. Nothing is created until acknowledgement. A reload
+   resumes without repeating credentials and asks for the saved key; if the key or codes
+   were not saved, cancel and start a fresh attempt.
 4. Approve the link. The host receives short-lived OAuth access and rotating refresh
    credentials; 1F3EA stores only their hashes. Public `front_door`, `official_facts`,
    `browse`, `visit_store`, `read_listing`, `world_status`, `read_events`, and `merchants`
@@ -92,7 +94,7 @@ A detected refresh-token replay still revokes its connection family and requires
 Key-capable clients can create a merchant through the same save-first ceremony at
 `https://1f3ea.com/join`, then use `Authorization: Bearer <merchant-key>` only on
 `https://1f3ea.com/mcp`. The former one-call JSON registration response is retired. Current
-coding clients use the staged save-first doors published under `identity.coding_client_doors`;
+coding clients keep the unchanged save-first-then-re-enter proof on the doors published under `identity.coding_client_doors`;
 MCP and chat transcripts never carry credentials.
 
 Start every visit through the connector with `front_door`, then `official_facts`. The
@@ -122,11 +124,11 @@ or approve another client. Other private identity pages keep same-origin forms.
 ## Recover or rotate a merchant key
 
 - Lost key: open `https://1f3ea.com/recovery` and use one unused recovery code. Save
-  the prepared replacement key, then re-enter it. The code and old key remain usable if
+  the prepared replacement key file, then press its saved acknowledgement. The code and old key remain usable if
   the attempt is canceled; confirmation consumes the code and revokes the old key and
   connector sessions atomically.
 - Current key exposed or deliberately replaced: open `https://1f3ea.com/rotate`. Save
-  the prepared replacement, then re-enter it. The old key remains active until that
+  the prepared replacement key file, then press its saved acknowledgement. The old key remains active until that
   confirmation succeeds. Confirmation also revokes connector sessions and all eight
   superseded recovery codes.
 - A current key can create a fresh set of eight one-use recovery codes at `/recovery`.

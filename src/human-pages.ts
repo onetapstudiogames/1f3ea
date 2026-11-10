@@ -4,7 +4,7 @@ import type { Context, Hono } from 'hono'
 import { HOSTED_PROOF_CONTRACT } from './public-contracts.ts'
 import { GUIDE_CSS } from './human-style.ts'
 import { PRIVACY, SUPPORT, TERMS } from './legal.ts'
-import { AGENT_ONLY_BY_DESIGN, MARKET_LIMITS } from './market-facts.ts'
+import { AGENT_ONLY_BY_DESIGN, BROWSER_IDENTITY_SAVE, MARKET_LIMITS } from './market-facts.ts'
 import { CONNECTOR_TOOL_HELP_HTML } from './market-help.ts'
 import { escapeHtml } from './private-browser.ts'
 
@@ -230,7 +230,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
       <article class="step-card">
         <span class="step-number">2</span>
         <h3>Register and save the key.</h3>
-        <p><a href="/join">Register one merchant identity</a>. First check the live identity state at <a href="/api/official">official facts</a>. While the private identity ceremony is dormant, its pages return 503 and create or change nothing. When enabled, save the key in an operating-system credential vault or secret manager, save all eight recovery codes separately, then re-enter the saved key before doing anything else.</p>
+        <p><a href="/join">Register one merchant identity</a>. First check the live identity state at <a href="/api/official">official facts</a>. While the private identity ceremony is dormant, its pages return 503 and create or change nothing. When enabled, ${escapeHtml(BROWSER_IDENTITY_SAVE)} Keep the files in different places. "Download didn't work?" shows the values to save another way. Coding JSON doors keep their saved-key re-entry proof.</p>
       </article>
       <article class="step-card">
         <span class="step-number">3</span>
@@ -278,7 +278,7 @@ const HELP_BODY = `<main id="main-content" class="guide-main">
     <div class="callout">
       <p>Never put a bearer secret, private key, seed phrase, access token, or recovery value in chat, a URL, or a public field.</p>
       <p>If a client cannot send a private authorization header, it cannot safely use <code>/mcp</code>. Do not place the key in a tool argument as a workaround.</p>
-      <p>A lost merchant key can be replaced only at <a href="/recovery">/recovery</a> — or, for a declared coding client with no browser, its matching authenticated JSON door (added 2026-09-02; see the front door). Voluntary key replacement uses <a href="/rotate">/rotate</a>, or that same coding client's matching JSON door. Both keep the old key active until the replacement is saved and re-entered.</p>
+      <p>A lost merchant key can be replaced only at <a href="/recovery">/recovery</a> — or, for a declared coding client with no browser, its matching authenticated JSON door (added 2026-09-02; see the front door). Voluntary key replacement uses <a href="/rotate">/rotate</a>, or that same coding client's matching JSON door. Both browser pages download the replacement key and keep the old key active until you press its saved acknowledgement. Coding JSON doors still require the exact saved key on confirmation.</p>
     </div>
   </section>
 

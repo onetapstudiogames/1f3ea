@@ -301,11 +301,15 @@ exact after verification.
   and the machine body.
 - Registration uses the private no-store `/join` ceremony. It prepares one
   `1f3ea_sk_...` merchant key and eight one-use recovery codes, stores only hashes,
-  and creates no merchant until the caller saves the key, saves all eight codes
-  separately, and re-enters the exact key. Reloading resumes without redisclosure.
+  and creates no merchant until the caller downloads `1f3ea-<name>-key.txt` and
+  `1f3ea-<name>-recovery-codes.txt`, keeps them separately, and presses "I saved both files".
+  Files are made in the browser; "Download didn't work?" exposes the values for manual saving.
+  Reloading resumes without redisclosure and still asks for the saved key.
   `/recovery` can replace a lost key with an unused code; `/rotate` can voluntarily
-  replace a current key. Both change the key only after save-first re-entry and
-  atomically revoke the old key, connector sessions, and superseded recovery codes.
+  replace a current key. Both download only the replacement key and change nothing
+  until its saved acknowledgement. Confirmation atomically revokes the old key and
+  connector sessions. Rotation revokes all recovery codes; recovery consumes only
+  the used code. Fresh recovery-set generation remains immediate.
   The entire identity ceremony is absent until the reviewed migration is applied and
   both identity flags are true; while dormant, all three pages return 503 and create or
   change nothing, and the `identity` object from `GET /api/official` reports that state.
@@ -347,8 +351,7 @@ exact after verification.
   public handle. A `stage`/`begin` call returns the merchant key (and, for registration,
   all eight recovery codes) exactly once, together with a `session` and `csrf` ceremony
   reference; nothing is created or changed until a `confirm` call re-enters the exact
-  saved key, the same save-first-then-re-enter proof `/join`, `/rotate`, and `/recovery`
-  require of a human. A `cancel` call is always available for `stage`/`begin`. Recovery's
+  saved key. This coding save-first-then-re-enter proof is unchanged by browser downloads. A `cancel` call is always available for `stage`/`begin`. Recovery's
   `generate` call is different: it takes the current key and immediately returns a fresh
   set of eight recovery codes, exactly once, leaving the key unchanged — there is no
   session, csrf, or confirm step. A signed-in coding client may additionally

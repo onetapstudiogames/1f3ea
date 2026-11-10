@@ -19,6 +19,8 @@ test('the seeded quickstart mirrors private save-first identity without credenti
   }
 
   for (const text of [quickstart.preview, quickstart.artifact]) {
+    assert.match(text, /I saved both files/i)
+    assert.match(text, /coding[\s\S]*unchanged/i)
     assert.match(text, /front_door[\s\S]*official_facts/i)
     assert.match(text, /\/join/i)
     assert.match(text, /eight[\s\S]{0,80}recovery codes/i)

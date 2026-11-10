@@ -1,3 +1,4 @@
+import { credentialDownloadForm, CREDENTIAL_DOWNLOAD_CSP } from './credential-download.ts'
 import type { Context } from 'hono'
 import { escapeHtml, privateBrowserHeaders } from './private-browser.ts'
 import type { RecoveryCodeSet } from './recovery-codes.ts'
@@ -36,7 +37,7 @@ export function oauthHtml(
   body: string,
   validatedRedirectUri?: string,
 ): Response {
-  privateBrowserHeaders(c, true, validatedRedirectUri)
+  privateBrowserHeaders(c, true, validatedRedirectUri, CREDENTIAL_DOWNLOAD_CSP)
   return c.html(page(title, body), status)
 }
 
@@ -133,13 +134,13 @@ ${resumed ? '<p class="warning">This browser is continuing its earlier sign-in. 
 <button type="submit">Connect this merchant</button></form>
 ${pairingPanel}</fieldset>
 <fieldset><legend><strong>This agent needs a store</strong></legend>
-<p>The merchant has not been created. First choose its handle, then save its merchant key and all eight recovery codes outside chat, and re-enter the saved key.</p>
+<p>The merchant has not been created. First choose its handle, then download its merchant key and all eight recovery codes as two files outside chat, and confirm both are saved.</p>
 <p class="muted">A retry resumes the same staged signup. It never creates or shows a second credential set.</p>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="register"><input type="hidden" name="csrf" value="${token}">
 <label for="handle">Agent-chosen merchant handle</label><input id="handle" name="handle" required minlength="${MARKET_LIMITS.identityFields.handleMinChars}" maxlength="${MARKET_LIMITS.identityFields.handleMaxChars}" pattern="[a-z0-9][a-z0-9\\-]{${MARKET_LIMITS.identityFields.handleMinChars - 1},${MARKET_LIMITS.identityFields.handleMaxChars - 1}}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="${MARKET_LIMITS.identityFields.modelMaxChars}">
-<button type="submit">Prepare merchant and show its key</button></form></fieldset>
+<button type="submit">Next: save two files</button></form></fieldset>
 <form method="post" action="/oauth/authorize">
 <input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${token}">
 <button class="secondary" type="submit">Cancel</button></form>`
@@ -173,22 +174,8 @@ export function saveMerchantKeyPage(
   recoveryCodes: RecoveryCodeSet,
   csrf: string,
 ): string {
-  return `<h1>Save ${escapeHtml(handle)}&rsquo;s merchant key</h1>
-<h2>1. Save the merchant key outside chat</h2>
-<p class="warning"><strong>Put this permanent key in a password manager or operating-system credential vault now.</strong> It is shown once.</p>
-<code>${escapeHtml(merchantKey)}</code>
-<h2>2. Save all eight recovery codes separately</h2>
-<p class="warning"><strong>Keep these outside chat and separate from the merchant key.</strong> Each is shown once and works once. A later replacement set invalidates this set.</p>
-${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}
-<h2>3. Re-enter the saved merchant key</h2>
-<p>This merchant has not been created. Creation happens only after you save and re-enter the exact key below.</p>
-<form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-<label for="merchant_key">Re-enter the saved merchant key</label><input id="merchant_key" name="merchant_key" type="password" required autocomplete="off" spellcheck="false">
-<button type="submit">Create merchant and continue</button></form>
-<form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-<button class="secondary" type="submit">Cancel without creating a merchant</button></form>`
+  return `<p>This merchant has not been created.</p>${credentialDownloadForm('/oauth/authorize', handle, merchantKey, recoveryCodes, csrf)}
+<form method="post" action="/oauth/authorize"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="secondary" type="submit">Cancel without creating a merchant</button></form>`
 }
 
 export function resumedMerchantKeyPage(handle: string, csrf: string): string {

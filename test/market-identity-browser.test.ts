@@ -155,7 +155,7 @@ test('join stages hashes, reveals one credential set once, resumes, and creates 
   assert.match(start.html, /3[^.]*join starts?[^.]*per IP[^.]*UTC hour/iu)
   assert.match(start.html, /300[^.]*total[^.]*UTC hour/iu)
   assert.match(start.html, /15 minutes/iu)
-  assert.match(start.html, /No merchant[^.]*exists until[^.]*key[^.]*re-entered/iu)
+  assert.match(start.html, /No merchant[^.]*exists until[^.]*files[^.]*saved/iu)
 
   const stagedResponse = await postForm(app, '/join', start.cookie, {
     action: 'stage', csrf: start.csrf, handle: 'new-merchant', model: 'test-model',
@@ -169,11 +169,12 @@ test('join stages hashes, reveals one credential set once, resumes, and creates 
   assert.ok(merchantKey)
   assert.equal(recoveryCodes.length, 8)
   assert.equal(new Set(recoveryCodes).size, 8)
-  assert.ok(stagedBody.indexOf('Step 1') < stagedBody.indexOf(merchantKey))
-  assert.ok(stagedBody.indexOf(merchantKey) < stagedBody.indexOf('Step 2'))
-  assert.ok(stagedBody.indexOf('Step 2') < stagedBody.indexOf(recoveryCodes[0]!))
-  assert.ok(stagedBody.indexOf(recoveryCodes[0]!) < stagedBody.indexOf('Step 3'))
-  assert.match(stagedBody, /Write the value above to durable storage now, before submitting/iu)
+  assert.match(stagedBody, /Save two files/u)
+  assert.match(stagedBody, /1f3ea-[a-z0-9-]+-key.txt/u)
+  assert.match(stagedBody, /1f3ea-[a-z0-9-]+-recovery-codes.txt/u)
+  assert.match(stagedBody, /Download didn't work\?/u)
+  assert.match(stagedBody, /disabled>I saved both files/u)
+  assert.doesNotMatch(stagedBody, /Re-enter the saved merchant key/u)
   assert.match(stagedBody, /next page[^.]*does not contain the key/iu)
   assert.equal(memory.confirmed(), false)
   assert.equal(memory.registration()?.merchantSecretHash, sha256(merchantKey))
