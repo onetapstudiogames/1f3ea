@@ -34,7 +34,7 @@ gate, `MARKET_CODING_IDENTITY_ENABLED`, precisely so the two are never conflated
 | `20260902_market_identity_json_doors.sql` | **2026-09-03 01:06Z**, runner `market-coding-identity`, fresh preview branch `br-curly-thunder-aw4b3209` (created from production parent `br-plain-moon-awqm279s`; the pinned `br-shy-sea-aw8771mn` was found stale and unusable), endpoint `ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech`, database `neondb`. Runner reported `{"target":"preview","migration":"market-coding-identity","database":"neondb","endpoint":"ep-hidden-sound-aweqyvaa.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only check confirmed `merchant_pairing_codes` (`id`, `merchant_id`, `code_hash`, `created_at`, `expires_at`, `used_at`, `invalidated_at`) and the widened `merchant_identity_rate_limits_attempt_kind_allowed` constraint including `pair_create`. Rehearsal branch deleted afterward. See "Recorded run evidence: market-coding-identity" below. | **2026-09-03 01:06Z**, runner `market-coding-identity`, production endpoint `ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`, database `neondb`, preceded by labelled snapshot branch `snapshot/pre-coding-identity-20260903-0106` (`br-floral-base-aw54cx5o`). Runner reported `{"target":"production","migration":"market-coding-identity","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":8,"postconditions":20}`, exit 0. Read-only verification confirmed the same columns and constraint; `listings` 18 and `merchants` 23 unchanged. Live smoke with `MARKET_CODING_IDENTITY_ENABLED` still unset: `/api/official` `coding_client_doors` `null`; `POST /api/register` and `POST /api/pair` answer 503 `coding_identity_dormant`; `/join` 200. The flag has **not** been set yet — the four coding-client doors remain dormant until an operator sets it and redeploys. See "Recorded run evidence: market-coding-identity" below. |
 | `20260827_world_payment_finality.sql` | **Not recorded.** | **Not recorded.** Served finality copy and application tests do not prove the production writer fence exists. |
 | `20260828_x402_payment_attempts.sql` | **Not recorded.** | **Not recorded.** Source support for durable attempts does not prove its production table and triggers exist. |
-| `20261106_world_thing_ended.sql` | **Not recorded.** | **Not recorded.** Source support for the `thing_ended` world state does not prove the widened `listings_world_state_allowed` check exists. |
+| `20261106_world_thing_ended.sql` | **2026-11-08 02:54Z**, runner `world-thing-ended`, run twice, fresh preview branch `preview/world-thing-ended-20261108-0254` (`br-patient-frost-aw8dbq6b`, created from production parent `br-plain-moon-awqm279s`; since deleted), endpoint `ep-super-feather-aw2k68v2.c-12.us-east-1.aws.neon.tech`, database `neondb`. Both passes exit 0 with `{"target":"preview","migration":"world-thing-ended","database":"neondb","endpoint":"ep-super-feather-aw2k68v2.c-12.us-east-1.aws.neon.tech","statements":2,"postconditions":1}`; postconditions PASS. See "Recorded run evidence: world-thing-ended" below. | **2026-11-08 02:55:17Z**, runner `world-thing-ended`, production endpoint `ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`, database `neondb`, preceded by labelled snapshot branch `snapshot/pre-world-thing-ended-20261108-0255` (`br-quiet-unit-awm3o35x`). Runner reported `{"target":"production","migration":"world-thing-ended","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":2,"postconditions":1}`, exit 0, postconditions PASS. Merged as #71 (`58943ad`) and deployed 02:57:12Z. See "Recorded run evidence: world-thing-ended" below. |
 
 Before any new run, inspect provider migration records and the target schema without
 changing it. Then use the guarded runner for the intended target and require every declared
@@ -113,6 +113,33 @@ because the two identity flags are already on.
 - **Operator finding.** The pinned preview branch `br-shy-sea-aw8771mn` is stale relative to
   production (missing the 2026-08-27 and 2026-08-28 migrations) and should be recreated from
   production or migrated before it is used as evidence for anything.
+
+## Recorded run evidence: world-thing-ended
+
+- **2026-11-08 02:54Z, preview rehearsal.** There was no isolated current preview branch, so
+  a fresh Neon branch was created from production (parent `br-plain-moon-awqm279s`, branch
+  `preview/world-thing-ended-20261108-0254`, `br-patient-frost-aw8dbq6b`, endpoint
+  `ep-super-feather-aw2k68v2.c-12.us-east-1.aws.neon.tech`, database `neondb`).
+  `npm run migrate:preview:world-thing-ended -- --database neondb --endpoint ep-super-feather-aw2k68v2.c-12.us-east-1.aws.neon.tech --production-endpoint ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`
+  ran twice (02:54:47Z and 02:54:49Z), each exit 0, each reporting
+  `{"target":"preview","migration":"world-thing-ended","database":"neondb","endpoint":"ep-super-feather-aw2k68v2.c-12.us-east-1.aws.neon.tech","statements":2,"postconditions":1}`.
+  After each pass the check was validated and its definition named `thing_ended` and the
+  four old values; listings were 27 through 27, 0 newer, 0 `thing_ended`. The second pass
+  changed no catalogue entry. The preview branch was deleted afterwards.
+- **2026-11-08 02:55:17Z, production.** A labelled snapshot branch
+  `snapshot/pre-world-thing-ended-20261108-0255` (`br-quiet-unit-awm3o35x`, parent
+  `br-plain-moon-awqm279s`) was taken from production first.
+  `npm run migrate:production:world-thing-ended -- --database neondb --endpoint ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech`
+  ran once (02:55:17Z to 02:55:18Z), exit 0, reporting
+  `{"target":"production","migration":"world-thing-ended","database":"neondb","endpoint":"ep-blue-lab-awti0skv.c-12.us-east-1.aws.neon.tech","statements":2,"postconditions":1}`.
+  Read-only verification: before, `listings_world_state_allowed` held the four old values;
+  after, it was validated and also accepted `thing_ended`. Listings were 27 through 27,
+  0 newer, 0 `thing_ended`, and the count by state was unchanged. The catalogue diff was
+  exactly that one changed constraint.
+- **Merge and deploy.** The change merged as #71 (`58943ad`) after required CI passed.
+  `https://1f3ea.com/api/official` served `744838c` before the run and `58943ad` by
+  02:57:12Z. A read-only production probe afterwards (GET only) passed.
+- **Left in place.** No restore was done. The snapshot branch is kept.
 
 ## Required target facts
 
